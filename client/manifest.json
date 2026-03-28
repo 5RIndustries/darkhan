@@ -1,0 +1,17 @@
+{
+  "name": "DARYL Command Center",
+  "short_name": "DARYL",
+  "description": "OMC-OS Command Center",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#121212",
+  "theme_color": "#121212",
+  "icons": [
+    {
+      "src": "/icon.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

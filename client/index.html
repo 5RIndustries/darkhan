@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Darkhan — Command Center</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="manifest" href="/manifest.json">
+  <meta name="theme-color" content="#1e1e1e">
+</head>
+<body>
+  <!-- Login Screen -->
+  <div id="login-screen" class="screen">
+    <div class="login-container">
+      <h1>Darkhan</h1>
+      <p>Command Center</p>
+      <form id="login-form">
+        <input type="text" id="username" placeholder="Username" required autocomplete="username">
+        <input type="password" id="password" placeholder="Password" required autocomplete="current-password">
+        <button type="submit">Authenticate</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Main App UI -->
+  <div id="app-screen" class="screen hidden">
+    <!-- Sidebar / Navigation -->
+    <nav id="sidebar">
+      <div class="sidebar-header">
+        <h2 id="brand-name">Darkhan</h2>
+      </div>
+
+      <div class="nav-section">
+        <h3>Channels</h3>
+        <ul id="channel-list">
+          <!-- Populated dynamically -->
+        </ul>
+      </div>
+
+      <div class="nav-section">
+        <h3>Team Status</h3>
+        <div id="agent-status-lights">
+          <!-- Populated dynamically from /api/team -->
+        </div>
+      </div>
+
+      <div class="nav-section">
+        <h3>Views</h3>
+        <ul id="view-list">
+          <li data-view="dashboard">Dashboard</li>
+          <li data-view="tasks">Tasks</li>
+          <li data-view="workers">Workers</li>
+          <li data-view="costs">Costs</li>
+          <li data-view="docs">Docs</li>
+          <li data-view="approvals">Approvals</li>
+        </ul>
+      </div>
+
+      <div class="nav-section" id="admin-section" style="display:none">
+        <h3>Admin</h3>
+        <ul>
+          <li id="nav-settings" data-view="settings">Settings</li>
+        </ul>
+      </div>
+
+      <div class="user-status">
+        <span id="current-user"></span>
+        <button id="logout-btn">Logout</button>
+      </div>
+    </nav>
+
+    <!-- Main Content Area -->
+    <main id="main-content">
+      <!-- Chat View -->
+      <div id="chat-view" class="view">
+        <header class="channel-header">
+          <h2 id="current-channel-name">#command</h2>
+        </header>
+        <div id="message-container" class="message-feed"></div>
+        <footer class="message-input-area">
+          <form id="message-form">
+            <input type="text" id="message-input" placeholder="Message #command..." autocomplete="off">
+            <button type="submit">Send</button>
+          </form>
+        </footer>
+      </div>
+    </main>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="/js/app.js?v=darkhan-2"></script>
+</body>
+</html>

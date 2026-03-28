@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+
+# Environment (secrets — NEVER commit)
+server/.env
+
+# Database (generated, contains user data)
+server/db/*.db
+server/db/*.db-wal
+server/db/*.db-shm
+server/db/backups/
+
+# Logs
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Session files
+*.tmp

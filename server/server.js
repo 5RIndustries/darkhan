@@ -1,0 +1,418 @@
+require('dotenv').config({ path: require('path').join(__dirname, '.env') });
+const express = require('express');
+const http = require('http');
+const fs = require('fs');
+const { Server } = require('socket.io');
+const sqlite3 = require('sqlite3').verbose();
+const path = require('path');
+const session = require('express-session');
+const cors = require('cors');
+
+// Darkhan services
+const { ActivityLog } = require('./services/activity-log');
+const { CostTracker } = require('./services/cost-tracker');
+const { RateLimiter } = require('./services/rate-limiter');
+const { LLMService } = require('./services/llm');
+const { WorkerRuntime } = require('./services/worker-runtime');
+const { SecurityService } = require('./services/security');
+const { IntegrityService } = require('./services/integrity');
+
+// Load config
+const CONFIG_PATH = path.join(__dirname, 'darkhan.config.json');
+let config;
+try {
+  config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+  console.log(`[Darkhan] Config loaded: ${config.instance?.brandName || 'Darkhan'}`);
+} catch (e) {
+  console.error(`[Darkhan] FATAL: Could not load ${CONFIG_PATH}:`, e.message);
+  process.exit(1);
+}
+
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server, {
+  cors: {
+    origin: process.env.CORS_ORIGIN || `http://localhost:${config.instance?.port || 3001}`,
+    credentials: true
+  }
+});
+
+const PORT = process.env.PORT || config.instance?.port || 3001;
+const BIND_HOST = process.env.BIND_HOST || '127.0.0.1';
+const DB_PATH = path.join(__dirname, 'db', 'darkhan.db');
+
+if (!process.env.SESSION_SECRET) {
+  console.warn('[Darkhan] WARNING: SESSION_SECRET not set. Using fallback.');
+}
+
+// Middleware
+app.use(cors({
+  origin: process.env.CORS_ORIGIN || `http://localhost:${PORT}`,
+  credentials: true
+}));
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+// Persistent session store — survives server restarts
+const SQLiteStore = require('connect-sqlite3')(session);
+app.use(session({
+  store: new SQLiteStore({
+    db: 'sessions.db',
+    dir: path.join(__dirname, 'db'),
+    concurrentDB: true,
+  }),
+  secret: process.env.SESSION_SECRET || 'darkhan-session-fallback',
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    secure: process.env.NODE_ENV === 'production',
+    httpOnly: true,
+    sameSite: 'lax',
+    maxAge: 8 * 60 * 60 * 1000  // 8 hours
+  }
+}));
+
+// Serve static client files
+app.use(express.static(path.join(__dirname, '../client')));
+
+// Auto-seed from config
+function runSeedIfEmpty(database) {
+  database.get('SELECT COUNT(*) as count FROM users', [], (err, row) => {
+    if (err) return console.error('[Darkhan] Seed check error:', err.message);
+    if (row.count === 0) {
+      console.log('[Darkhan] No users — running auto-seed...');
+      const { execSync } = require('child_process');
+      try {
+        execSync(`"${process.execPath}" "${path.join(__dirname, 'db', 'seed.js')}"`, {
+          stdio: 'inherit', cwd: __dirname
+        });
+        console.log('[Darkhan] Auto-seed complete.');
+      } catch (e) {
+        console.error('[Darkhan] Auto-seed failed:', e.message);
+      }
+    }
+  });
+}
+
+// Database — schema must be applied before services initialize
+const db = new sqlite3.Database(DB_PATH);
+console.log('[Darkhan] Connected to database.');
+db.run('PRAGMA journal_mode=WAL');
+db.run('PRAGMA busy_timeout=5000');
+
+// Apply schema synchronously via serialize
+db.serialize(() => {
+  const schema = fs.readFileSync(path.join(__dirname, 'db', 'schema.sql'), 'utf8');
+  // Split on semicolons that are NOT inside BEGIN...END blocks (trigger bodies)
+  // First, replace semicolons inside triggers with a placeholder
+  const safeSql = schema.replace(/BEGIN\s[\s\S]*?END;/gm, (match) => match.replace(/;/g, '##SEMI##'));
+  const statements = safeSql.split(';').map(s => s.replace(/##SEMI##/g, ';').trim()).filter(s => s.length > 0);
+  for (const stmt of statements) {
+    db.run(stmt + ';', (err) => {
+      if (err && !err.message.includes('already exists')) {
+        console.error('[Darkhan] Schema statement error:', err.message);
+      }
+    });
+  }
+  console.log('[Darkhan] Schema applied.');
+  runSeedIfEmpty(db);
+});
+
+// Initialize Darkhan services (tables guaranteed to exist after serialize)
+const activityLog = new ActivityLog({ db });
+const costTracker = new CostTracker({ db });
+const rateLimiter = new RateLimiter({ config, activityLog });
+const llmService = new LLMService({ rateLimiter, costTracker, activityLog, config });
+const securityService = new SecurityService({ db, activityLog, config, llmService });
+const integrityService = new IntegrityService({ db, activityLog, securityService, config });
+
+// Make services available to routes
+app.locals.db = db;
+app.locals.io = io;
+app.locals.config = config;
+app.locals.activityLog = activityLog;
+app.locals.costTracker = costTracker;
+app.locals.rateLimiter = rateLimiter;
+app.locals.llmService = llmService;
+app.locals.securityService = securityService;
+app.locals.integrityService = integrityService;
+
+// Existing routes (evolved from DARYL)
+const authRoutes = require('./routes/auth');
+const messageRoutes = require('./routes/messages');
+const taskRoutes = require('./routes/tasks');
+const healthRoutes = require('./routes/health');
+const claudeRoutes = require('./routes/claude');
+const approvalsRoutes = require('./routes/approvals');
+
+// Auth middleware for inline route protection
+const { requireAuth: secReqAuth } = require('./middleware/auth');
+
+app.use('/api/auth', authRoutes);
+app.use('/api/messages', messageRoutes);
+app.use('/api/tasks', taskRoutes);
+app.use('/api/health', healthRoutes);
+app.use('/api/claude', claudeRoutes);
+app.use('/api/approvals', approvalsRoutes);
+
+// Vault (Knowledge Base)
+const vaultRoutes = require('./routes/vault');
+app.use('/api/vault', vaultRoutes);
+
+// --- Darkhan API endpoints ---
+
+// Cost tracking
+app.get('/api/costs/daily', secReqAuth, async (req, res) => {
+  try { res.json({ summary: await costTracker.getDailySummary(req.query.date) }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.get('/api/costs/total', secReqAuth, async (req, res) => {
+  try { res.json({ summary: await costTracker.getTotalSummary() }); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Rate limiter status
+app.get('/api/rates', secReqAuth, (req, res) => {
+  res.json(rateLimiter.getSummary());
+});
+
+// Activity log
+app.get('/api/activity', secReqAuth, async (req, res) => {
+  try {
+    const { actor, action, limit, since } = req.query;
+    const events = await activityLog.getRecent({
+      actor, action, limit: parseInt(limit) || 50, since
+    });
+    res.json({ events });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Worker runtime status
+app.get('/api/workers', secReqAuth, (req, res) => {
+  if (app.locals.workerRuntime) {
+    res.json({ workers: app.locals.workerRuntime.getStatus() });
+  } else {
+    res.json({ workers: [], message: 'Worker runtime not initialized' });
+  }
+});
+
+// Security status
+app.get('/api/security', secReqAuth, async (req, res) => {
+  try { res.json(await securityService.getSecuritySummary()); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// LOCKDOWN: Manual trigger (admin only) — requires browser session auth, NOT API key.
+// API keys are readable by agents from the DB, so they cannot be trusted for security-critical actions.
+app.post('/api/security/lockdown', secReqAuth, (req, res) => {
+  // SECURITY: Reject API-key-only auth — agents can read admin keys from the database
+  if (!req.session?.userId) {
+    activityLog.append({
+      actor: req.authenticatedId || 'unknown',
+      action: 'lockdown_session_required',
+      details: JSON.stringify({ reason: 'Attempted lockdown via API key instead of web session' }),
+    });
+    return res.status(403).json({ error: 'Lockdown can only be triggered from the Darkhan web UI by a human admin' });
+  }
+  const userType = req.session.userType || req.authenticatedType;
+  if (userType !== 'human') {
+    return res.status(403).json({ error: 'Only human admins can trigger lockdown' });
+  }
+  const reason = req.body.reason || 'Manual lockdown by admin';
+  const userId = req.session.userId;
+  securityService.triggerLockdown(reason, userId);
+  res.json({ ok: true, lockdown: securityService.getLockdownStatus() });
+});
+
+// UNLOCK: Restore operations — requires browser session auth, NOT API key.
+// This is the critical security control: agents must NEVER be able to lift lockdown,
+// even if they possess a valid admin API key (which they can read from the database).
+app.post('/api/security/unlock', secReqAuth, (req, res) => {
+  // SECURITY: Reject API-key-only auth — agents can read admin keys from the database
+  if (!req.session?.userId) {
+    activityLog.append({
+      actor: req.authenticatedId || 'unknown',
+      action: 'unlock_session_required',
+      details: JSON.stringify({ reason: 'Attempted unlock via API key instead of web session' }),
+    });
+    return res.status(403).json({ error: 'Lockdown can only be lifted from the Darkhan web UI by a human admin' });
+  }
+  const userId = req.session.userId;
+  const userType = req.session.userType || 'unknown';
+  if (userType !== 'human') {
+    return res.status(403).json({ error: 'Only human admins can unlock the system' });
+  }
+  // Verify admin role from session
+  const role = req.session.role;
+  if (role !== 'admin') {
+    return res.status(403).json({ error: 'Only admin users can unlock the system' });
+  }
+
+  // SECURITY: If a lockdown PIN is set, require it for unlock.
+  // This is the final defense — even if an agent somehow gets a session, it can't guess the PIN.
+  const { pin } = req.body;
+  db.get("SELECT value FROM settings WHERE key = 'lockdown_pin_hash'", [], async (err, row) => {
+    if (err) {
+      return res.status(500).json({ error: 'Internal server error' });
+    }
+
+    if (row && row.value) {
+      // PIN is set — require it
+      if (!pin) {
+        return res.status(403).json({ error: 'Lockdown PIN required to unlock', pinRequired: true });
+      }
+      const bcrypt = require('bcrypt');
+      const pinMatch = await bcrypt.compare(pin, row.value);
+      if (!pinMatch) {
+        activityLog.append({
+          actor: userId,
+          action: 'unlock_bad_pin',
+          details: 'Incorrect lockdown PIN provided',
+        });
+        return res.status(403).json({ error: 'Incorrect lockdown PIN' });
+      }
+    }
+
+    const result = securityService.unlock(userId, userType);
+    if (result.success) {
+      res.json({ ok: true, message: result.reason });
+    } else {
+      res.status(403).json({ error: result.reason });
+    }
+  });
+});
+
+// Team members (for dynamic UI)
+app.get('/api/team', secReqAuth, (req, res) => {
+  const members = (config.team?.members || []).map(m => ({
+    id: m.id, name: m.name, type: m.type, role: m.role, channels: m.channels,
+  }));
+  res.json({ members, instance: config.instance });
+});
+
+// Socket.io auth
+io.use((socket, next) => {
+  const apiKey = socket.handshake.auth?.apiKey || socket.handshake.query?.apiKey;
+  const sessionCookie = socket.handshake.headers?.cookie;
+
+  if (apiKey) {
+    db.get('SELECT id, username, role FROM users WHERE api_key = ?', [apiKey], (err, user) => {
+      if (err || !user) return next(new Error('Invalid API key'));
+      socket.user = user;
+      return next();
+    });
+  } else if (sessionCookie) {
+    socket.user = { username: 'web-user', role: 'authenticated' };
+    return next();
+  } else {
+    return next(new Error('Authentication required'));
+  }
+});
+
+io.on('connection', (socket) => {
+  console.log('[Darkhan] Client connected:', socket.id);
+  socket.on('join_channel', (channelId) => { socket.join(channelId); });
+  socket.on('disconnect', () => { console.log('[Darkhan] Client disconnected:', socket.id); });
+});
+
+// Integrity API endpoint (before SPA fallback!)
+app.get('/api/security/integrity', secReqAuth, async (req, res) => {
+  try {
+    const result = await integrityService.verify();
+    res.json({ ...result, baseline: integrityService.getStatus() });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// SPA fallback — must be LAST
+app.get('*', (req, res) => {
+  res.sendFile(path.join(__dirname, '../client/index.html'));
+});
+
+// Start — bind host is configurable via BIND_HOST env var (default: localhost only)
+server.listen(PORT, BIND_HOST, () => {
+  const brandName = config.instance?.brandName || 'Darkhan';
+  console.log(`[Darkhan] ${brandName} Command Center running on ${BIND_HOST}:${PORT}${BIND_HOST === '127.0.0.1' ? ' (localhost only)' : ' (network accessible)'}`);
+
+  // Health monitor
+  const { startMonitor } = require('./services/monitor');
+  startMonitor(db, io);
+
+  // Delay startup sequence to ensure DB schema is fully applied
+  setTimeout(async () => {
+    // INTEGRITY: Establish baseline before loading workers
+    try {
+      await integrityService.establishBaseline();
+      console.log('[Darkhan] Integrity baseline established');
+    } catch (e) {
+      console.error('[Darkhan] Integrity baseline failed:', e.message);
+    }
+
+    // INTEGRITY: Verify BEFORE loading workers (P1-R7)
+    // If any violations found, don't load workers (lockdown will be triggered by verify)
+    try {
+      const preCheck = await integrityService.verify();
+      if (!preCheck.clean) {
+        console.error(`[Darkhan] Integrity violations detected — workers NOT loaded`);
+        activityLog.append({
+          actor: 'system', action: 'workers_blocked',
+          details: JSON.stringify({ violations: preCheck.violations.length }),
+        });
+        // Workers stay unloaded — lockdown is already triggered by verify()
+        return;
+      }
+    } catch (e) {
+      console.warn('[Darkhan] Pre-load integrity check failed:', e.message);
+    }
+
+    // Start worker runtime (only if integrity is clean)
+    const workerRuntime = new WorkerRuntime({
+      llmService, db, io, config, activityLog, costTracker, securityService
+    });
+    app.locals.workerRuntime = workerRuntime;
+
+    try {
+      await workerRuntime.loadAll();
+      console.log(`[Darkhan] Worker runtime: ${workerRuntime.workers.size} worker(s) loaded`);
+      activityLog.append({
+        actor: 'system', action: 'server_started', target: `${BIND_HOST}:${PORT}`,
+        details: JSON.stringify({ brandName, workers: workerRuntime.workers.size, bindHost: BIND_HOST }),
+      });
+    } catch (err) {
+      console.error('[Darkhan] Worker runtime error:', err.message);
+    }
+
+    // INTEGRITY: Periodic verification every 5 minutes
+    setInterval(async () => {
+      try {
+        const result = await integrityService.verify();
+        integrityService._lastCheckResult = {
+          clean: result.clean,
+          violations: result.violations.length,
+          checkedAt: new Date().toISOString(),
+        };
+        if (!result.clean) {
+          console.warn(`[Integrity] ${result.violations.length} violation(s) detected`);
+        }
+      } catch (e) {
+        console.error('[Integrity] Verification error:', e.message);
+      }
+    }, 5 * 60 * 1000); // Every 5 minutes
+
+    // INTEGRITY: Check network binding
+    const networkViolations = integrityService.checkNetworkBinding();
+    if (networkViolations.length > 0) {
+      console.warn('[Integrity] Network binding violations:', networkViolations);
+    }
+  }, 2000);
+});
+
+// Graceful shutdown
+const shutdown = async (signal) => {
+  console.log(`[Darkhan] ${signal} received, shutting down...`);
+  if (app.locals.workerRuntime) await app.locals.workerRuntime.shutdown();
+  server.close();
+  db.close();
+  process.exit(0);
+};
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
