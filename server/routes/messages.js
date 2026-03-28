@@ -77,7 +77,7 @@ router.get('/:id', (req, res) => {
 });
 
 // POST /api/messages
-router.post('/', (req, res) => {
+router.post('/', async (req, res) => {
   const db = req.app.locals.db;
   const io = req.app.locals.io;
 
@@ -143,6 +143,22 @@ router.post('/', (req, res) => {
   const id = uuidv4();
   // Merge security metadata with any existing metadata
   const combinedMetadata = { ...(metadata || {}), ...(securityMetadata || {}) };
+
+  // [DARKHAN CLAIM VERIFICATION] Verify agent claims before saving
+  // Only agent messages get verified — humans can say whatever they want.
+  const claimVerifier = req.app.locals.claimVerifier;
+  if (claimVerifier && userId && userId.startsWith('agent_')) {
+    try {
+      const verification = await claimVerifier.verify(body, userId);
+      if (verification) {
+        combinedMetadata.claimVerification = verification;
+      }
+    } catch (cvErr) {
+      console.warn('[ClaimVerifier] Verification error (non-blocking):', cvErr.message);
+      // Non-blocking — if verification fails, message still goes through
+    }
+  }
+
   const metadataStr = JSON.stringify(combinedMetadata);
 
   db.run(

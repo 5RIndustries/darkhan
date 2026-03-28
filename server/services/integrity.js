@@ -27,8 +27,9 @@ const fs = require('fs');
 const path = require('path');
 
 class IntegrityService {
-  constructor({ db, activityLog, securityService, config }) {
+  constructor({ db, activityLog, securityService, config, secretsDb }) {
     this.db = db;
+    this.secretsDb = secretsDb || null;
     this.activityLog = activityLog;
     this.securityService = securityService;
     this.config = config;
@@ -53,6 +54,7 @@ class IntegrityService {
       'routes/auth.js',
       'routes/vault.js',
       'db/schema.sql',
+      'db/secrets-schema.sql',
       'db/seed.js',
     ];
 
@@ -295,6 +297,23 @@ class IntegrityService {
       }
     } catch (e) { /* */ }
 
+    // Check secrets.db permissions (credential-isolated database)
+    try {
+      const secretsPath = path.join(this.serverDir, 'db', 'secrets.db');
+      if (fs.existsSync(secretsPath)) {
+        const stats = fs.statSync(secretsPath);
+        const mode = (stats.mode & 0o777).toString(8);
+        if (mode !== '600' && mode !== '400') {
+          violations.push({
+            type: 'permission_violation',
+            file: 'secrets.db',
+            severity: 'CRITICAL',
+            detail: `secrets.db has permissions ${mode} — MUST be 600 (contains all credentials)`,
+          });
+        }
+      }
+    } catch (e) { /* */ }
+
     // Log and handle violations
     if (violations.length > 0) {
       this.activityLog.append({
@@ -329,6 +348,7 @@ class IntegrityService {
     const restrictedFiles = [
       { path: path.join(this.serverDir, '.env'), mode: 0o600 },
       { path: path.join(this.serverDir, 'db', 'darkhan.db'), mode: 0o600 },
+      { path: path.join(this.serverDir, 'db', 'secrets.db'), mode: 0o600 },
       { path: path.join(this.serverDir, 'db', 'sessions.db'), mode: 0o600 },
     ];
 
@@ -358,19 +378,56 @@ class IntegrityService {
   /**
    * Hash user table contents — detects modifications, not just additions (P1-R4).
    * Catches: role escalation, type change, password change, new users.
+   * Uses secrets.db for password hashes when available (credential isolation).
    */
   _hashUserTable() {
     return new Promise((resolve) => {
       this.db.all(
-        'SELECT id, role, type, password_hash FROM users ORDER BY id',
+        'SELECT id, role, type FROM users ORDER BY id',
         [],
         (err, rows) => {
           if (err || !rows) return resolve(null);
-          const content = rows.map(r => `${r.id}:${r.role}:${r.type}:${r.password_hash}`).join('|');
-          resolve(crypto.createHash('sha256').update(content).digest('hex'));
+
+          // If secrets.db is available, get password hashes from there
+          if (this.secretsDb) {
+            this.secretsDb.all(
+              'SELECT user_id, password_hash FROM credentials ORDER BY user_id',
+              [],
+              (err2, credRows) => {
+                if (err2 || !credRows) {
+                  // Fall back to main DB password_hash
+                  this._hashUserTableFallback(rows, resolve);
+                  return;
+                }
+                const credMap = {};
+                for (const c of credRows) credMap[c.user_id] = c.password_hash;
+                const content = rows.map(r => `${r.id}:${r.role}:${r.type}:${credMap[r.id] || ''}`).join('|');
+                resolve(crypto.createHash('sha256').update(content).digest('hex'));
+              }
+            );
+          } else {
+            this._hashUserTableFallback(rows, resolve);
+          }
         }
       );
     });
+  }
+
+  /**
+   * Fallback: hash user table using password_hash from main DB (backward compatibility).
+   */
+  _hashUserTableFallback(userRows, resolve) {
+    this.db.all(
+      'SELECT id, password_hash FROM users ORDER BY id',
+      [],
+      (err, pwRows) => {
+        if (err || !pwRows) return resolve(null);
+        const pwMap = {};
+        for (const p of pwRows) pwMap[p.id] = p.password_hash;
+        const content = userRows.map(r => `${r.id}:${r.role}:${r.type}:${pwMap[r.id] || ''}`).join('|');
+        resolve(crypto.createHash('sha256').update(content).digest('hex'));
+      }
+    );
   }
 
   /**

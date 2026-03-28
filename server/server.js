@@ -16,6 +16,7 @@ const { LLMService } = require('./services/llm');
 const { WorkerRuntime } = require('./services/worker-runtime');
 const { SecurityService } = require('./services/security');
 const { IntegrityService } = require('./services/integrity');
+const { ClaimVerifierService } = require('./services/claim-verifier');
 
 // Load config
 const CONFIG_PATH = path.join(__dirname, 'darkhan.config.json');
@@ -40,6 +41,7 @@ const io = new Server(server, {
 const PORT = process.env.PORT || config.instance?.port || 3001;
 const BIND_HOST = process.env.BIND_HOST || '127.0.0.1';
 const DB_PATH = path.join(__dirname, 'db', 'darkhan.db');
+const SECRETS_DB_PATH = path.join(__dirname, 'db', 'secrets.db');
 
 if (!process.env.SESSION_SECRET) {
   console.warn('[Darkhan] WARNING: SESSION_SECRET not set. Using fallback.');
@@ -99,22 +101,44 @@ console.log('[Darkhan] Connected to database.');
 db.run('PRAGMA journal_mode=WAL');
 db.run('PRAGMA busy_timeout=5000');
 
-// Apply schema synchronously via serialize
-db.serialize(() => {
-  const schema = fs.readFileSync(path.join(__dirname, 'db', 'schema.sql'), 'utf8');
-  // Split on semicolons that are NOT inside BEGIN...END blocks (trigger bodies)
-  // First, replace semicolons inside triggers with a placeholder
+// Secrets database — credential isolation (API keys, password hashes, PINs)
+// Workers NEVER receive this handle. Only auth middleware and routes get access.
+const secretsDb = new sqlite3.Database(SECRETS_DB_PATH);
+console.log('[Darkhan] Connected to secrets database.');
+secretsDb.run('PRAGMA journal_mode=WAL');
+secretsDb.run('PRAGMA busy_timeout=5000');
+
+// Helper: apply SQL schema to a database, handling trigger bodies
+function applySchema(database, schemaPath, label) {
+  const schema = fs.readFileSync(schemaPath, 'utf8');
   const safeSql = schema.replace(/BEGIN\s[\s\S]*?END;/gm, (match) => match.replace(/;/g, '##SEMI##'));
   const statements = safeSql.split(';').map(s => s.replace(/##SEMI##/g, ';').trim()).filter(s => s.length > 0);
   for (const stmt of statements) {
-    db.run(stmt + ';', (err) => {
+    database.run(stmt + ';', (err) => {
       if (err && !err.message.includes('already exists')) {
-        console.error('[Darkhan] Schema statement error:', err.message);
+        console.error(`[Darkhan] ${label} schema statement error:`, err.message);
       }
     });
   }
-  console.log('[Darkhan] Schema applied.');
+  console.log(`[Darkhan] ${label} schema applied.`);
+}
+
+// Apply schemas synchronously via serialize
+db.serialize(() => {
+  applySchema(db, path.join(__dirname, 'db', 'schema.sql'), 'Main');
   runSeedIfEmpty(db);
+});
+
+secretsDb.serialize(() => {
+  applySchema(secretsDb, path.join(__dirname, 'db', 'secrets-schema.sql'), 'Secrets');
+
+  // Enforce 600 permissions on secrets.db
+  try {
+    fs.chmodSync(SECRETS_DB_PATH, 0o600);
+    console.log('[Darkhan] secrets.db permissions set to 600');
+  } catch (e) {
+    console.warn('[Darkhan] Could not set secrets.db permissions:', e.message);
+  }
 });
 
 // Initialize Darkhan services (tables guaranteed to exist after serialize)
@@ -123,10 +147,13 @@ const costTracker = new CostTracker({ db });
 const rateLimiter = new RateLimiter({ config, activityLog });
 const llmService = new LLMService({ rateLimiter, costTracker, activityLog, config });
 const securityService = new SecurityService({ db, activityLog, config, llmService });
-const integrityService = new IntegrityService({ db, activityLog, securityService, config });
+const integrityService = new IntegrityService({ db, activityLog, securityService, config, secretsDb });
+const vaultPath = (config.vault?.path || '~/Documents/darkhan-vault').replace('~', process.env.HOME);
+const claimVerifier = new ClaimVerifierService({ vaultPath, db, activityLog });
 
 // Make services available to routes
 app.locals.db = db;
+app.locals.secretsDb = secretsDb;  // Credential-isolated DB — NOT passed to workers
 app.locals.io = io;
 app.locals.config = config;
 app.locals.activityLog = activityLog;
@@ -135,6 +162,7 @@ app.locals.rateLimiter = rateLimiter;
 app.locals.llmService = llmService;
 app.locals.securityService = securityService;
 app.locals.integrityService = integrityService;
+app.locals.claimVerifier = claimVerifier;
 
 // Existing routes (evolved from DARYL)
 const authRoutes = require('./routes/auth');
@@ -251,34 +279,46 @@ app.post('/api/security/unlock', secReqAuth, (req, res) => {
   // SECURITY: If a lockdown PIN is set, require it for unlock.
   // This is the final defense — even if an agent somehow gets a session, it can't guess the PIN.
   const { pin } = req.body;
-  db.get("SELECT value FROM settings WHERE key = 'lockdown_pin_hash'", [], async (err, row) => {
-    if (err) {
-      return res.status(500).json({ error: 'Internal server error' });
-    }
 
-    if (row && row.value) {
-      // PIN is set — require it
-      if (!pin) {
-        return res.status(403).json({ error: 'Lockdown PIN required to unlock', pinRequired: true });
+  // Check secrets.db first, fall back to main settings table for backward compatibility
+  const checkPin = (pinRow) => {
+    return async () => {
+      if (pinRow && pinRow.value) {
+        // PIN is set — require it
+        if (!pin) {
+          return res.status(403).json({ error: 'Lockdown PIN required to unlock', pinRequired: true });
+        }
+        const bcrypt = require('bcrypt');
+        const pinMatch = await bcrypt.compare(pin, pinRow.value);
+        if (!pinMatch) {
+          activityLog.append({
+            actor: userId,
+            action: 'unlock_bad_pin',
+            details: 'Incorrect lockdown PIN provided',
+          });
+          return res.status(403).json({ error: 'Incorrect lockdown PIN' });
+        }
       }
-      const bcrypt = require('bcrypt');
-      const pinMatch = await bcrypt.compare(pin, row.value);
-      if (!pinMatch) {
-        activityLog.append({
-          actor: userId,
-          action: 'unlock_bad_pin',
-          details: 'Incorrect lockdown PIN provided',
-        });
-        return res.status(403).json({ error: 'Incorrect lockdown PIN' });
-      }
-    }
 
-    const result = securityService.unlock(userId, userType);
-    if (result.success) {
-      res.json({ ok: true, message: result.reason });
-    } else {
-      res.status(403).json({ error: result.reason });
+      const result = securityService.unlock(userId, userType);
+      if (result.success) {
+        res.json({ ok: true, message: result.reason });
+      } else {
+        res.status(403).json({ error: result.reason });
+      }
+    };
+  };
+
+  secretsDb.get("SELECT value FROM secret_settings WHERE key = 'lockdown_pin_hash'", [], async (err, row) => {
+    if (err || !row) {
+      // Backward compatibility: fall back to main settings table
+      db.get("SELECT value FROM settings WHERE key = 'lockdown_pin_hash'", [], async (err2, row2) => {
+        if (err2) return res.status(500).json({ error: 'Internal server error' });
+        await checkPin(row2)();
+      });
+      return;
     }
+    await checkPin(row)();
   });
 });
 
@@ -296,10 +336,22 @@ io.use((socket, next) => {
   const sessionCookie = socket.handshake.headers?.cookie;
 
   if (apiKey) {
-    db.get('SELECT id, username, role FROM users WHERE api_key = ?', [apiKey], (err, user) => {
-      if (err || !user) return next(new Error('Invalid API key'));
-      socket.user = user;
-      return next();
+    // Look up API key in secrets.db (credential-isolated), then join with users table for role info
+    secretsDb.get('SELECT user_id FROM credentials WHERE api_key = ?', [apiKey], (err, cred) => {
+      if (err || !cred) {
+        // Backward compatibility: fall back to users table if secrets.db doesn't have this key yet
+        db.get('SELECT id, username, role FROM users WHERE api_key = ?', [apiKey], (err2, user2) => {
+          if (err2 || !user2) return next(new Error('Invalid API key'));
+          socket.user = user2;
+          return next();
+        });
+        return;
+      }
+      db.get('SELECT id, username, role FROM users WHERE id = ?', [cred.user_id], (err2, user) => {
+        if (err2 || !user) return next(new Error('Invalid API key — user not found'));
+        socket.user = user;
+        return next();
+      });
     });
   } else if (sessionCookie) {
     socket.user = { username: 'web-user', role: 'authenticated' };
@@ -412,6 +464,7 @@ const shutdown = async (signal) => {
   if (app.locals.workerRuntime) await app.locals.workerRuntime.shutdown();
   server.close();
   db.close();
+  secretsDb.close();
   process.exit(0);
 };
 process.on('SIGTERM', () => shutdown('SIGTERM'));

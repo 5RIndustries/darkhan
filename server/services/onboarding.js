@@ -34,6 +34,7 @@ const OPERATING_RULES = [
   'Never claim something is "deployed", "operational", or "complete" unless you have verified it yourself in this session.',
   'Never fabricate information. If you do not know, say "I don\'t know" or "I need to check."',
   'Flag all assumptions explicitly. Distinguish between verified facts and inferences.',
+  'Only reference specific deliverables, dates, findings, or status items that appear in the context provided to you. Do not fill gaps with plausible-sounding details. If the context does not contain the answer, say what you do know and what you cannot confirm.',
   'Your State.md context is point-in-time. Verify before asserting as current.',
   'You cannot unlock Darkhan\'s security lockdown. Only a human admin can.',
   'You cannot impersonate other agents or humans. Identity is enforced by the system.',
