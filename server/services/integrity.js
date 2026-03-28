@@ -1,0 +1,420 @@
+/**
+ * Darkhan — File Integrity & External Threat Defense
+ *
+ * This service protects Darkhan from EXTERNAL threats — not just prompt injection
+ * through messages, but direct filesystem access, code tampering, database
+ * manipulation, and unauthorized configuration changes.
+ *
+ * THREAT MODEL:
+ * 1. Another Claude Code session with filesystem access modifies Darkhan code
+ * 2. A rogue agent with shell access tampers with config/code/database
+ * 3. Direct sqlite3 CLI access adds unauthorized users or modifies data
+ * 4. .env file read by another process to steal API keys
+ * 5. Worker files replaced with malicious code
+ * 6. Config modified to add rogue team members or weaken security
+ *
+ * DEFENSES:
+ * - File integrity hashing (SHA-256) of all critical files
+ * - Periodic integrity verification (every 5 minutes)
+ * - Database user count monitoring (detect unauthorized user additions)
+ * - Config checksum validation (detect tampering)
+ * - File permission enforcement (tighten on startup)
+ * - Tamper alerts posted to #alerts and triggers lockdown
+ */
+
+const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
+
+class IntegrityService {
+  constructor({ db, activityLog, securityService, config }) {
+    this.db = db;
+    this.activityLog = activityLog;
+    this.securityService = securityService;
+    this.config = config;
+
+    // Baseline hashes — computed on startup, verified periodically
+    this.baselineHashes = {};
+    this.baselineUserCount = 0;
+    this.baselineConfigHash = null;
+
+    // Critical files to monitor
+    this.serverDir = path.join(__dirname, '..');
+    this.criticalFiles = [
+      'server.js',
+      'darkhan.config.json',
+      'middleware/auth.js',
+      'services/security.js',
+      'services/integrity.js',
+      'services/auto-responder.js',
+      'services/worker-runtime.js',
+      'services/llm.js',
+      'routes/messages.js',
+      'routes/auth.js',
+      'routes/vault.js',
+      'db/schema.sql',
+      'db/seed.js',
+    ];
+
+    // Worker files — monitored separately since they can be added
+    this.workerDir = path.join(this.serverDir, 'workers');
+
+    // External baseline file — stored OUTSIDE the Darkhan directory
+    // so tampering with Darkhan code doesn't affect the baseline reference
+    this.externalBaselinePath = path.join(process.env.HOME, '.darkhan-integrity-baseline.json');
+
+    console.log('[Integrity] Service initializing...');
+  }
+
+  /**
+   * Compute SHA-256 hash of a file.
+   */
+  _hashFile(filePath) {
+    try {
+      const content = fs.readFileSync(filePath);
+      return crypto.createHash('sha256').update(content).digest('hex');
+    } catch (e) {
+      return null; // File doesn't exist or can't be read
+    }
+  }
+
+  /**
+   * Establish baseline — call once on clean startup.
+   * Records hashes of all critical files and current user count.
+   */
+  async establishBaseline() {
+    console.log('[Integrity] Establishing baseline...');
+
+    // Hash all critical files
+    for (const file of this.criticalFiles) {
+      const fullPath = path.join(this.serverDir, file);
+      const hash = this._hashFile(fullPath);
+      if (hash) {
+        this.baselineHashes[file] = hash;
+      }
+    }
+
+    // Hash worker files
+    if (fs.existsSync(this.workerDir)) {
+      const workers = fs.readdirSync(this.workerDir).filter(f => f.endsWith('.js'));
+      for (const w of workers) {
+        const fullPath = path.join(this.workerDir, w);
+        const hash = this._hashFile(fullPath);
+        if (hash) {
+          this.baselineHashes[`workers/${w}`] = hash;
+        }
+      }
+    }
+
+    // Record config hash
+    this.baselineConfigHash = this._hashFile(path.join(this.serverDir, 'darkhan.config.json'));
+
+    // Record user count from database
+    this.baselineUserCount = await this._getUserCount();
+
+    // Record .env hash (detect API key theft via file modification)
+    const envHash = this._hashFile(path.join(this.serverDir, '.env'));
+    if (envHash) this.baselineHashes['.env'] = envHash;
+
+    this.activityLog.append({
+      actor: 'darkhan_integrity',
+      action: 'baseline_established',
+      details: JSON.stringify({
+        files: Object.keys(this.baselineHashes).length,
+        users: this.baselineUserCount,
+      }),
+    });
+
+    // Record user table hash (detect modifications, not just count changes — P1-R4)
+    this.baselineUserHash = await this._hashUserTable();
+
+    console.log(`[Integrity] Baseline: ${Object.keys(this.baselineHashes).length} files hashed, ${this.baselineUserCount} users`);
+
+    // Save baseline EXTERNALLY (outside Darkhan directory — P0-R2)
+    // On first run: save the baseline
+    // On subsequent runs: compare against external baseline FIRST
+    if (fs.existsSync(this.externalBaselinePath)) {
+      // Compare against external baseline
+      try {
+        const external = JSON.parse(fs.readFileSync(this.externalBaselinePath, 'utf8'));
+        const extHashes = external.hashes || {};
+
+        // Check if integrity.js itself has changed since external baseline
+        const integrityKey = 'services/integrity.js';
+        if (extHashes[integrityKey] && extHashes[integrityKey] !== this.baselineHashes[integrityKey]) {
+          console.error('[Integrity] *** CRITICAL: integrity.js has been modified since external baseline ***');
+          this.activityLog.append({
+            actor: 'darkhan_integrity',
+            action: 'INTEGRITY_SERVICE_TAMPERED',
+            details: JSON.stringify({
+              expected: extHashes[integrityKey]?.substring(0, 12),
+              current: this.baselineHashes[integrityKey]?.substring(0, 12),
+            }),
+          });
+          // Auto-lockdown — the verifier itself has been tampered with
+          if (this.securityService) {
+            this.securityService.triggerLockdown(
+              'CRITICAL: integrity.js modified since last known-good state — possible attempt to neuter integrity monitoring',
+              'darkhan_integrity'
+            );
+          }
+        }
+
+        // Check security.js
+        const secKey = 'services/security.js';
+        if (extHashes[secKey] && extHashes[secKey] !== this.baselineHashes[secKey]) {
+          console.error('[Integrity] *** CRITICAL: security.js has been modified since external baseline ***');
+          if (this.securityService) {
+            this.securityService.triggerLockdown(
+              'CRITICAL: security.js modified since last known-good state',
+              'darkhan_integrity'
+            );
+          }
+        }
+      } catch (e) {
+        console.warn('[Integrity] Could not read external baseline:', e.message);
+      }
+    }
+
+    // Save/update external baseline
+    try {
+      const baselineData = {
+        hashes: this.baselineHashes,
+        userCount: this.baselineUserCount,
+        userHash: this.baselineUserHash,
+        createdAt: new Date().toISOString(),
+      };
+      fs.writeFileSync(this.externalBaselinePath, JSON.stringify(baselineData, null, 2), { mode: 0o600 });
+      console.log(`[Integrity] External baseline saved to ${this.externalBaselinePath}`);
+    } catch (e) {
+      console.warn('[Integrity] Could not save external baseline:', e.message);
+    }
+
+    // Enforce file permissions
+    this._enforcePermissions();
+
+    return {
+      files: Object.keys(this.baselineHashes).length,
+      users: this.baselineUserCount,
+    };
+  }
+
+  /**
+   * Verify integrity — compare current state against baseline.
+   * Returns { clean: boolean, violations: [] }
+   */
+  async verify() {
+    const violations = [];
+
+    // Check critical file hashes
+    for (const [file, expectedHash] of Object.entries(this.baselineHashes)) {
+      const fullPath = file.startsWith('workers/')
+        ? path.join(this.workerDir, file.replace('workers/', ''))
+        : path.join(this.serverDir, file);
+
+      const currentHash = this._hashFile(fullPath);
+
+      if (!currentHash) {
+        violations.push({
+          type: 'file_deleted',
+          file,
+          severity: 'CRITICAL',
+          detail: `Critical file ${file} has been deleted`,
+        });
+      } else if (currentHash !== expectedHash) {
+        violations.push({
+          type: 'file_modified',
+          file,
+          severity: 'CRITICAL', // ALL file modifications are critical (P1-R6: .env elevated from HIGH)
+          detail: `File ${file} has been modified since startup`,
+          expectedHash: expectedHash.substring(0, 12) + '...',
+          currentHash: currentHash.substring(0, 12) + '...',
+        });
+      }
+    }
+
+    // Check for new files in workers/ directory (unauthorized worker addition)
+    if (fs.existsSync(this.workerDir)) {
+      const currentWorkers = fs.readdirSync(this.workerDir).filter(f => f.endsWith('.js'));
+      for (const w of currentWorkers) {
+        if (!this.baselineHashes[`workers/${w}`]) {
+          violations.push({
+            type: 'unauthorized_worker',
+            file: `workers/${w}`,
+            severity: 'CRITICAL',
+            detail: `Unauthorized worker file added: ${w}`,
+          });
+        }
+      }
+    }
+
+    // Check user table — both count AND content hash (P1-R4)
+    const currentUserCount = await this._getUserCount();
+    if (currentUserCount !== this.baselineUserCount) {
+      violations.push({
+        type: 'unauthorized_user',
+        severity: 'CRITICAL',
+        detail: `User count changed from ${this.baselineUserCount} to ${currentUserCount}`,
+      });
+    }
+
+    const currentUserHash = await this._hashUserTable();
+    if (currentUserHash !== this.baselineUserHash) {
+      violations.push({
+        type: 'user_table_modified',
+        severity: 'CRITICAL',
+        detail: 'User table contents modified — possible role escalation, type change, or password change',
+      });
+    }
+
+    // Check config hash
+    const currentConfigHash = this._hashFile(path.join(this.serverDir, 'darkhan.config.json'));
+    if (currentConfigHash !== this.baselineConfigHash) {
+      violations.push({
+        type: 'config_tampered',
+        file: 'darkhan.config.json',
+        severity: 'CRITICAL',
+        detail: 'Configuration file modified since startup',
+      });
+    }
+
+    // Check .env permissions
+    try {
+      const envPath = path.join(this.serverDir, '.env');
+      if (fs.existsSync(envPath)) {
+        const stats = fs.statSync(envPath);
+        const mode = (stats.mode & 0o777).toString(8);
+        if (mode !== '600' && mode !== '400') {
+          violations.push({
+            type: 'permission_violation',
+            file: '.env',
+            severity: 'HIGH',
+            detail: `.env has permissions ${mode} — should be 600 or 400`,
+          });
+        }
+      }
+    } catch (e) { /* */ }
+
+    // Log and handle violations
+    if (violations.length > 0) {
+      this.activityLog.append({
+        actor: 'darkhan_integrity',
+        action: 'INTEGRITY_VIOLATION',
+        details: JSON.stringify({
+          violationCount: violations.length,
+          critical: violations.filter(v => v.severity === 'CRITICAL').length,
+          violations: violations.map(v => ({ type: v.type, file: v.file, severity: v.severity })),
+        }),
+      });
+
+      console.error(`[Integrity] *** ${violations.length} VIOLATION(S) DETECTED ***`);
+      violations.forEach(v => console.error(`  [${v.severity}] ${v.detail}`));
+
+      // Auto-lockdown on any CRITICAL violation
+      const hasCritical = violations.some(v => v.severity === 'CRITICAL');
+      if (hasCritical && this.securityService) {
+        const reasons = violations.filter(v => v.severity === 'CRITICAL').map(v => v.detail).join('; ');
+        this.securityService.triggerLockdown(`Integrity violation: ${reasons}`, 'darkhan_integrity');
+      }
+    }
+
+    return { clean: violations.length === 0, violations };
+  }
+
+  /**
+   * Enforce file permissions on critical files.
+   * Called on startup to tighten permissions.
+   */
+  _enforcePermissions() {
+    const restrictedFiles = [
+      { path: path.join(this.serverDir, '.env'), mode: 0o600 },
+      { path: path.join(this.serverDir, 'db', 'darkhan.db'), mode: 0o600 },
+      { path: path.join(this.serverDir, 'db', 'sessions.db'), mode: 0o600 },
+    ];
+
+    for (const { path: filePath, mode } of restrictedFiles) {
+      try {
+        if (fs.existsSync(filePath)) {
+          fs.chmodSync(filePath, mode);
+          console.log(`[Integrity] Permissions set: ${path.basename(filePath)} → ${mode.toString(8)}`);
+        }
+      } catch (e) {
+        console.warn(`[Integrity] Could not set permissions on ${filePath}: ${e.message}`);
+      }
+    }
+  }
+
+  /**
+   * Get current user count from database.
+   */
+  _getUserCount() {
+    return new Promise((resolve) => {
+      this.db.get('SELECT COUNT(*) as count FROM users', [], (err, row) => {
+        resolve(err ? 0 : row.count);
+      });
+    });
+  }
+
+  /**
+   * Hash user table contents — detects modifications, not just additions (P1-R4).
+   * Catches: role escalation, type change, password change, new users.
+   */
+  _hashUserTable() {
+    return new Promise((resolve) => {
+      this.db.all(
+        'SELECT id, role, type, password_hash FROM users ORDER BY id',
+        [],
+        (err, rows) => {
+          if (err || !rows) return resolve(null);
+          const content = rows.map(r => `${r.id}:${r.role}:${r.type}:${r.password_hash}`).join('|');
+          resolve(crypto.createHash('sha256').update(content).digest('hex'));
+        }
+      );
+    });
+  }
+
+  /**
+   * Check network binding — verify server is only listening on localhost.
+   */
+  checkNetworkBinding() {
+    const violations = [];
+    const configuredBindHost = process.env.BIND_HOST || '127.0.0.1';
+
+    // If BIND_HOST is explicitly set to 0.0.0.0, network binding is intentional
+    // (e.g., for federated workers on other nodes via Tailscale)
+    if (configuredBindHost === '0.0.0.0') {
+      return violations; // No violation — admin explicitly configured network access
+    }
+
+    // Otherwise, verify server is bound to localhost only
+    try {
+      const { execSync } = require('child_process');
+      const result = execSync(`lsof -i :${this.config.instance?.port || 3001} -P -n`, { encoding: 'utf8', timeout: 5000 });
+
+      if (result.includes('*:') || result.includes('0.0.0.0:')) {
+        violations.push({
+          type: 'network_exposure',
+          severity: 'HIGH',
+          detail: 'Darkhan is listening on all interfaces (0.0.0.0) without BIND_HOST being set — potential unauthorized exposure',
+        });
+      }
+    } catch (e) {
+      // lsof might fail — not a violation
+    }
+
+    return violations;
+  }
+
+  /**
+   * Get integrity status for dashboard.
+   */
+  getStatus() {
+    return {
+      baselineFiles: Object.keys(this.baselineHashes).length,
+      baselineUsers: this.baselineUserCount,
+      lastCheck: this._lastCheckResult || null,
+    };
+  }
+}
+
+module.exports = { IntegrityService };
