@@ -13,6 +13,8 @@ const fs = require('fs');
 const path = require('path');
 const { Glob } = require('glob');
 const { OnboardingService } = require('./onboarding');
+const { EvidenceService } = require('./evidence');
+const { ClaimVerifierService } = require('./claim-verifier');
 
 class WorkerRuntime {
   constructor({ llmService, db, io, config, activityLog, costTracker, securityService }) {
@@ -31,6 +33,16 @@ class WorkerRuntime {
       config,
       db,
       vaultPath: this.vaultPath,
+    });
+
+    // Evidence service — structured evidence-based reporting for all workers
+    this.evidenceService = new EvidenceService({ activityLog });
+
+    // Claim verifier — tags agent messages with evidence of whether claims check out
+    this.claimVerifier = new ClaimVerifierService({
+      vaultPath: this.vaultPath,
+      db,
+      activityLog,
     });
 
     // Listener registry: pattern -> [{ workerId, listenerName, handler, timeout }]
@@ -286,6 +298,9 @@ class WorkerRuntime {
       // Onboarding brief — workers can access the full brief or individual sections
       onboarding,
 
+      // Evidence service — structured evidence-based reporting
+      evidence: self.evidenceService,
+
       // LLM interface (rate-limited, cost-tracked, security-validated)
       // The identity preamble is automatically prepended to every system message.
       llm: {
@@ -442,15 +457,30 @@ class WorkerRuntime {
 
   // --- Internal helpers ---
 
-  _postToChannel(channelId, body, fromUser, opts = {}) {
+  async _postToChannel(channelId, body, fromUser, opts = {}) {
     const { v4: uuidv4 } = require('uuid');
     const id = uuidv4();
+
+    // [CLAIM VERIFICATION] Verify agent claims before saving
+    let metadataStr = null;
+    if (this.claimVerifier && fromUser && fromUser.startsWith('agent_')) {
+      try {
+        const verification = await this.claimVerifier.verify(body, fromUser);
+        if (verification) {
+          metadataStr = JSON.stringify({ claimVerification: verification });
+        }
+      } catch (e) {
+        // Non-blocking — verification failure does not prevent posting
+        console.warn('[WorkerRuntime] Claim verification error:', e.message);
+      }
+    }
+
     this.db.run(
-      'INSERT INTO messages (id, channel_id, from_user, body, priority, type) VALUES (?, ?, ?, ?, ?, ?)',
-      [id, channelId, fromUser, body, opts.priority || 'normal', opts.type || 'message'],
+      'INSERT INTO messages (id, channel_id, from_user, body, priority, type, metadata) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [id, channelId, fromUser, body, opts.priority || 'normal', opts.type || 'message', metadataStr],
       (err) => {
         if (err) return console.error('[WorkerRuntime] Post failed:', err.message);
-        const message = { id, channel_id: channelId, from_user: fromUser, body, type: 'message', created_at: new Date().toISOString() };
+        const message = { id, channel_id: channelId, from_user: fromUser, body, type: 'message', created_at: new Date().toISOString(), metadata: metadataStr ? JSON.parse(metadataStr) : null };
         if (this.io) this.io.to(channelId).emit('new_message', message);
       }
     );

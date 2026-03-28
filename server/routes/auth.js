@@ -18,8 +18,11 @@ router.post('/login', (req, res) => {
   }
 
   const db = req.app.locals.db;
+  const secretsDb = req.app.locals.secretsDb;
+
+  // Look up user by username (non-sensitive data from main DB)
   db.get(
-    'SELECT id, username, password_hash, role FROM users WHERE username = ?',
+    'SELECT id, username, role FROM users WHERE username = ?',
     [username],
     async (err, user) => {
       if (err) {
@@ -31,7 +34,33 @@ router.post('/login', (req, res) => {
       }
 
       try {
-        const match = await bcrypt.compare(password, user.password_hash);
+        // Get password hash from secrets.db, fall back to users table for backward compatibility
+        let passwordHash = null;
+
+        if (secretsDb) {
+          const cred = await new Promise((resolve, reject) => {
+            secretsDb.get('SELECT password_hash FROM credentials WHERE user_id = ?', [user.id], (err2, row) => {
+              if (err2) reject(err2); else resolve(row);
+            });
+          });
+          if (cred) passwordHash = cred.password_hash;
+        }
+
+        // Backward compatibility: fall back to users table
+        if (!passwordHash) {
+          const fallback = await new Promise((resolve, reject) => {
+            db.get('SELECT password_hash FROM users WHERE id = ?', [user.id], (err2, row) => {
+              if (err2) reject(err2); else resolve(row);
+            });
+          });
+          if (fallback) passwordHash = fallback.password_hash;
+        }
+
+        if (!passwordHash) {
+          return res.status(401).json({ error: 'Invalid credentials' });
+        }
+
+        const match = await bcrypt.compare(password, passwordHash);
         if (!match) {
           return res.status(401).json({ error: 'Invalid credentials' });
         }
@@ -103,31 +132,72 @@ router.post('/change-password', requireAuth, async (req, res) => {
   }
 
   const db = req.app.locals.db;
+  const secretsDb = req.app.locals.secretsDb;
   const userId = req.session.userId;
 
-  db.get('SELECT password_hash FROM users WHERE id = ?', [userId], async (err, user) => {
-    if (err || !user) {
-      return res.status(500).json({ error: 'Could not retrieve user' });
-    }
+  // Get current password hash from secrets.db, fall back to users table
+  let passwordHash = null;
+  let usingSecretsDb = false;
 
-    try {
-      const match = await bcrypt.compare(currentPassword, user.password_hash);
-      if (!match) {
-        return res.status(401).json({ error: 'Current password is incorrect' });
-      }
-
-      const newHash = await bcrypt.hash(newPassword, 12);
-      db.run('UPDATE users SET password_hash = ? WHERE id = ?', [newHash, userId], function (updateErr) {
-        if (updateErr) {
-          return res.status(500).json({ error: 'Failed to update password' });
-        }
-        console.log(`[Auth] Password changed for ${userId}`);
-        return res.json({ ok: true, message: 'Password changed successfully' });
+  try {
+    if (secretsDb) {
+      const cred = await new Promise((resolve, reject) => {
+        secretsDb.get('SELECT password_hash FROM credentials WHERE user_id = ?', [userId], (err, row) => {
+          if (err) reject(err); else resolve(row);
+        });
       });
-    } catch (e) {
-      return res.status(500).json({ error: 'Internal server error' });
+      if (cred) {
+        passwordHash = cred.password_hash;
+        usingSecretsDb = true;
+      }
     }
-  });
+
+    // Backward compatibility
+    if (!passwordHash) {
+      const fallback = await new Promise((resolve, reject) => {
+        db.get('SELECT password_hash FROM users WHERE id = ?', [userId], (err, row) => {
+          if (err) reject(err); else resolve(row);
+        });
+      });
+      if (fallback) passwordHash = fallback.password_hash;
+    }
+
+    if (!passwordHash) {
+      return res.status(500).json({ error: 'Could not retrieve user credentials' });
+    }
+
+    const match = await bcrypt.compare(currentPassword, passwordHash);
+    if (!match) {
+      return res.status(401).json({ error: 'Current password is incorrect' });
+    }
+
+    const newHash = await bcrypt.hash(newPassword, 12);
+
+    // Update in secrets.db (primary) and users table (backward compatibility)
+    if (secretsDb) {
+      await new Promise((resolve, reject) => {
+        secretsDb.run(
+          `INSERT INTO credentials (user_id, password_hash) VALUES (?, ?)
+           ON CONFLICT(user_id) DO UPDATE SET password_hash = ?, updated_at = CURRENT_TIMESTAMP`,
+          [userId, newHash, newHash],
+          function (err) { if (err) reject(err); else resolve(this); }
+        );
+      });
+    }
+
+    // Also update users table for backward compatibility
+    await new Promise((resolve, reject) => {
+      db.run('UPDATE users SET password_hash = ? WHERE id = ?', [newHash, userId], function (err) {
+        if (err) reject(err); else resolve(this);
+      });
+    });
+
+    console.log(`[Auth] Password changed for ${userId}`);
+    return res.json({ ok: true, message: 'Password changed successfully' });
+  } catch (e) {
+    console.error('Password change error:', e.message);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
 // POST /api/auth/set-lockdown-pin — set/change the lockdown PIN (session auth, admin only)
@@ -144,9 +214,24 @@ router.post('/set-lockdown-pin', requireAuth, async (req, res) => {
   }
 
   const db = req.app.locals.db;
+  const secretsDb = req.app.locals.secretsDb;
   const pinHash = await bcrypt.hash(pin, 12);
 
-  // Store PIN hash in a settings table
+  // Store PIN hash in secrets.db (primary) and main settings table (backward compatibility)
+  if (secretsDb) {
+    secretsDb.run(
+      `INSERT INTO secret_settings (key, value) VALUES ('lockdown_pin_hash', ?)
+       ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = CURRENT_TIMESTAMP`,
+      [pinHash, pinHash],
+      function (err) {
+        if (err) {
+          console.error('[Auth] Failed to save PIN to secrets.db:', err.message);
+        }
+      }
+    );
+  }
+
+  // Also store in main settings table for backward compatibility
   db.run(
     `INSERT INTO settings (key, value) VALUES ('lockdown_pin_hash', ?)
      ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = CURRENT_TIMESTAMP`,

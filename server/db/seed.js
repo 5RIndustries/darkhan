@@ -12,7 +12,9 @@ const fs = require('fs');
 const path = require('path');
 
 const DB_PATH = path.join(__dirname, 'darkhan.db');
+const SECRETS_DB_PATH = path.join(__dirname, 'secrets.db');
 const SCHEMA_PATH = path.join(__dirname, 'schema.sql');
+const SECRETS_SCHEMA_PATH = path.join(__dirname, 'secrets-schema.sql');
 const CONFIG_PATH = path.join(__dirname, '..', 'darkhan.config.json');
 
 function generateApiKey(prefix = 'dk') {
@@ -33,6 +35,8 @@ async function seed() {
   }
 
   const db = new sqlite3.Database(DB_PATH);
+  const secretsDb = new sqlite3.Database(SECRETS_DB_PATH);
+
   const run = (sql, params = []) =>
     new Promise((resolve, reject) => db.run(sql, params, function (err) {
       if (err) reject(err); else resolve(this);
@@ -41,13 +45,35 @@ async function seed() {
     new Promise((resolve, reject) => db.get(sql, params, (err, row) => {
       if (err) reject(err); else resolve(row);
     }));
+  const secretsRun = (sql, params = []) =>
+    new Promise((resolve, reject) => secretsDb.run(sql, params, function (err) {
+      if (err) reject(err); else resolve(this);
+    }));
+  const secretsGet = (sql, params = []) =>
+    new Promise((resolve, reject) => secretsDb.get(sql, params, (err, row) => {
+      if (err) reject(err); else resolve(row);
+    }));
 
-  // Apply schema (CREATE IF NOT EXISTS is safe to re-run)
+  // Apply schemas (CREATE IF NOT EXISTS is safe to re-run)
   const schema = fs.readFileSync(SCHEMA_PATH, 'utf8');
   await new Promise((resolve, reject) => {
     db.exec(schema, (err) => { if (err) reject(err); else resolve(); });
   });
-  console.log('✓ Schema applied.');
+  console.log('✓ Main schema applied.');
+
+  const secretsSchema = fs.readFileSync(SECRETS_SCHEMA_PATH, 'utf8');
+  await new Promise((resolve, reject) => {
+    secretsDb.exec(secretsSchema, (err) => { if (err) reject(err); else resolve(); });
+  });
+  console.log('✓ Secrets schema applied.');
+
+  // Set secrets.db permissions to 600 (owner-only)
+  try {
+    fs.chmodSync(SECRETS_DB_PATH, 0o600);
+    console.log('✓ secrets.db permissions set to 600');
+  } catch (e) {
+    console.warn('⚠ Could not set secrets.db permissions:', e.message);
+  }
 
   // Seed channels from config
   const channels = config.channels || [];
@@ -87,12 +113,21 @@ async function seed() {
       console.log(`✓ Agent "${member.name}" created.`);
     }
 
+    // Write non-sensitive user data to main darkhan.db
     await run(
       `INSERT OR IGNORE INTO users (id, username, password_hash, role, type, display_name, api_key, notification_prefs)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       [member.id, member.name.toLowerCase(), passwordHash, member.role, member.type,
        member.name, apiKey, member.notifications ? JSON.stringify(member.notifications) : null]
     );
+
+    // Write credentials to secrets.db (credential-isolated database)
+    await secretsRun(
+      `INSERT OR IGNORE INTO credentials (user_id, password_hash, api_key)
+       VALUES (?, ?, ?)`,
+      [member.id, passwordHash, apiKey]
+    );
+
     newKeys[member.id] = apiKey;
   }
 
@@ -106,6 +141,7 @@ async function seed() {
 
   console.log(`\n=== Seed Complete (${members.length} team members) ===\n`);
   db.close();
+  secretsDb.close();
 }
 
 seed().catch((err) => { console.error('Seed failed:', err); process.exit(1); });
