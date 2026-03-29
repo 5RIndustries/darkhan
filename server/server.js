@@ -17,6 +17,7 @@ const { WorkerRuntime } = require('./services/worker-runtime');
 const { SecurityService } = require('./services/security');
 const { IntegrityService } = require('./services/integrity');
 const { ClaimVerifierService } = require('./services/claim-verifier');
+const { GroundTruthRegistry } = require('./services/ground-truth');
 
 // Load config
 const CONFIG_PATH = path.join(__dirname, 'darkhan.config.json');
@@ -167,7 +168,7 @@ secretsDb.serialize(() => {
 });
 
 // Initialize Darkhan services (tables guaranteed to exist after serialize)
-const activityLog = new ActivityLog({ db });
+const activityLog = new ActivityLog({ db, instanceId: config.federation?.instanceId || 'standalone' });
 const costTracker = new CostTracker({ db });
 const rateLimiter = new RateLimiter({ config, activityLog });
 const llmService = new LLMService({ rateLimiter, costTracker, activityLog, config });
@@ -175,6 +176,7 @@ const securityService = new SecurityService({ db, activityLog, config, llmServic
 const integrityService = new IntegrityService({ db, activityLog, securityService, config, secretsDb });
 const vaultPath = (config.vault?.path || '~/Documents/darkhan-vault').replace('~', process.env.HOME);
 const claimVerifier = new ClaimVerifierService({ vaultPath, db, activityLog });
+const groundTruth = new GroundTruthRegistry({ db, activityLog });
 
 // Make services available to routes
 app.locals.db = db;
@@ -188,6 +190,10 @@ app.locals.llmService = llmService;
 app.locals.securityService = securityService;
 app.locals.integrityService = integrityService;
 app.locals.claimVerifier = claimVerifier;
+app.locals.groundTruth = groundTruth;
+
+// Wire ground truth into claim verifier (both must be initialized first)
+claimVerifier.groundTruth = groundTruth;
 
 // Existing routes (evolved from DARYL)
 const authRoutes = require('./routes/auth');
@@ -244,6 +250,107 @@ app.get('/api/activity', secReqAuth, async (req, res) => {
 app.get('/api/activity/verify', secReqAuth, async (req, res) => {
   try { res.json(await activityLog.verify()); }
   catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Chain head — lightweight endpoint for cross-instance verification (Mokume)
+app.get('/api/activity/chain-head', secReqAuth, async (req, res) => {
+  try { res.json(await activityLog.getChainHead()); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Chain statistics — dashboard-friendly summary
+app.get('/api/activity/stats', secReqAuth, async (req, res) => {
+  try { res.json(await activityLog.getChainStats()); }
+  catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Defense spacers — list CRISPR-style entries for Mokume propagation
+app.get('/api/activity/spacers', secReqAuth, async (req, res) => {
+  try {
+    const { category, since, limit } = req.query;
+    const spacers = await activityLog.getSpacers({
+      category, since, limit: parseInt(limit) || 100,
+    });
+    res.json({ spacers, instanceId: config.federation?.instanceId || 'standalone' });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Ingest remote spacer from federated peer (Mokume endpoint)
+app.post('/api/activity/spacers/ingest', secReqAuth, (req, res) => {
+  const { category, signature, description, sourceInstanceId, sourceEntryId } = req.body;
+  if (!category || !signature || !sourceInstanceId) {
+    return res.status(400).json({ error: 'category, signature, and sourceInstanceId required' });
+  }
+  const chainHash = activityLog.ingestRemoteSpacer({
+    category, signature, description, sourceInstanceId, sourceEntryId,
+  });
+  if (chainHash) {
+    res.json({ ingested: true, chainHash });
+  } else {
+    res.status(400).json({ error: 'Invalid spacer data' });
+  }
+});
+
+// === Ground Truth Registry ===
+
+// List all ground truths (optionally filtered by category)
+app.get('/api/ground-truth', secReqAuth, async (req, res) => {
+  try {
+    const { category } = req.query;
+    const truths = await groundTruth.getAll({ category });
+    res.json({ truths, count: truths.length });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Get a single ground truth by key
+app.get('/api/ground-truth/:key', secReqAuth, (req, res) => {
+  const truth = groundTruth.get(req.params.key);
+  if (!truth) return res.status(404).json({ error: 'Ground truth not found' });
+  res.json(truth);
+});
+
+// Register or update a ground truth (admin only)
+app.post('/api/ground-truth', secReqAuth, async (req, res) => {
+  if (!req.session?.userId || req.session.role !== 'admin') {
+    return res.status(403).json({ error: 'Only admins can register ground truths' });
+  }
+  try {
+    const { key, category, value, unit, source, aliases, notes } = req.body;
+    const result = await groundTruth.register({
+      key, category, value, unit, source,
+      verifiedBy: req.session.userId,
+      aliases: aliases || [],
+      notes,
+    });
+    res.json({ ok: true, truth: result });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// Deprecate a ground truth (admin only)
+app.post('/api/ground-truth/:key/deprecate', secReqAuth, async (req, res) => {
+  if (!req.session?.userId || req.session.role !== 'admin') {
+    return res.status(403).json({ error: 'Only admins can deprecate ground truths' });
+  }
+  try {
+    const result = await groundTruth.deprecate(req.params.key, req.body.reason || 'No reason given', req.session.userId);
+    res.json({ ok: true, ...result });
+  } catch (e) { res.status(400).json({ error: e.message }); }
+});
+
+// Generate agent brief from ground truths
+app.get('/api/ground-truth/brief/text', secReqAuth, async (req, res) => {
+  try {
+    const brief = await groundTruth.generateBrief();
+    res.type('text/markdown').send(brief);
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Check a text against ground truths (for testing/debugging)
+app.post('/api/ground-truth/check', secReqAuth, (req, res) => {
+  const { text } = req.body;
+  if (!text) return res.status(400).json({ error: 'text required' });
+  const results = groundTruth.checkMessage(text);
+  res.json({ results, count: results.length });
 });
 
 // Worker runtime status

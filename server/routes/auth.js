@@ -278,6 +278,44 @@ router.post('/change-password', requireAuth, async (req, res) => {
     });
 
     console.log(`[Auth] Password changed for ${userId} (must_change_password cleared)`);
+
+    // Destroy ALL other sessions for this user (keep current session alive)
+    // This prevents stale sessions from being used after a password change.
+    const currentSid = req.sessionID;
+    try {
+      const sqlite3 = require('sqlite3').verbose();
+      const sessionsDbPath = require('path').join(__dirname, '..', 'db', 'sessions.db');
+      const sessDb = new sqlite3.Database(sessionsDbPath);
+      sessDb.all('SELECT sid, sess FROM sessions', [], (err, rows) => {
+        if (err || !rows) { sessDb.close(); return; }
+        let destroyed = 0;
+        for (const row of rows) {
+          if (row.sid === currentSid) continue; // Keep current session
+          try {
+            const sessData = JSON.parse(row.sess);
+            if (sessData.userId === userId) {
+              sessDb.run('DELETE FROM sessions WHERE sid = ?', [row.sid]);
+              destroyed++;
+            }
+          } catch (e) { /* invalid session data, skip */ }
+        }
+        if (destroyed > 0) {
+          console.log(`[Auth] Destroyed ${destroyed} stale session(s) for ${userId} after password change`);
+          if (activityLog) {
+            activityLog.append({
+              actor: userId,
+              action: 'sessions_invalidated',
+              target: userId,
+              details: JSON.stringify({ count: destroyed, reason: 'password_change' }),
+            });
+          }
+        }
+        sessDb.close();
+      });
+    } catch (e) {
+      console.warn('[Auth] Session cleanup after password change failed:', e.message);
+    }
+
     return res.json({ ok: true, message: 'Password changed successfully' });
   } catch (e) {
     console.error('Password change error:', e.message);
