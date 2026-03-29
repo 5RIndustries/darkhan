@@ -204,7 +204,7 @@ const rateLimiter = new RateLimiter({ config, activityLog });
 const llmService = new LLMService({ rateLimiter, costTracker, activityLog, config });
 const securityService = new SecurityService({ db, activityLog, config, llmService });
 const integrityService = new IntegrityService({ db, activityLog, securityService, config, secretsDb });
-const vaultPath = (config.vault?.path || '~/Documents/darkhan-vault').replace('~', process.env.HOME);
+const vaultPath = (config.vault?.path || '~/darkhan-vault').replace('~', process.env.HOME);
 const claimVerifier = new ClaimVerifierService({ vaultPath, db, activityLog });
 const groundTruth = new GroundTruthRegistry({ db, activityLog });
 

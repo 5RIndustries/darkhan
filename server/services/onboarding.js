@@ -15,16 +15,37 @@ const path = require('path');
 
 /**
  * Chain of command definitions.
- * Static structure — changes here when org chart changes.
+ * Auto-derived from darkhan.config.json team members at startup.
+ * Human admins are at the top, agents report to the first admin.
  */
-const CHAIN_OF_COMMAND = {
-  user_admin: { title: 'Founder/CEO', reportsTo: null, directReports: ['agent_claude'] },
-  agent_claude: { title: 'Chief of Staff / CTO / CIO / CISO / CCO / CDO / CHRO', reportsTo: 'user_admin', directReports: ['agent_lindsey', 'agent_penny', 'agent_chief', 'agent_darkhan'] },
-  agent_lindsey: { title: 'COO / S3 Chief of Operations', reportsTo: 'agent_claude', directReports: [] },
-  agent_penny: { title: 'CFO / CMO / CSO / CXO', reportsTo: 'agent_claude', directReports: [] },
-  agent_chief: { title: 'Executive Assistant', reportsTo: 'agent_claude', directReports: [] },
-  agent_darkhan: { title: 'Security Officer', reportsTo: 'agent_claude', directReports: [] },
-};
+function buildChainOfCommand(config) {
+  const chain = {};
+  const members = config?.team?.members || [];
+  const admins = members.filter(m => m.type === 'human' && m.role === 'admin');
+  const agents = members.filter(m => m.type === 'agent' || m.type === 'system');
+  const firstAdmin = admins[0];
+
+  for (const admin of admins) {
+    chain[admin.id] = {
+      title: admin.role === 'admin' ? 'Admin' : 'Team Member',
+      reportsTo: null,
+      directReports: agents.map(a => a.id),
+    };
+  }
+
+  for (const agent of agents) {
+    chain[agent.id] = {
+      title: agent.name || agent.id,
+      reportsTo: firstAdmin?.id || null,
+      directReports: [],
+    };
+  }
+
+  return chain;
+}
+
+// Will be initialized when OnboardingService is constructed
+let CHAIN_OF_COMMAND = {};
 
 /**
  * Operating rules that every agent must follow.
@@ -55,6 +76,8 @@ class OnboardingService {
     this.config = config;
     this.db = db;
     this.vaultPath = vaultPath;
+    // Build chain of command from config
+    CHAIN_OF_COMMAND = buildChainOfCommand(config);
   }
 
   /**
@@ -123,18 +146,32 @@ class OnboardingService {
       `- Agent ID: ${agentId}`,
       `- Name: ${agentConfig.name}`,
       `- Title: ${chain.title}`,
-      `- Organization: Your Organization / Your Organization LLC`,
+      `- Organization: ${this.config.instance?.name || 'Darkhan'}`,
       '',
       'Chain of Command:',
-      '  1. the admin (user_admin) — Founder/CEO, final authority',
-      '  2. Claude (agent_claude) — Chief of Staff/CTO, 2nd in command',
-      `  3. Your position: ${agentConfig.name} — ${chain.title}`,
+      ...this._buildChainLines(agentConfig, chain),
       '',
       `- You report to: ${reportsToName}`,
       `- Direct reports: ${directReportNames}`,
     ];
 
     return lines.join('\n');
+  }
+
+  /**
+   * Build chain of command lines from config.
+   */
+  _buildChainLines(agentConfig, chain) {
+    const members = this.config.team?.members || [];
+    const admins = members.filter(m => m.type === 'human' && m.role === 'admin');
+    const lines = [];
+    let rank = 1;
+    for (const admin of admins) {
+      lines.push(`  ${rank}. ${admin.name} (${admin.id}) — Admin`);
+      rank++;
+    }
+    lines.push(`  ${rank}. Your position: ${agentConfig.name} — ${chain.title}`);
+    return lines;
   }
 
   /**
@@ -303,7 +340,10 @@ class OnboardingService {
     const provider = agentConfig.model?.provider || 'unknown';
     const model = agentConfig.model?.model || 'unknown';
 
-    return `You are ${agentConfig.name}, ${chain.title} for Your Organization / Your Organization. You are running on ${hostname} via ${provider}/${model}. You report to ${reportsToName}. Chain of command: the admin (CEO) > Claude (Chief of Staff/CTO) > you. RULES: Never claim unverified state. Never fabricate information. Flag all assumptions. If you don't know, say so. You cannot bypass security controls. Post to your designated channels unless the task requires chan_command.`;
+    const instanceName = this.config.instance?.name || 'Darkhan';
+    const admins = (this.config.team?.members || []).filter(m => m.type === 'human' && m.role === 'admin');
+    const chainStr = admins.map(a => `${a.name} (Admin)`).join(' > ');
+    return `You are ${agentConfig.name}, ${chain.title} for ${instanceName}. You are running on ${hostname} via ${provider}/${model}. You report to ${reportsToName}. Chain of command: ${chainStr} > you. RULES: Never claim unverified state. Never fabricate information. Flag all assumptions. If you don't know, say so. You cannot bypass security controls. Post to your designated channels unless the task requires chan_command.`;
   }
 }
 

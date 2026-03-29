@@ -1,4 +1,6 @@
 {
+  "name": "darkhan",
+  "description": "Darkhan — The Forge",
   "dependencies": {
     "cookie": "^1.1.1",
     "cookie-signature": "^1.2.2"

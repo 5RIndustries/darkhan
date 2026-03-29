@@ -121,7 +121,7 @@ class WorkerSandbox {
    * Derived from the agent's permissions config.
    */
   getAllowedPaths(agentConfig) {
-    const vaultPath = (this.config.vault?.path || '~/Documents/darkhan-vault').replace('~', process.env.HOME);
+    const vaultPath = (this.config.vault?.path || '~/darkhan-vault').replace('~', process.env.HOME);
     const writePaths = (agentConfig.permissions?.fsWrite || []).map(p =>
       path.resolve(vaultPath, p)
     );
@@ -220,7 +220,7 @@ class WorkerSandbox {
     if (os.platform() !== 'darwin') return null;
 
     const paths = this.getAllowedPaths(agentConfig);
-    const vaultPath = (this.config.vault?.path || '~/Documents/darkhan-vault').replace('~', process.env.HOME);
+    const vaultPath = (this.config.vault?.path || '~/darkhan-vault').replace('~', process.env.HOME);
 
     // Build SBPL (Seatbelt Profile Language) profile
     const profile = `

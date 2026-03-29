@@ -27,7 +27,7 @@ class WorkerRuntime {
     this.activityLog = activityLog;
     this.costTracker = costTracker;
     this.workers = new Map();     // id -> { module, cronJobs, running, lastRun, status, listeners, context }
-    this.vaultPath = (config.vault?.path || '~/Documents/darkhan-vault').replace('~', process.env.HOME);
+    this.vaultPath = (config.vault?.path || '~/darkhan-vault').replace('~', process.env.HOME);
 
     // Agent onboarding service — generates verified briefs for every worker
     this.onboardingService = new OnboardingService({
@@ -345,7 +345,7 @@ class WorkerRuntime {
       // Fallback: minimal preamble so agents still know who they are
       onboarding = {
         full: `[Onboarding brief generation failed: ${e.message}]`,
-        preamble: `You are ${agentConfig.name}, an agent for Your Organization. Onboarding brief generation failed. RULES: Never claim unverified state. Never fabricate information. Flag all assumptions. If you don't know, say so.`,
+        preamble: `You are ${agentConfig.name}, an agent for ${this.config.instance?.name || 'Darkhan'}. Onboarding brief generation failed. RULES: Never claim unverified state. Never fabricate information. Flag all assumptions. If you don't know, say so.`,
         sections: {},
       };
     }

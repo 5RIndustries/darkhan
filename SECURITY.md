@@ -4,7 +4,7 @@
 
 If you discover a security vulnerability in Darkhan, please report it responsibly.
 
-**Email:** security@5rindustries.com
+**Email:** security@yourdomain.com
 
 **Do NOT:**
 - Open a public GitHub issue for security vulnerabilities

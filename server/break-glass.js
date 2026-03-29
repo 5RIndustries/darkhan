@@ -101,10 +101,18 @@ async function verifyPin(pin) {
       secretsDb.close();
 
       if (err || !row) {
-        // No PIN set — fall back to admin password verification
+        // No PIN set — fall back to first admin user's password verification
         console.log('No lockdown PIN set. Verifying against admin password instead.');
         const secretsDb2 = openDb(SECRETS_PATH);
-        secretsDb2.get("SELECT password_hash FROM credentials WHERE user_id = 'user_admin'", [], async (err2, row2) => {
+        // Find the first admin user dynamically
+        const mainDb = openDb(DB_PATH);
+        const adminUser = await new Promise(resolve => {
+          mainDb.get("SELECT id FROM users WHERE role = 'admin' AND type = 'human' LIMIT 1", [], (e, r) => {
+            mainDb.close();
+            resolve(r?.id || 'user_admin');
+          });
+        });
+        secretsDb2.get("SELECT password_hash FROM credentials WHERE user_id = ?", [adminUser], async (err2, row2) => {
           secretsDb2.close();
           if (err2 || !row2) {
             console.error('Cannot verify identity — no PIN or password hash found.');

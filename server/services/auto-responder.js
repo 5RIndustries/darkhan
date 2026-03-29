@@ -7,10 +7,10 @@
  *   3. Pushover escalation — pings the admin when Claude is in REST mode
  *
  * Architecture (2026-03-27):
- *   - Darkhan runs on Node 2 (M4 Pro, 24GB) with local Ollama
+ *   - Darkhan runs with local Ollama
  *   - Claude relay uses `claude -p --model opus` (Max plan, no API key needed)
  *   - Presence system: [STATUS:ACTIVE] / [STATUS:REST]
- *   - Bridge script handles Lindsey (Node 1) and Penny (Node 2) routing separately
+ *   - Bridge script handles agent routing
  */
 
 const { execFile } = require('child_process');
@@ -45,10 +45,20 @@ const messageQueue = [];
 const MAX_QUEUE_SIZE = 10;
 
 // Paths
-const HOME = process.env.HOME || '/Users/adminoutlaw';
+const HOME = process.env.HOME || '';
 const CLAUDE_CLI = process.env.CLAUDE_CLI_PATH || path.join(HOME, '.local/bin/claude');
-const VAULT_DIR = path.join(HOME, 'Documents/darkhan-vault');
-const SESSION_FILE = path.join(HOME, '.claude', 'daryl-relay-sessions.json');
+
+// Load vault path from config
+let autoResponderVaultPath;
+try {
+  const config = require('../darkhan.config.json');
+  autoResponderVaultPath = config.vault?.path;
+} catch (e) { /* Config not yet loaded */ }
+
+const VAULT_DIR = autoResponderVaultPath
+  ? autoResponderVaultPath.replace(/^~/, HOME)
+  : path.join(HOME, 'darkhan-vault');
+const SESSION_FILE = path.join(HOME, '.claude', 'darkhan-relay-sessions.json');
 
 /**
  * Load persisted sessions from disk

@@ -1,11 +1,11 @@
 # Darkhan — Build Backlog
 
-> Maintained by Claude (CTO). Items are prioritized and tracked across sessions.
+> Items are prioritized and tracked across sessions.
 > Updated: 2026-03-29 ET
 
 ---
 
-## Priority 1 — Fix Before Shipping to Tino
+## Priority 1 — Fix Before First External User
 
 ### Corey Audit — CRITICAL [ALL FIXED]
 - [x] ~~Credentials in both databases~~ — secrets.db sole source, no fallback
@@ -36,12 +36,12 @@
 - [x] ~~Hash chain federation foundation~~ — CRISPR spacers, chain anchors, origin tracking, 6 Mokume-ready endpoints. **COMPLETE (2026-03-29)**
 - [x] ~~Break-glass recovery tool~~ — Interactive TTY + PIN auth, 4 commands (status, reset-password, lift-lockdown, reset-baseline). **COMPLETE (2026-03-29)**
 - [x] ~~3-layer security hardening~~ — TTY enforcement, _darkhan service user, macOS Keychain integration. **COMPLETE (2026-03-29)**
-- [ ] Gmail for Chief (gws CLI) — **PREPPED**, needs the admin interactive OAuth
+- [ ] Gmail integration (gws CLI) — **PREPPED**, needs interactive OAuth
 - [ ] Secrets.db encryption at rest — **NEW (2026-03-29)**, documented security gap from password reset audit
 
 ---
 
-## Priority 2 — Next Sprint (Ship to Tino)
+## Priority 2 — Next Sprint (Ship to First External User)
 
 ### Security Hardening
 - [x] ~~mTLS between nodes~~ — Certificate generator, mutual auth, opt-in via config. **COMPLETE (2026-03-29)**
@@ -49,7 +49,7 @@
 - [x] ~~Session invalidation on password change~~ — Destroys all other sessions. **COMPLETE (2026-03-29)**
 
 ### Product Readiness
-- [x] ~~Push to private GitHub~~ — `outlaw4shrt/darkhan`, 16 commits. **COMPLETE (2026-03-29)**
+- [x] ~~Push to private GitHub~~ — 16 commits. **COMPLETE (2026-03-29)**
 - [x] ~~CONTRIBUTING.md + SECURITY.md + issue templates~~ — **COMPLETE (2026-03-29)**
 - [x] ~~Per-user timezone support~~ — User profile timezone, IANA validation, UI uses preference. **COMPLETE (2026-03-29)**
 - [x] ~~Forge terminology~~ — "Darkhan — The Forge" throughout UI, README, manifest. **COMPLETE (2026-03-29)**
@@ -99,13 +99,13 @@
 ## Recommended Execution Schedule
 
 ### Week of March 29 -- COMPLETED
-All P1 and P2 items shipped on 2026-03-29 (15 features in one session). Only remaining P1 items are Gmail OAuth (requires the admin interactive auth) and secrets.db encryption at rest.
+All P1 and P2 items shipped on 2026-03-29 (15 features in one session). Only remaining P1 items are Gmail OAuth (requires interactive auth) and secrets.db encryption at rest.
 
 ### Week of April 5 (P3 start)
 | Day | Primary | Secondary |
 |-----|---------|-----------|
-| Mon 4/5 | Tino onboarding test (private repo) | Gmail OAuth for Chief |
-| Tue 4/6 | Tino feedback integration | Ed25519 keypair design |
+| Mon 4/5 | External user onboarding test (private repo) | Gmail OAuth for Chief |
+| Tue 4/6 | Onboarding feedback integration | Ed25519 keypair design |
 | Wed 4/7 | Federation signed envelopes (start) | Channel encryption design |
 | Thu 4/8 | Federation signed envelopes (finish) | Three-tier permissions |
 | Fri 4/9 | Lockdown vs quarantine implementation | Compromise recovery |
@@ -117,12 +117,9 @@ All P1 and P2 items shipped on 2026-03-29 (15 features in one session). Only rem
 | Tue 4/13 | Multi-admin RBAC | Two-LLM consensus |
 | Wed 4/14 | Pen test framework | Pre-mortem protocol |
 | Thu 4/15 | Integration testing + Corey full audit | License decision |
-| **Fri 4/16** | **STTR red team prep (Corey)** | **Freeze Darkhan for STTR focus** |
+| **Fri 4/16** | **Red team review** | **Feature freeze** |
 
-### April 17 — STTR Internal Red Team
-### April 29 — STTR Submission (estimated, pending reauthorization)
-
-**Note:** P1 + P2 completed ahead of schedule (3/29 vs planned 4/5). This gives a full week of buffer before STTR crunch. P3 (Mokume/enterprise federation) starts week of April 5, front-loading Tino onboarding and federation security.
+**Note:** P1 + P2 completed ahead of schedule (3/29 vs planned 4/5). P3 (Mokume/enterprise federation) starts week of April 5, front-loading external user onboarding and federation security.
 
 ---
 
@@ -145,7 +142,7 @@ All P1 and P2 items shipped on 2026-03-29 (15 features in one session). Only rem
 | 2026-03-28 | Claim verification | ClaimVerifierService auto-tagging on agent messages |
 | 2026-03-28 | Corey daily audit | 0100 ET, unrestricted scope, evidence-based |
 | 2026-03-28 | All 16 Corey findings | 4 CRITICAL + 6 HIGH + 6 MEDIUM = 16/16 fixed |
-| 2026-03-28 | Chief email monitoring | Your Org + OMC Outlook, token refresh, URGENT triage |
+| 2026-03-28 | Chief email monitoring | Outlook integration, token refresh, URGENT triage |
 | 2026-03-28 | Nightly security pipeline | Darkhan 2330 → Claude 0000 → Corey 0100 → Brief 0600 |
 | 2026-03-28 | Admin Settings UI | Password, PIN, lockdown, unlock, baseline reset |
 | 2026-03-28 | Professional docs | README, SETUP, WORKER-CONTRACT (updated twice) |
@@ -171,6 +168,6 @@ All P1 and P2 items shipped on 2026-03-29 (15 features in one session). Only rem
 | 2026-03-29 | Forge branding | "Darkhan -- The Forge" throughout UI, manifest, README, CSS |
 | 2026-03-29 | Threat flag capability | darkhan.flagThreat() for all workers, structured alert + CRISPR spacer |
 | 2026-03-29 | Session invalidation | Password change destroys all other sessions for the user |
-| 2026-03-29 | Private GitHub repo | outlaw4shrt/darkhan, 16 commits |
+| 2026-03-29 | Private GitHub repo | 16 commits |
 | 2026-03-29 | Community docs | SECURITY.md, CONTRIBUTING.md, issue/PR templates, .github/ |
 | 2026-03-29 | Professional docs update | README, SETUP, WORKER-CONTRACT, BACKLOG updated for all 15 features |
