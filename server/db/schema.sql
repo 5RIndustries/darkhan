@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS users (
   notification_prefs TEXT,              -- [DARKHAN] JSON: { pushover, email, etc. }
   status TEXT DEFAULT 'offline',        -- [DARKHAN] 'online', 'away', 'dnd', 'offline'
   last_seen_at DATETIME,               -- [DARKHAN] Last activity timestamp
+  timezone TEXT DEFAULT 'America/New_York', -- [DARKHAN] IANA timezone for display
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   -- SECURITY: password_hash and api_key are stored ONLY in secrets.db (credential isolation)
 );
