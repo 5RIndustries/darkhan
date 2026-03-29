@@ -100,7 +100,7 @@ router.post('/login', (req, res) => {
 
   // Look up user by username (non-sensitive data from main DB)
   db.get(
-    'SELECT id, username, role FROM users WHERE username = ?',
+    'SELECT id, username, role, timezone FROM users WHERE username = ?',
     [username],
     async (err, user) => {
       if (err) {
@@ -169,7 +169,7 @@ router.post('/login', (req, res) => {
 
         const response = {
           ok: true,
-          user: { id: user.id, username: user.username, role: user.role }
+          user: { id: user.id, username: user.username, role: user.role, timezone: user.timezone || 'America/New_York' }
         };
 
         // Flag if the user must change their password before accessing the app
@@ -321,6 +321,25 @@ router.post('/change-password', requireAuth, async (req, res) => {
     console.error('Password change error:', e.message);
     return res.status(500).json({ error: 'Internal server error' });
   }
+});
+
+// POST /api/auth/timezone — update user timezone preference
+router.post('/timezone', requireAuth, (req, res) => {
+  const { timezone } = req.body;
+  if (!timezone) return res.status(400).json({ error: 'timezone required' });
+
+  // Validate it's a real IANA timezone
+  try {
+    Intl.DateTimeFormat(undefined, { timeZone: timezone });
+  } catch (e) {
+    return res.status(400).json({ error: `Invalid timezone: ${timezone}` });
+  }
+
+  const db = req.app.locals.db;
+  db.run('UPDATE users SET timezone = ? WHERE id = ?', [timezone, req.session.userId], function (err) {
+    if (err) return res.status(500).json({ error: err.message });
+    res.json({ ok: true, timezone });
+  });
 });
 
 // POST /api/auth/set-lockdown-pin — set/change the lockdown PIN (session auth, admin only)

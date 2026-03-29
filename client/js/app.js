@@ -12,6 +12,7 @@
   let currentView = 'chat'; // 'chat' | 'dashboard' | 'tasks' | 'approvals' | 'workers' | 'costs'
   let teamData = null; // loaded from /api/team
   let socket = null;
+  let userTimezone = 'America/New_York'; // Updated on login from user profile
 
   // --- DOM refs ---
   const loginScreen = document.getElementById('login-screen');
@@ -151,7 +152,7 @@
       const brandEl = document.getElementById('brand-name');
       if (brandEl && teamData.instance?.brandName) {
         brandEl.textContent = teamData.instance.brandName;
-        document.title = `${teamData.instance.brandName} — Command Center`;
+        document.title = `${teamData.instance.brandName} — The Forge`;
       }
       buildChannelList();
       buildTeamStatus();
@@ -277,6 +278,7 @@
     try {
       const data = await api('POST', '/auth/login', { username, password });
       currentUser = data.user;
+      userTimezone = data.user.timezone || 'America/New_York';
       if (data.mustChangePassword) {
         showForcePasswordChange(password);
         return;
@@ -625,7 +627,7 @@
 
     // SQLite CURRENT_TIMESTAMP stores UTC without 'Z' suffix — append it so JS parses correctly
     const utcTime = msg.created_at.endsWith('Z') ? msg.created_at : msg.created_at + 'Z';
-    const time = new Date(utcTime).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZone: 'America/New_York' });
+    const time = new Date(utcTime).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZone: userTimezone });
     div.innerHTML = `
       <span class="msg-user">${escapeHtml(msg.from_user)}</span>
       <span class="msg-time">${time}</span>
@@ -880,7 +882,7 @@
               <strong>${escapeHtml(a.action_type)}</strong>
               <span class="task-priority" style="background:var(--accent);color:#fff;padding:0.15rem 0.5rem;border-radius:3px;font-size:0.75rem;">PENDING</span>
             </div>
-            <div class="task-meta">Requested by: <strong>${escapeHtml(a.requested_by)}</strong> | ${new Date(a.created_at.endsWith('Z') ? a.created_at : a.created_at + 'Z').toLocaleString('en-US', { timeZone: 'America/New_York' })} ET</div>
+            <div class="task-meta">Requested by: <strong>${escapeHtml(a.requested_by)}</strong> | ${new Date(a.created_at.endsWith('Z') ? a.created_at : a.created_at + 'Z').toLocaleString('en-US', { timeZone: userTimezone })} ET</div>
             <div class="task-desc" style="margin:0.5rem 0;white-space:pre-wrap;">${escapeHtml(a.action_detail)}</div>
             <div style="margin-top:0.5rem;display:flex;gap:0.5rem;">
               <button onclick="window._approveRequest('${a.id}')" style="background:var(--success, #27ae60);color:#fff;border:none;padding:0.4rem 1rem;border-radius:var(--radius);cursor:pointer;font-weight:bold;">Approve</button>
@@ -898,7 +900,7 @@
         html += historyItems.map(a => {
           const statusColor = a.status === 'approved' ? 'var(--success, #27ae60)' : 'var(--danger, #c0392b)';
           const statusLabel = a.status.toUpperCase();
-          const reviewedAt = a.reviewed_at ? new Date(a.reviewed_at.endsWith('Z') ? a.reviewed_at : a.reviewed_at + 'Z').toLocaleString('en-US', { timeZone: 'America/New_York' }) : 'unknown';
+          const reviewedAt = a.reviewed_at ? new Date(a.reviewed_at.endsWith('Z') ? a.reviewed_at : a.reviewed_at + 'Z').toLocaleString('en-US', { timeZone: userTimezone }) : 'unknown';
           return `
             <div class="task-card" style="margin-bottom:0.5rem;opacity:0.8;">
               <div class="task-header">

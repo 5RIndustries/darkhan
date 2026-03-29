@@ -177,6 +177,10 @@ function applySchema(database, schemaPath, label) {
 // Apply schemas synchronously via serialize
 db.serialize(() => {
   applySchema(db, path.join(__dirname, 'db', 'schema.sql'), 'Main');
+  // Schema migrations — add columns that may not exist in older installations
+  db.run("ALTER TABLE users ADD COLUMN timezone TEXT DEFAULT 'America/New_York'", (err) => {
+    if (err && !err.message.includes('duplicate column')) console.error('[Migration]', err.message);
+  });
   runSeedIfEmpty(db);
 });
 

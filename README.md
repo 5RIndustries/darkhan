@@ -1,12 +1,13 @@
-# Darkhan -- Command Center
+# Darkhan -- The Forge
 
-> A team command center that coordinates AI agents and human team members.
-> Handles messaging, task routing, health monitoring, cost tracking, security,
+> A team command center where AI agents and humans work as a single unit.
+> Messaging, task routing, health monitoring, cost tracking, security,
 > and intelligent LLM-powered triage -- all from a single deployable codebase.
 
 **Darkhan** (Mongolian/Turkic: master craftsman) -- a privileged artisan whose
-skill earned them autonomy. Each team member, human or agent, is a craftsman
-with a defined specialty. Darkhan coordinates them.
+skill earned them autonomy. The forge is where craftsmen work. Each team member,
+human or agent, is a craftsman with a defined specialty. Darkhan is the forge
+that coordinates them -- shaping raw capability into reliable output.
 
 ---
 

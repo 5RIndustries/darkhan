@@ -1,7 +1,7 @@
 {
-  "name": "DARYL Command Center",
-  "short_name": "DARYL",
-  "description": "OMC-OS Command Center",
+  "name": "Darkhan — The Forge",
+  "short_name": "Darkhan",
+  "description": "The Forge — AI agent command center",
   "start_url": "/",
   "display": "standalone",
   "background_color": "#121212",

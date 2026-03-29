@@ -382,6 +382,48 @@ class WorkerRuntime {
          * @returns {Promise<Object>} The created approval record
          */
         requestApproval: ({ action, detail }) => self._requestApproval(agentId, action, detail),
+        /**
+         * Flag a threat or concern. Posts a structured alert to chan_alerts
+         * and creates a CRISPR defense spacer in the hash chain.
+         * Any worker can call this — it's the "pull the alarm" capability.
+         *
+         * @param {Object} opts
+         * @param {string} opts.category - 'injection', 'impersonation', 'exfiltration', 'escalation', 'anomaly', 'integrity'
+         * @param {string} opts.severity - 'low', 'medium', 'high', 'critical'
+         * @param {string} opts.description - What was detected
+         * @param {string} [opts.evidence] - Supporting evidence (optional)
+         */
+        flagThreat: async ({ category, severity, description, evidence }) => {
+          const crypto = require('crypto');
+          const sig = crypto.createHash('sha256').update(`${category}|${description}|${agentId}`).digest('hex');
+
+          // Post structured alert
+          const alertBody = `**[THREAT FLAG]** ${severity?.toUpperCase() || 'UNKNOWN'}\n` +
+            `**From:** ${agentId}\n` +
+            `**Category:** ${category}\n` +
+            `**Description:** ${description}` +
+            (evidence ? `\n**Evidence:** ${evidence}` : '');
+          await self._postToChannel('chan_alerts', alertBody, agentId);
+
+          // Create CRISPR spacer
+          if (self.activityLog?.appendSpacer) {
+            self.activityLog.appendSpacer({
+              category: category || 'anomaly',
+              signature: sig,
+              description: `[${agentId}] ${severity}: ${description}`,
+            });
+          }
+
+          // Log to activity trail
+          if (self.activityLog) {
+            self.activityLog.append({
+              actor: agentId,
+              action: 'threat_flagged',
+              target: category,
+              details: JSON.stringify({ severity, description, evidence, signature: sig }),
+            });
+          }
+        },
       },
 
       // File system tools (scoped to permissions)
