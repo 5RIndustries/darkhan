@@ -64,6 +64,7 @@
   },
   "sandbox": {
     "enabled": true,
+    "processIsolation": true,
     "limits": {
       "maxMemoryMB": 512,
       "maxFileDescriptors": 256,
