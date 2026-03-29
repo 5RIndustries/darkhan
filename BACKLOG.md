@@ -42,16 +42,16 @@
 ## Priority 2 — Next Sprint (Ship to Tino)
 
 ### Security Hardening
-- [ ] mTLS between nodes — Certificate generation, mutual auth for Node 1 ↔ Node 2. Tailscale covers us now but needed for non-Tailscale deploys and Tino's setup.
-- [ ] Native macOS sandbox — sandbox-exec profiles per worker, pf firewall rules, ulimit resource caps. No Docker dependency. macOS first, then abstract for Linux/Windows.
-- [ ] Session invalidation on password change — destroy all existing sessions
+- [x] ~~mTLS between nodes~~ — Certificate generator, mutual auth, opt-in via config. **COMPLETE (2026-03-29)**
+- [x] ~~Native macOS sandbox~~ — Sandbox profiles, env whitelist, resource watchdog, deny-list FS enforcement, sandbox-exec profiles. **COMPLETE (2026-03-29)**
+- [x] ~~Session invalidation on password change~~ — Destroys all other sessions. **COMPLETE (2026-03-29)**
 
 ### Product Readiness
-- [ ] Push to private GitHub — `outlaw4shrt/darkhan`, branch protection, PR template
-- [ ] CONTRIBUTING.md + SECURITY.md + issue templates
-- [ ] Per-user timezone support — timezone in user profile, UTC storage, local display
-- [ ] Forge terminology — replace swarm/hive language in docs and UI
-- [ ] Threat flag capability for all workers — any agent can flag concerns to chan_alerts
+- [x] ~~Push to private GitHub~~ — `outlaw4shrt/darkhan`, 14 commits. **COMPLETE (2026-03-29)**
+- [x] ~~CONTRIBUTING.md + SECURITY.md + issue templates~~ — **COMPLETE (2026-03-29)**
+- [x] ~~Per-user timezone support~~ — User profile timezone, IANA validation, UI uses preference. **COMPLETE (2026-03-29)**
+- [x] ~~Forge terminology~~ — "Darkhan — The Forge" throughout UI, README, manifest. **COMPLETE (2026-03-29)**
+- [x] ~~Threat flag capability for all workers~~ — darkhan.flagThreat() + CRISPR spacer. **COMPLETE (2026-03-29)**
 
 ---
 

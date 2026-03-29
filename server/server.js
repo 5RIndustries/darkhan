@@ -391,6 +391,20 @@ app.get('/api/workers', secReqAuth, (req, res) => {
   }
 });
 
+// Sandbox status
+app.get('/api/sandbox', secReqAuth, (req, res) => {
+  if (app.locals.workerRuntime?.sandbox) {
+    const sandbox = app.locals.workerRuntime.sandbox;
+    const status = {};
+    for (const [agentId] of sandbox.processes) {
+      status[agentId] = sandbox.getSandboxStatus(agentId);
+    }
+    res.json({ enabled: sandbox.enabled, workers: status });
+  } else {
+    res.json({ enabled: false, workers: {} });
+  }
+});
+
 // Security status
 app.get('/api/security', secReqAuth, async (req, res) => {
   try { res.json(await securityService.getSecuritySummary()); }
