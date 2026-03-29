@@ -22,12 +22,13 @@ that coordinates them -- shaping raw capability into reliable output.
 7. [Database](#database)
 8. [Workers](#workers)
 9. [Security Model](#security-model)
-10. [API Reference](#api-reference)
-11. [Web UI](#web-ui)
-12. [Deployment](#deployment)
-13. [Troubleshooting](#troubleshooting)
-14. [Roadmap](#roadmap)
-15. [Evolution](#evolution)
+10. [Break-Glass Recovery](#break-glass-recovery)
+11. [API Reference](#api-reference)
+12. [Web UI](#web-ui)
+13. [Deployment](#deployment)
+14. [Troubleshooting](#troubleshooting)
+15. [Roadmap](#roadmap)
+16. [Evolution](#evolution)
 
 ---
 
@@ -92,10 +93,20 @@ darkhan/
 |   |   |-- claude-api.js         # Claude API/SDK integration
 |   |   `-- monitor.js            # Health watchdog
 |   `-- workers/                  # Agent worker definitions
-|       |-- chief.worker.js       # Executive assistant (digests, deadline monitoring)
+|       |-- chief.worker.js       # Executive assistant (digests, deadline monitoring, daily briefing)
 |       |-- darkhan.worker.js     # Security monitoring (injection sweeps, activity audits)
 |       |-- lindsey.worker.js     # COO -- engineering execution, inbox processing, shift briefings
 |       `-- penny.worker.js       # CFO/CMO -- business dev, funding pipeline, market intelligence
+|   |-- break-glass.js           # Emergency admin recovery tool (interactive TTY only)
+|   |-- services/                # (additional services beyond those listed above)
+|   |   |-- ground-truth.js      # Ground Truth Registry -- canonical verified facts
+|   |   |-- sandbox.js           # Native macOS sandbox -- process isolation for agents
+|   |   `-- keychain.js          # macOS Keychain integration for secret storage
+|   `-- scripts/
+|       |-- generate-certs.sh        # mTLS certificate generator (CA + per-node certs with SAN)
+|       |-- setup-service-user.sh    # Creates _darkhan service user for privilege separation
+|       |-- setup-keychain.sh        # Provisions macOS Keychain items for Darkhan secrets
+|       `-- com.darkhan.server.plist # launchd template for running as _darkhan
 |
 |-- client/                       # Web UI (vanilla JS SPA)
 |   |-- index.html                # Main app shell
@@ -104,8 +115,11 @@ darkhan/
 |   |-- manifest.json             # PWA manifest
 |   `-- sw.js                     # Service worker
 |
+|-- .github/                      # GitHub templates (issues, PRs)
 |-- WORKER-CONTRACT.md            # Worker runtime specification (read before writing workers)
 |-- SETUP.md                      # New team member onboarding guide
+|-- SECURITY.md                   # Security policy and vulnerability reporting
+|-- CONTRIBUTING.md               # Contribution guidelines
 |-- .gitignore                    # Git ignore rules
 `-- README.md                     # This file
 ```
@@ -162,14 +176,29 @@ Per-agent token and cost accounting using INTEGER millicents (no floating-point 
 
 ### Activity Log (`services/activity-log.js`)
 
-Immutable append-only event log. SQLite triggers enforce the immutability -- no DELETE, no UPDATE on this table, even from direct database access.
+Immutable append-only event log with hash chain integrity. SQLite triggers enforce the immutability -- no DELETE, no UPDATE on this table, even from direct database access.
+
+Each entry includes:
+- **origin** -- instance ID that created the entry (supports federated auditing)
+- **entry_type** -- `event` (normal), `spacer` (CRISPR defense), or `anchor` (periodic checkpoint)
+- **SHA-256 hash chain** -- each entry's hash includes the previous entry's hash, forming a Merkle chain
+
+**CRISPR defense spacers:** On security events (injection detection, lockdown activation, exfiltration attempts), the system automatically inserts a defense spacer into the hash chain. Spacers mark the exact point where a security event occurred, making post-hoc log tampering detectable even if the attacker controls the database.
+
+**Chain anchors:** Periodic checkpoint entries that allow independent verification of chain integrity without replaying the entire history.
 
 Logged actions include: `llm_call`, `task_started`, `task_completed`, `task_failed`,
 `worker_loaded`, `server_started`, `injection_detected`, `shell_blocked`,
 `data_leakage_blocked`, `llm_output_rejected`, `lockdown_activated`, `lockdown_deactivated`,
 `integrity_violation`, `impersonation_attempt`.
 
-`GET /api/activity?actor=X&action=Y&limit=50&since=ISO`
+| API Endpoint | Purpose |
+|-------------|---------|
+| `GET /api/activity?actor=X&action=Y&limit=50&since=ISO` | Query activity log |
+| `GET /api/activity/chain-head` | Current chain head hash and entry count |
+| `GET /api/activity/stats` | Chain statistics (total entries, spacers, anchors, by origin) |
+| `GET /api/activity/spacers` | List all CRISPR defense spacers |
+| `POST /api/activity/spacers/ingest` | Ingest spacers from a federated instance |
 
 ### Onboarding Service (`services/onboarding.js`)
 
@@ -194,6 +223,42 @@ Defenses:
 - **Database monitoring:** Detects unauthorized user additions
 - **Config checksum validation:** Detects tampering with `darkhan.config.json`
 - **Auto-lockdown:** Triggers lockdown on any integrity violation
+
+### Ground Truth Registry (`services/ground-truth.js`)
+
+Canonical store of verified facts about the organization, infrastructure, and team. Prevents agents from contradicting known ground truth in their output.
+
+- **15 verified facts** seeded on initialization with **43 aliases** for flexible lookup
+- Each fact has a key, value, category, aliases, source attribution, and optional expiry
+- Integrated into the Claim Verifier pipeline: agent messages are checked for contradictions against the registry before storage
+- Admin API for adding, querying, deprecating, and bulk-checking facts
+
+| API Endpoint | Purpose |
+|-------------|---------|
+| `GET /api/ground-truth` | List all active ground truth entries |
+| `POST /api/ground-truth` | Add a new verified fact (admin only) |
+| `POST /api/ground-truth/:key/deprecate` | Deprecate an entry (admin only) |
+| `GET /api/ground-truth/brief/text` | Plain-text brief of all facts (for agent consumption) |
+| `POST /api/ground-truth/check` | Check a claim against the registry for contradictions |
+
+### Sandbox Service (`services/sandbox.js`)
+
+Native macOS process isolation for agent-executed commands. Enforces security boundaries without Docker or VMs.
+
+- **Environment whitelist:** Only 5 variables passed to sandboxed processes (`HOME`, `PATH`, `LANG`, `USER`, `TERM`)
+- **Filesystem deny-list:** Blocks access to `db/`, `.env`, `.ssh`, `.gnupg`, TLS certificates, and other sensitive paths
+- **Resource watchdog:** Monitors memory usage per process, kills processes exceeding configured limits
+- **SBPL profile generation:** Produces `sandbox-exec` profiles for macOS kernel-level enforcement
+- Configured via the `sandbox` section in `darkhan.config.json`
+
+### Keychain Service (`services/keychain.js`)
+
+macOS Keychain integration for storing critical secrets outside the filesystem.
+
+- Stores secrets in the system keychain rather than `.env` or database files
+- Setup via `scripts/setup-keychain.sh`
+- Falls back to `.env` if keychain is not configured (for development or non-macOS systems)
+- Part of the Layer 3 security hardening stack
 
 ### Worker Runtime (`services/worker-runtime.js`)
 
@@ -372,14 +437,15 @@ Both databases use SQLite with WAL mode and 5-second busy timeout.
 
 | Table | Purpose | Mutable? |
 |-------|---------|----------|
-| `users` | Team members -- profile data only (no credentials) | Yes |
+| `users` | Team members -- profile data only (no credentials), includes per-user timezone | Yes |
 | `channels` | Communication channels | Yes |
 | `messages` | All messages with origin tracking and claim verification metadata | Yes |
 | `tasks` | Task assignment and tracking | Yes |
 | `agent_heartbeats` | Current status per agent | Yes |
 | `agent_health` | Historical health snapshots | Yes |
 | `cost_tracking` | Per-agent token/cost accounting | Append only |
-| `activity_log` | Immutable audit trail | **Append only -- enforced by SQLite triggers** |
+| `activity_log` | Immutable audit trail (hash chain with origin, entry_type, CRISPR spacers) | **Append only -- enforced by SQLite triggers** |
+| `ground_truths` | Verified facts registry (key, value, aliases, category, source, expiry) | Yes (admin only) |
 | `approval_queue` | Pending action approvals | Yes |
 | `claude_conversations` | Claude relay history | Yes |
 | `settings` | Non-sensitive system settings | Yes |
@@ -449,7 +515,7 @@ Restart Darkhan to load the new worker.
 
 | Worker | Agent | Tasks | Schedule |
 |--------|-------|-------|----------|
-| `chief.worker.js` | Chief (Executive Assistant) | morning_digest, evening_digest, deadline_monitor, heartbeat | 0700/1800/6h/5m |
+| `chief.worker.js` | Chief (Executive Assistant) | daily_briefing, morning_digest, evening_digest, deadline_monitor, heartbeat | 0545/0700/1800/6h/5m |
 | `darkhan.worker.js` | Darkhan (Security) | security_sweep, activity_audit, corey_daily_audit, heartbeat | 15m/1h/0100 daily/5m |
 | `lindsey.worker.js` | Lindsey (COO) | morning_readiness, inbox_processor, draft_review_check, shift_change, heartbeat | 0630/2h/3h/2100/5m |
 | `penny.worker.js` | Penny (CFO/CMO) | morning_business_scan, sttr_monitor, product_exploration, weekly_market_brief, heartbeat | 0800/10+16h/11h weekdays/Mon 0700/5m |
@@ -572,6 +638,39 @@ Darkhan can shut down all agent traffic when a security threat is detected. Duri
 - **Manual lockdown:** Available from the Settings view for human admins (requires browser session -- API key auth is rejected for security-critical actions)
 - **Unlock:** Requires admin browser session authentication plus lockdown PIN (stored in secrets.db only)
 
+### 3-Layer Security Hardening
+
+Darkhan implements defense in depth across three layers:
+
+**Layer 1: Break-Glass Recovery (`server/break-glass.js`)**
+Emergency admin recovery tool for when normal authentication is unavailable. Requires interactive TTY -- blocks scripted, piped, or automated execution. Commands:
+- `status` -- check server and lockdown state (no authentication required)
+- `reset-password` -- reset an admin password (requires lockdown PIN)
+- `lift-lockdown` -- manually lift lockdown (requires lockdown PIN)
+- `reset-baseline` -- reset the integrity baseline (requires lockdown PIN)
+
+See [Break-Glass Recovery](#break-glass-recovery) below.
+
+**Layer 2: Service User Privilege Separation**
+The `_darkhan` service user owns sensitive files (database, `.env`, integrity baseline, TLS certificates). The Darkhan server process runs as `_darkhan`. Application code stays owned by the developer account. This prevents a compromised developer session from directly accessing secrets.
+- Setup: `scripts/setup-service-user.sh`
+- launchd template: `scripts/com.darkhan.server.plist`
+
+**Layer 3: macOS Keychain Integration**
+Critical secrets (session secret, API keys) are stored in the macOS Keychain rather than in `.env` or the filesystem. Even if an attacker gains read access to the filesystem, secrets remain protected by the Keychain's hardware-backed encryption.
+- Setup: `scripts/setup-keychain.sh`
+- Service: `services/keychain.js`
+- Falls back to `.env` if keychain is not provisioned
+
+### mTLS for Federation
+
+Federated nodes authenticate using mutual TLS (mTLS). Each node presents a client certificate signed by a shared CA. The hub verifies client certificates before accepting federation traffic.
+
+- Certificate generator: `scripts/generate-certs.sh` (creates CA + per-node certs with SAN)
+- Server supports HTTPS with client cert verification when `tls.enabled` is set in config
+- `FederatedRuntime` and `RemoteRunner` load mTLS certs automatically from configured paths
+- Opt-in: federation works over plain HTTP (with `FEDERATION_ALLOW_HTTP`) for development
+
 ### Onboarding Security
 
 Every agent receives a verified onboarding brief at startup that includes:
@@ -581,6 +680,33 @@ Every agent receives a verified onboarding brief at startup that includes:
 - Explicit statements of what they cannot do (unlock lockdown, impersonate, etc.)
 
 This prevents agents from being misled about their own capabilities or authority.
+
+---
+
+## Break-Glass Recovery
+
+The break-glass tool (`server/break-glass.js`) provides emergency admin access when normal authentication is unavailable -- for example, if you forget your password while the system is in lockdown.
+
+**Usage:**
+```bash
+cd server
+node break-glass.js status           # No auth required -- shows server and lockdown state
+node break-glass.js reset-password   # Requires lockdown PIN via interactive prompt
+node break-glass.js lift-lockdown    # Requires lockdown PIN via interactive prompt
+node break-glass.js reset-baseline   # Requires lockdown PIN via interactive prompt
+```
+
+**Security constraints:**
+- Requires an interactive TTY. Piped input, scripted execution, and non-TTY environments are rejected.
+- PIN is collected via TTY read (not stdin) to prevent capture by process monitors.
+- All break-glass actions are logged to the activity log with full attribution.
+- The `status` command is the only one that works without authentication.
+
+**When to use it:**
+- Locked out after forgetting your password
+- Lockdown triggered and you cannot access the web UI
+- Integrity baseline corrupted after a legitimate code update
+- Recovering after a failed migration or database issue
 
 ---
 
@@ -597,6 +723,7 @@ All endpoints require authentication via session cookie (web UI) or `X-API-Key` 
 | GET | `/api/auth/me` | Current authenticated user |
 | POST | `/api/auth/change-password` | Change password (requires current password). Session auth only -- agents cannot call this. Minimum 8 characters. |
 | POST | `/api/auth/set-lockdown-pin` | Set or change the lockdown PIN. Admin session auth only. Minimum 4 characters. PIN hash stored in secrets.db. |
+| POST | `/api/auth/timezone` | Set user timezone (IANA format, e.g. `America/New_York`). Validated server-side. |
 
 ### Messages
 
@@ -624,6 +751,20 @@ All endpoints require authentication via session cookie (web UI) or `X-API-Key` 
 | GET | `/api/costs/daily?date=YYYY-MM-DD` | Daily cost breakdown |
 | GET | `/api/costs/total` | All-time cost totals |
 | GET | `/api/activity?actor=X&action=Y&limit=50&since=ISO` | Activity log query |
+| GET | `/api/activity/chain-head` | Hash chain head and entry count |
+| GET | `/api/activity/stats` | Chain statistics (entries, spacers, anchors, by origin) |
+| GET | `/api/activity/spacers` | List all CRISPR defense spacers |
+| POST | `/api/activity/spacers/ingest` | Ingest spacers from a federated instance |
+
+### Ground Truth
+
+| Method | Endpoint | Purpose |
+|--------|----------|---------|
+| GET | `/api/ground-truth` | List all active ground truth entries |
+| POST | `/api/ground-truth` | Add a verified fact (admin only) |
+| POST | `/api/ground-truth/:key/deprecate` | Deprecate an entry (admin only) |
+| GET | `/api/ground-truth/brief/text` | Plain-text brief for agent consumption |
+| POST | `/api/ground-truth/check` | Check a claim for contradictions |
 
 ### Security
 
@@ -827,9 +968,24 @@ config-driven architecture, federated worker runtime, onboarding service,
 security service with lockdown, integrity monitoring, cost tracking,
 activity log with immutable audit trail, and rate limiting.
 
-Post-v1 additions:
+Post-v1 additions (2026-03-28):
 - **Credential separation:** secrets.db isolates password hashes, API keys, and lockdown PIN from the operational database. Workers cannot access credentials.
 - **Evidence-based reporting:** EvidenceService produces SHA-256-hashed, tamper-evident findings for all security reports. LLM analysis clearly separated from verified facts.
 - **Claim verification:** ClaimVerifierService auto-tags agent messages with evidence of whether file references, status claims, and numeric assertions check out.
 - **Corey daily audit:** Comprehensive red team security review at 0100 ET using evidence-based checks and LLM analysis (Gemini primary, Ollama fallback).
 - **Hardened security:** SESSION_SECRET required (no fallback), HMAC-signed lockdown state with fail-closed tamper detection, lockdown PIN fail-closed (must be set before unlock works), interpreter commands blocked in restricted shell, environment whitelist for worker shell processes.
+
+Post-v1 additions (2026-03-29):
+- **Hash chain with CRISPR defense spacers:** Activity log entries include origin (instance ID), entry_type (event/spacer/anchor). Defense spacers auto-created on injection, lockdown, and exfiltration events. Chain anchors for periodic integrity checkpoints. 6 federation-ready API endpoints.
+- **Ground Truth Registry:** 15 verified facts with 43 aliases. Contradiction detection integrated into claim verifier pipeline. Admin API for managing canonical facts.
+- **Output Verification Gate:** Ground truth + claim verifier pipeline = never-lie architecture core.
+- **Break-glass recovery:** Emergency admin recovery tool requiring interactive TTY + lockdown PIN. Commands: status, reset-password, lift-lockdown, reset-baseline.
+- **3-layer security hardening:** Layer 1 (break-glass TTY enforcement), Layer 2 (_darkhan service user privilege separation), Layer 3 (macOS Keychain secret storage).
+- **mTLS for federation:** CA + per-node certificates with SAN. Mutual TLS verification on federation traffic.
+- **Native macOS sandbox:** Environment whitelist, filesystem deny-list, resource watchdog, sandbox-exec SBPL profile generation.
+- **Per-user timezone:** IANA timezone per user, served on login, validated server-side.
+- **Forge branding:** "Darkhan -- The Forge" throughout UI, manifest, and documentation.
+- **Threat flag capability:** `darkhan.flagThreat()` available to all workers. Posts structured alert + creates CRISPR spacer.
+- **Session invalidation on password change:** Destroys all other sessions for the user.
+- **Chief daily briefing:** 0545 ET consolidated overnight report saved to `project/cos/Daily-Briefings/`.
+- **Private GitHub repo:** `outlaw4shrt/darkhan`, community docs (SECURITY.md, CONTRIBUTING.md, issue/PR templates).

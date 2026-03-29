@@ -1,7 +1,7 @@
 # Darkhan — Build Backlog
 
 > Maintained by Claude (CTO). Items are prioritized and tracked across sessions.
-> Updated: 2026-03-28 2145 ET
+> Updated: 2026-03-29 ET
 
 ---
 
@@ -34,6 +34,8 @@
 - [x] ~~Force password change on first login~~ — Backend + UI complete (2026-03-28)
 - [x] ~~Output verification gate~~ — Ground truth registry (15 entries, 43 aliases), contradiction detection (7/7 tests pass), integrated into claim verifier pipeline, admin API endpoints. **COMPLETE (2026-03-29)**
 - [x] ~~Hash chain federation foundation~~ — CRISPR spacers, chain anchors, origin tracking, 6 Mokume-ready endpoints. **COMPLETE (2026-03-29)**
+- [x] ~~Break-glass recovery tool~~ — Interactive TTY + PIN auth, 4 commands (status, reset-password, lift-lockdown, reset-baseline). **COMPLETE (2026-03-29)**
+- [x] ~~3-layer security hardening~~ — TTY enforcement, _darkhan service user, macOS Keychain integration. **COMPLETE (2026-03-29)**
 - [ ] Gmail for Chief (gws CLI) — **PREPPED**, needs the admin interactive OAuth
 - [ ] Secrets.db encryption at rest — **NEW (2026-03-29)**, documented security gap from password reset audit
 
@@ -47,7 +49,7 @@
 - [x] ~~Session invalidation on password change~~ — Destroys all other sessions. **COMPLETE (2026-03-29)**
 
 ### Product Readiness
-- [x] ~~Push to private GitHub~~ — `outlaw4shrt/darkhan`, 14 commits. **COMPLETE (2026-03-29)**
+- [x] ~~Push to private GitHub~~ — `outlaw4shrt/darkhan`, 16 commits. **COMPLETE (2026-03-29)**
 - [x] ~~CONTRIBUTING.md + SECURITY.md + issue templates~~ — **COMPLETE (2026-03-29)**
 - [x] ~~Per-user timezone support~~ — User profile timezone, IANA validation, UI uses preference. **COMPLETE (2026-03-29)**
 - [x] ~~Forge terminology~~ — "Darkhan — The Forge" throughout UI, README, manifest. **COMPLETE (2026-03-29)**
@@ -96,19 +98,13 @@
 
 ## Recommended Execution Schedule
 
-### Week of March 29 (this week)
-| Day | Primary | Secondary |
-|-----|---------|-----------|
-| Sun 3/29 | Output verification gate (never-lie core) | Gmail OAuth for Chief |
-| Mon 3/30 | mTLS between nodes | Push to private GitHub |
-| Tue 3/31 | Native macOS sandbox (start) | CONTRIBUTING.md, SECURITY.md |
-| Wed 4/1 | Native macOS sandbox (finish) | Per-user timezone |
-| Thu 4/2 | Forge terminology + UI polish | Threat flag capability |
+### Week of March 29 -- COMPLETED
+All P1 and P2 items shipped on 2026-03-29 (15 features in one session). Only remaining P1 items are Gmail OAuth (requires the admin interactive auth) and secrets.db encryption at rest.
 
-### Week of April 5
+### Week of April 5 (P3 start)
 | Day | Primary | Secondary |
 |-----|---------|-----------|
-| Mon 4/5 | Tino onboarding test (private repo) | Session invalidation, cleanup |
+| Mon 4/5 | Tino onboarding test (private repo) | Gmail OAuth for Chief |
 | Tue 4/6 | Tino feedback integration | Ed25519 keypair design |
 | Wed 4/7 | Federation signed envelopes (start) | Channel encryption design |
 | Thu 4/8 | Federation signed envelopes (finish) | Three-tier permissions |
@@ -126,7 +122,7 @@
 ### April 17 — STTR Internal Red Team
 ### April 29 — STTR Submission (estimated, pending reauthorization)
 
-**Note:** This schedule assumes ~4-6 hours/day of build time. STTR work takes priority over Darkhan development starting April 16. The schedule front-loads security (mTLS, sandbox) and Tino onboarding so we have a tested product before STTR crunch.
+**Note:** P1 + P2 completed ahead of schedule (3/29 vs planned 4/5). This gives a full week of buffer before STTR crunch. P3 (Mokume/enterprise federation) starts week of April 5, front-loading Tino onboarding and federation security.
 
 ---
 
@@ -167,3 +163,14 @@
 | 2026-03-29 | Output Verification Gate | Ground truth + claim verifier pipeline = never-lie architecture core |
 | 2026-03-29 | Chief daily briefing | 0545 ET consolidated report, wikilinked into daily journal |
 | 2026-03-29 | Security audit documented | Secrets.db access paths mapped, encryption needed before release |
+| 2026-03-29 | Break-glass recovery tool | Interactive TTY enforcement, PIN auth, status/reset-password/lift-lockdown/reset-baseline |
+| 2026-03-29 | 3-layer security hardening | Layer 1 (break-glass TTY), Layer 2 (_darkhan service user), Layer 3 (macOS Keychain) |
+| 2026-03-29 | mTLS for federation | CA + per-node certs with SAN, mutual auth, opt-in via config |
+| 2026-03-29 | Native macOS sandbox | Env whitelist, FS deny-list, resource watchdog, sandbox-exec SBPL profiles |
+| 2026-03-29 | Per-user timezone | IANA timezone per user, validated server-side, UI uses preference |
+| 2026-03-29 | Forge branding | "Darkhan -- The Forge" throughout UI, manifest, README, CSS |
+| 2026-03-29 | Threat flag capability | darkhan.flagThreat() for all workers, structured alert + CRISPR spacer |
+| 2026-03-29 | Session invalidation | Password change destroys all other sessions for the user |
+| 2026-03-29 | Private GitHub repo | outlaw4shrt/darkhan, 16 commits |
+| 2026-03-29 | Community docs | SECURITY.md, CONTRIBUTING.md, issue/PR templates, .github/ |
+| 2026-03-29 | Professional docs update | README, SETUP, WORKER-CONTRACT, BACKLOG updated for all 15 features |

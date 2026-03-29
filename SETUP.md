@@ -14,11 +14,12 @@
 5. [Step 4: Initialize the Database](#step-4-initialize-the-database)
 6. [Step 5: Start Darkhan](#step-5-start-darkhan)
 7. [Step 6: First Login & Security Setup](#step-6-first-login--security-setup)
-8. [Step 7: Auto-Start with launchd](#step-7-auto-start-with-launchd)
-9. [Step 8: Write Your First Worker](#step-8-write-your-first-worker)
-10. [Step 9: Federated Setup (Multi-Node)](#step-9-federated-setup-multi-node)
-11. [Verification Checklist](#verification-checklist)
-12. [Troubleshooting](#troubleshooting)
+8. [Step 6.5: Security Hardening (Recommended)](#step-65-security-hardening-recommended)
+9. [Step 7: Auto-Start with launchd](#step-7-auto-start-with-launchd)
+10. [Step 8: Write Your First Worker](#step-8-write-your-first-worker)
+11. [Step 9: Federated Setup (Multi-Node)](#step-9-federated-setup-multi-node)
+12. [Verification Checklist](#verification-checklist)
+13. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -224,9 +225,72 @@ You should see output confirming:
 
 ---
 
+## Step 6.5: Security Hardening (Recommended)
+
+These steps are optional for development but **strongly recommended for production deployments**.
+
+### Layer 2: Service User Privilege Separation
+
+Create a dedicated `_darkhan` service user that owns sensitive files. The server process runs as this user, separating it from your developer account.
+
+```bash
+cd server
+sudo scripts/setup-service-user.sh
+```
+
+This script:
+- Creates the `_darkhan` system user (no home directory, no login shell)
+- Changes ownership of `db/`, `.env`, integrity baseline, and TLS certificates to `_darkhan`
+- Sets file permissions so only `_darkhan` can read secrets
+- Application code remains owned by your developer account
+
+**Why this matters:** If an attacker compromises your developer session, they cannot directly read the database or `.env` file because those are owned by a different user.
+
+### Layer 3: macOS Keychain Integration
+
+Move critical secrets from `.env` into the macOS Keychain for hardware-backed encryption.
+
+```bash
+cd server
+scripts/setup-keychain.sh
+```
+
+This script:
+- Prompts you for each secret (SESSION_SECRET, API keys)
+- Stores them in the macOS Keychain under the `com.darkhan.server` service
+- Darkhan reads from Keychain at startup, falling back to `.env` if not provisioned
+
+**Why this matters:** Secrets in `.env` are plaintext on disk. Secrets in Keychain are encrypted by the Secure Enclave and require user authentication to access.
+
+### Verify hardening
+
+After running both scripts:
+
+```bash
+# Check file ownership
+ls -la db/ .env
+
+# Verify _darkhan user exists
+id _darkhan
+
+# Check Keychain entries (should list com.darkhan.server items)
+security find-generic-password -s com.darkhan.server 2>&1 | head -5
+```
+
+---
+
 ## Step 7: Auto-Start with launchd
 
 For production use, configure launchd so Darkhan starts automatically on boot and restarts on crash.
+
+**If you completed Step 6.5 (service user),** use the provided plist template that runs as `_darkhan`:
+
+```bash
+sudo cp server/scripts/com.darkhan.server.plist /Library/LaunchDaemons/
+sudo launchctl load /Library/LaunchDaemons/com.darkhan.server.plist
+```
+
+**If you skipped Step 6.5,** create a user-level plist:
 
 Create the plist file:
 
@@ -389,6 +453,7 @@ Post "comms check" in the #command channel on the hub. Both local and remote wor
 
 After setup, verify everything works:
 
+### Core Functionality
 - [ ] `http://localhost:3001` loads the login page
 - [ ] Login works with your credentials
 - [ ] You changed the default password via Settings (minimum 8 characters)
@@ -399,6 +464,18 @@ After setup, verify everything works:
 - [ ] Ollama responds: `curl -s http://localhost:11434/api/tags` shows your model
 - [ ] Post "comms check" in #command -- all workers respond
 - [ ] (If federated) Remote workers respond to comms check
+
+### Ground Truth & Verification
+- [ ] Ground truth seeded: `curl -s http://localhost:3001/api/ground-truth -H "X-API-Key: YOUR_KEY"` returns entries
+- [ ] Ground truth brief: `curl -s http://localhost:3001/api/ground-truth/brief/text -H "X-API-Key: YOUR_KEY"` returns readable text
+- [ ] Hash chain active: `curl -s http://localhost:3001/api/activity/chain-head -H "X-API-Key: YOUR_KEY"` returns a hash
+
+### Security Hardening (if completed Step 6.5)
+- [ ] Service user exists: `id _darkhan` succeeds
+- [ ] Database owned by service user: `ls -la server/db/darkhan.db` shows `_darkhan`
+- [ ] Keychain provisioned: `security find-generic-password -s com.darkhan.server` succeeds
+- [ ] Break-glass works: `cd server && node break-glass.js status` shows server state
+- [ ] Sandbox active: check server startup logs for "Sandbox service initialized"
 
 ---
 
@@ -437,11 +514,28 @@ After setup, verify everything works:
 | Model not found | Not pulled | `ollama pull qwen2.5:14b` |
 | Slow responses | Insufficient RAM | Use a smaller model: `ollama pull qwen2.5:7b` |
 
+### Break-Glass Recovery
+
+If you are completely locked out (forgot password, lockdown active, cannot access web UI), use the break-glass tool:
+
+```bash
+cd server
+node break-glass.js status              # Check what state the system is in (no auth needed)
+node break-glass.js reset-password      # Reset your password (requires lockdown PIN)
+node break-glass.js lift-lockdown       # Lift lockdown (requires lockdown PIN)
+node break-glass.js reset-baseline      # Reset integrity baseline (requires lockdown PIN)
+```
+
+**Requirements:**
+- Must be run from an interactive terminal (TTY). Will not work from scripts, pipes, or SSH without TTY allocation.
+- All commands except `status` require the lockdown PIN you set in Step 6.
+- If you have lost your lockdown PIN, the only recovery path is to delete both database files and re-run `node db/seed.js`.
+
 ### Security / Lockdown
 
 | Symptom | Likely Cause | Fix |
 |---------|-------------|-----|
-| All agent messages return 403 | System is in lockdown | Check Settings view in web UI for lockdown status and reason. Unlock with admin auth + PIN |
+| All agent messages return 403 | System is in lockdown | Check Settings view in web UI for lockdown status and reason. Unlock with admin auth + PIN. If web UI unavailable, use `node break-glass.js lift-lockdown` |
 | Lockdown triggered unexpectedly | Auto-threshold exceeded | Check activity log for the trigger: `curl -s "http://localhost:3001/api/activity?action=lockdown_activated&limit=5" -H "X-API-Key: YOUR_KEY"` |
 | Lockdown after modifying files | Integrity service detected changes | Expected during development. Restart the server to re-establish the integrity baseline |
 | Cannot unlock -- "no PIN configured" | PIN not set in secrets.db | You must set a lockdown PIN via Settings before the system can be unlocked. If completely locked out, re-seed the database |
