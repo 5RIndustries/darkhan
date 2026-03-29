@@ -48,9 +48,13 @@
 ```bash
 # Clone the repo
 git clone <repo-url> darkhan
-cd darkhan/server
+cd darkhan
+
+# Install the secret scanner pre-commit hook (blocks accidental credential commits)
+git config core.hooksPath .githooks
 
 # Install dependencies
+cd server
 npm install
 
 # Pull the local LLM
