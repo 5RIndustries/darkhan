@@ -355,8 +355,45 @@ io.use((socket, next) => {
       });
     });
   } else if (sessionCookie) {
-    socket.user = { username: 'web-user', role: 'authenticated' };
-    return next();
+    // Parse session ID from the connect.sid cookie
+    const cookieParser = require('cookie');
+    const signature = require('cookie-signature');
+    const cookies = cookieParser.parse(sessionCookie);
+    const signedSid = cookies['connect.sid'];
+    if (!signedSid) {
+      return next(new Error('Authentication required — no session cookie'));
+    }
+    // Unsign the cookie value (strip 's:' prefix if present)
+    const raw = signedSid.startsWith('s:') ? signedSid.slice(2) : signedSid;
+    const sid = signature.unsign(raw, process.env.SESSION_SECRET);
+    if (sid === false) {
+      return next(new Error('Authentication required — invalid session signature'));
+    }
+    // Look up the session in the SQLite session store
+    const sessionsDbPath = path.join(__dirname, 'db', 'sessions.db');
+    const sessDb = new sqlite3.Database(sessionsDbPath);
+    sessDb.get('SELECT sess FROM sessions WHERE sid = ?', [sid], (err, row) => {
+      sessDb.close();
+      if (err || !row) {
+        return next(new Error('Authentication required — session not found or expired'));
+      }
+      try {
+        const sessData = JSON.parse(row.sess);
+        if (!sessData.userId) {
+          return next(new Error('Authentication required — session has no user'));
+        }
+        socket.user = {
+          id: sessData.userId,
+          username: sessData.username || sessData.userId,
+          role: sessData.role || 'authenticated',
+          type: sessData.userType || 'human',
+        };
+        return next();
+      } catch (parseErr) {
+        return next(new Error('Authentication required — corrupt session data'));
+      }
+    });
+    return; // async — next() called in callback
   } else {
     return next(new Error('Authentication required'));
   }

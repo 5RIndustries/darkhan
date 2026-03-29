@@ -82,7 +82,7 @@ Edit `.env` with your values:
 
 | Variable | Required | What to Set |
 |----------|----------|-------------|
-| `SESSION_SECRET` | Yes | The random string you just generated |
+| `SESSION_SECRET` | **Yes** | The random string you just generated. **Server refuses to start without it.** Also used to derive HMAC keys for lockdown state signing. |
 | `PORT` | No | Server port (default: 3001) |
 | `OLLAMA_MODEL` | No | Your Ollama model name (default: qwen2.5:14b) |
 | `GOOGLE_API_KEY` | If using Gemini agents | Your Google AI Studio API key |
@@ -90,7 +90,7 @@ Edit `.env` with your values:
 
 See `.env.example` for the full list of supported variables with comments.
 
-**Security note:** The `.env` file contains secrets. It is listed in `.gitignore` and must never be committed to version control.
+**Security note:** The `.env` file contains secrets. It is listed in `.gitignore` and must never be committed to version control. `SESSION_SECRET` is not just for sessions -- it also derives the HMAC key that signs lockdown state in the database. If you change it, any persisted lockdown state will fail signature verification and the system will fail closed (lock down).
 
 ---
 
@@ -159,16 +159,35 @@ Edit `darkhan.config.json` to define your instance and team members. Here is a m
 node db/seed.js
 ```
 
-This creates the SQLite database (`db/darkhan.db`) and seeds it with:
-- User accounts for every team member in your config
-- Default channels
-- API keys for agent accounts
+This creates two SQLite databases and seeds them:
+
+| Database | Contains | Accessed by |
+|----------|----------|-------------|
+| `db/darkhan.db` | Users, channels, messages, tasks, activity log | Server + workers |
+| `db/secrets.db` | Password hashes, API keys, lockdown PIN | Server + auth middleware **only** |
+
+The seed process:
+- Creates user accounts for every team member in your config
+- Seeds default channels
+- Generates API keys for agent accounts (stored in secrets.db)
+- Sets permissions on secrets.db to 600 (owner-only read/write)
 
 **Save the API keys that are printed to the console.** You will need them for:
 - Agent scripts that post to Darkhan from outside
 - Remote worker configuration (if doing federated setup)
 
-If you ever need to reset the database, delete `db/darkhan.db` and re-run `node db/seed.js`.
+If you ever need to reset the database, delete both `db/darkhan.db` and `db/secrets.db`, then re-run `node db/seed.js`.
+
+### Upgrading from Darkhan v1 (secrets.db Migration)
+
+If you are upgrading an existing Darkhan v1 install that has credentials in `darkhan.db`:
+
+1. Stop the Darkhan server
+2. Run `node db/seed.js` -- this will create `secrets.db` and populate it with credentials
+3. Start the server -- it will apply the secrets schema automatically
+4. Verify login works. If not, re-seed: delete both `.db` files and run `node db/seed.js` again
+
+After migration, password hashes and API keys exist only in `secrets.db`. The `users` table in `darkhan.db` no longer contains `password_hash` or `api_key` columns.
 
 ---
 
@@ -180,9 +199,13 @@ node server.js
 
 You should see output confirming:
 - Server started on the configured port
+- Connected to database (darkhan.db)
+- Connected to secrets database (secrets.db)
+- Secrets schema applied, permissions set to 600
 - Workers loaded
-- Database connected
 - Integrity baseline established
+
+**If the server refuses to start** with a `SESSION_SECRET` error, go back to Step 2 and ensure `SESSION_SECRET` is set in your `.env` file. There is no fallback -- this is a hard requirement.
 
 ---
 
@@ -190,12 +213,14 @@ You should see output confirming:
 
 1. Open `http://localhost:3001` in your browser
 2. Log in with your username (lowercase, from config) and the default password `changeme`
-3. **Immediately do the following:**
+3. **Immediately do the following (both are required):**
    - Open the **Settings** view (gear icon, admin users only)
-   - **Change your password** to something strong
-   - **Set a lockdown PIN** -- this is a second factor required to unlock the system after a lockdown event. Choose something you will remember but that an agent cannot guess
+   - **Change your password** to something strong (minimum 8 characters)
+   - **Set a lockdown PIN** -- this is a second factor required to unlock the system after a lockdown event. Minimum 4 characters. Choose something you will remember but that an agent cannot guess.
 
-**Why the lockdown PIN matters:** If a security event triggers automatic lockdown, agents cannot unlock the system. You (the human admin) must authenticate via the web UI and provide the PIN to restore agent operations. This prevents a compromised agent from social-engineering its way out of lockdown.
+**Both steps are critical.** If you skip setting the lockdown PIN and the system enters lockdown (auto-triggered or manual), you will not be able to unlock it. The system fails closed: no PIN configured means no unlock allowed. You would need to re-seed the database to recover.
+
+**Why the lockdown PIN matters:** If a security event triggers automatic lockdown, agents cannot unlock the system. You (the human admin) must authenticate via the web UI and provide the PIN to restore agent operations. The PIN hash is stored in `secrets.db` (not the main database), so even a worker with full database access to `darkhan.db` cannot read it.
 
 ---
 
@@ -366,8 +391,8 @@ After setup, verify everything works:
 
 - [ ] `http://localhost:3001` loads the login page
 - [ ] Login works with your credentials
-- [ ] You changed the default password via Settings
-- [ ] You set a lockdown PIN via Settings
+- [ ] You changed the default password via Settings (minimum 8 characters)
+- [ ] You set a lockdown PIN via Settings (minimum 4 characters) -- **required before lockdown can be lifted**
 - [ ] Messages appear in the #command channel
 - [ ] Workers show as loaded: `curl -s http://localhost:3001/api/workers -H "X-API-Key: YOUR_KEY"`
 - [ ] Agent status dots show green in the Health view
@@ -383,6 +408,7 @@ After setup, verify everything works:
 
 | Symptom | Likely Cause | Fix |
 |---------|-------------|-----|
+| "FATAL: SESSION_SECRET not set" | Missing env var | Add `SESSION_SECRET` to `.env`. Generate: `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` |
 | "Cannot connect to database" | Database not initialized | Run `node db/seed.js` |
 | "EADDRINUSE" / port in use | Another process on port 3001 | Change `PORT` in `.env`, or find the conflicting process with `lsof -i :3001` |
 | "MODULE_NOT_FOUND" | Dependencies not installed | Run `npm install` in the `server/` directory |
@@ -417,7 +443,11 @@ After setup, verify everything works:
 |---------|-------------|-----|
 | All agent messages return 403 | System is in lockdown | Check Settings view in web UI for lockdown status and reason. Unlock with admin auth + PIN |
 | Lockdown triggered unexpectedly | Auto-threshold exceeded | Check activity log for the trigger: `curl -s "http://localhost:3001/api/activity?action=lockdown_activated&limit=5" -H "X-API-Key: YOUR_KEY"` |
-| Cannot unlock | PIN not set or forgotten | Contact the admin who set the PIN. If you are the only admin, you will need to re-seed the database |
+| Lockdown after modifying files | Integrity service detected changes | Expected during development. Restart the server to re-establish the integrity baseline |
+| Cannot unlock -- "no PIN configured" | PIN not set in secrets.db | You must set a lockdown PIN via Settings before the system can be unlocked. If completely locked out, re-seed the database |
+| Cannot unlock -- "signature mismatch" | Lockdown state tampered in DB | The HMAC signature on the lockdown state failed. System fails closed. Re-seed the database to reset |
+| Cannot unlock -- PIN forgotten | Lost lockdown PIN | Contact the admin who set the PIN. If you are the only admin, delete both `.db` files and re-run `node db/seed.js` |
+| API key auth stopped working | Upgrading from v1 without migration | API keys are now in secrets.db only. Re-run `node db/seed.js` to populate secrets.db |
 
 ### Logs
 

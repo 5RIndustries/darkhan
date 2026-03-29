@@ -1001,7 +1001,17 @@
   function _renderDocContent(content, ext) {
     const contentContainer = document.getElementById('docs-rendered');
     if (ext === '.md' && typeof marked !== 'undefined') {
-      contentContainer.innerHTML = marked.parse(content);
+      // SECURITY: Sanitize rendered markdown to prevent XSS from vault content.
+      // Strip dangerous tags/attributes after markdown parsing.
+      let rendered = marked.parse(content);
+      rendered = rendered
+        .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+        .replace(/<iframe\b[^>]*>.*?<\/iframe>/gi, '')
+        .replace(/<object\b[^>]*>.*?<\/object>/gi, '')
+        .replace(/<embed\b[^>]*\/?>/gi, '')
+        .replace(/\bon\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]*)/gi, '')
+        .replace(/javascript\s*:/gi, 'blocked:');
+      contentContainer.innerHTML = rendered;
     } else {
       contentContainer.innerHTML = `<pre style="white-space:pre-wrap;font-size:0.85rem;">${escapeHtml(content)}</pre>`;
     }
