@@ -30,10 +30,12 @@
 - [x] ~~Brute-force login~~ — exponential backoff after 5 failures
 
 ### Remaining P1 [IN PROGRESS]
-- [ ] Approval queue UI + workflow — **BUILDING NOW**
-- [ ] Force password change on first login — **BUILDING NOW**
+- [x] ~~Approval queue UI + workflow~~ — Backend + UI complete (2026-03-28)
+- [x] ~~Force password change on first login~~ — Backend + UI complete (2026-03-28)
+- [x] ~~Output verification gate~~ — Ground truth registry (15 entries, 43 aliases), contradiction detection (7/7 tests pass), integrated into claim verifier pipeline, admin API endpoints. **COMPLETE (2026-03-29)**
+- [x] ~~Hash chain federation foundation~~ — CRISPR spacers, chain anchors, origin tracking, 6 Mokume-ready endpoints. **COMPLETE (2026-03-29)**
 - [ ] Gmail for Chief (gws CLI) — **PREPPED**, needs the admin interactive OAuth
-- [ ] Output verification gate — Ground truth registry for "never lie" architecture. **NEXT SESSION, TOP PRIORITY.**
+- [ ] Secrets.db encryption at rest — **NEW (2026-03-29)**, documented security gap from password reset audit
 
 ---
 
@@ -160,3 +162,8 @@
 | 2026-03-28 | Injection cloud escalation | Local LLM classification for external-origin |
 | 2026-03-28 | Brute-force protection | Exponential backoff on login |
 | 2026-03-28 | Integrity baseline hardening | Admin-commanded reset only |
+| 2026-03-29 | Hash chain + CRISPR spacers | Origin tracking, defense spacers, chain anchors, 6 federation-ready API endpoints |
+| 2026-03-29 | Ground Truth Registry | 15 verified facts seeded, contradiction detection (7/7), integrated into claim verifier |
+| 2026-03-29 | Output Verification Gate | Ground truth + claim verifier pipeline = never-lie architecture core |
+| 2026-03-29 | Chief daily briefing | 0545 ET consolidated report, wikilinked into daily journal |
+| 2026-03-29 | Security audit documented | Secrets.db access paths mapped, encryption needed before release |

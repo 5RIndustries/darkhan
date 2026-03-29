@@ -16,10 +16,11 @@ const fs = require('fs');
 const path = require('path');
 
 class ClaimVerifierService {
-  constructor({ vaultPath, db, activityLog }) {
+  constructor({ vaultPath, db, activityLog, groundTruth = null }) {
     this.vaultPath = vaultPath;
     this.db = db;
     this.activityLog = activityLog;
+    this.groundTruth = groundTruth; // Set after GroundTruthRegistry initializes
 
     // File reference patterns — capture the path portion
     this.filePatterns = [
@@ -73,6 +74,21 @@ class ClaimVerifierService {
 
     // 3. Tag count/quantity claims as self-reported
     this._extractCountClaims(messageBody, claims);
+
+    // 4. Check against ground truth registry
+    let groundTruthResults = [];
+    if (this.groundTruth) {
+      groundTruthResults = this.groundTruth.checkMessage(messageBody);
+      for (const gt of groundTruthResults) {
+        claims.push({
+          claim: gt.key,
+          type: 'ground_truth',
+          verified: gt.contradiction ? false : true,
+          evidence: gt.evidence,
+          contradiction: gt.contradiction || null,
+        });
+      }
+    }
 
     // No claims found — nothing to tag
     if (claims.length === 0) return null;

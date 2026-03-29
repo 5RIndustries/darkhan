@@ -128,6 +128,19 @@ class SecurityService {
       }),
     });
 
+    // [CRISPR] Create defense spacer for high/critical severity injections.
+    // These spacers propagate to federated instances via Mokume, making every
+    // attack strengthen the entire network's defense.
+    if (severity === 'high' || severity === 'critical') {
+      const crypto = require('crypto');
+      const signature = crypto.createHash('sha256').update(threats.join('|')).digest('hex');
+      this.activityLog.appendSpacer({
+        category: 'injection',
+        signature,
+        description: `${severity} injection: ${threats.length} pattern(s) from ${context.source || 'unknown'} (${context.origin || 'local'})`,
+      });
+    }
+
     // [DARKHAN SECURITY] Flag external/federated messages for cloud LLM escalation
     const recommendCloudEscalation = (context.origin === 'external' || context.origin === 'federated');
 
@@ -310,6 +323,15 @@ Message: "${text.substring(0, 2000)}"`
         actor: 'darkhan_security',
         action: 'data_leakage_blocked',
         details: JSON.stringify({ leakCount: leaks.length }),
+      });
+
+      // [CRISPR] Spacer for exfiltration attempts
+      const crypto = require('crypto');
+      const exfilSig = crypto.createHash('sha256').update(leaks.join('|')).digest('hex');
+      this.activityLog.appendSpacer({
+        category: 'exfiltration',
+        signature: exfilSig,
+        description: `Data leakage blocked: ${leaks.length} pattern(s) detected`,
       });
     }
 
@@ -553,6 +575,16 @@ Message: "${text.substring(0, 2000)}"`
       actor: triggeredBy,
       action: 'LOCKDOWN_ACTIVATED',
       details: JSON.stringify({ reason }),
+    });
+
+    // [CRISPR] Create defense spacer for lockdown events — highest severity.
+    // Lockdowns represent confirmed threats worth sharing across all instances.
+    const crypto = require('crypto');
+    const lockdownSig = crypto.createHash('sha256').update(`lockdown|${reason}|${triggeredBy}`).digest('hex');
+    this.activityLog.appendSpacer({
+      category: 'escalation',
+      signature: lockdownSig,
+      description: `Lockdown triggered by ${triggeredBy}: ${reason}`,
     });
 
     console.error(`\n[SECURITY] *** LOCKDOWN ACTIVATED ***\nReason: ${reason}\nTriggered by: ${triggeredBy}\nAll agent traffic blocked. Human admin must unlock.\n`);

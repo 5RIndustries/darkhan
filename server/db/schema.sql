@@ -150,3 +150,20 @@ CREATE TRIGGER IF NOT EXISTS prevent_activity_update
   BEGIN
     SELECT RAISE(ABORT, 'activity_log is immutable — UPDATE not permitted');
   END;
+
+-- [DARKHAN] Ground Truth Registry — verified facts that agents must not contradict
+-- Part of the "never-lie" architecture (Output Verification Gate)
+CREATE TABLE IF NOT EXISTS ground_truths (
+  key TEXT PRIMARY KEY,
+  category TEXT NOT NULL CHECK(category IN ('metric', 'state', 'identity', 'spec')),
+  value TEXT NOT NULL,
+  unit TEXT,
+  source TEXT NOT NULL,
+  verified_by TEXT NOT NULL,
+  aliases TEXT,                          -- JSON array of alternate phrasings for claim matching
+  notes TEXT,
+  deprecated INTEGER DEFAULT 0,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_gt_category ON ground_truths (category, deprecated);
