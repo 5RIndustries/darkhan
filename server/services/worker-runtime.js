@@ -55,6 +55,7 @@ class WorkerRuntime {
 
   /**
    * Load all workers from the workers/ directory.
+   * Uses forked process isolation when sandbox.processIsolation is enabled.
    */
   async loadAll() {
     const workersDir = path.join(__dirname, '..', 'workers');
@@ -67,9 +68,20 @@ class WorkerRuntime {
     const files = fs.readdirSync(workersDir).filter(f => f.endsWith('.worker.js'));
     console.log(`[WorkerRuntime] Found ${files.length} worker(s): ${files.join(', ')}`);
 
+    const useForked = this.config.sandbox?.processIsolation === true
+      && process.env.NODE_ENV !== 'development';
+
+    if (useForked) {
+      console.log('[WorkerRuntime] Process isolation ENABLED — workers will run as forked child processes');
+    }
+
     for (const file of files) {
       try {
-        await this.loadWorker(path.join(workersDir, file));
+        if (useForked) {
+          await this.loadWorkerForked(path.join(workersDir, file));
+        } else {
+          await this.loadWorker(path.join(workersDir, file));
+        }
       } catch (e) {
         console.error(`[WorkerRuntime] Failed to load ${file}:`, e.message);
         this.activityLog.append({
@@ -241,6 +253,289 @@ class WorkerRuntime {
     });
 
     console.log(`[WorkerRuntime] ${id} loaded (${cronJobs.length} task(s))`);
+  }
+
+  /**
+   * [P0-1] Load a worker as a forked child process with OS-level isolation.
+   * The child runs worker-process.js and communicates via IPC.
+   * Cron scheduling and Darkhan API proxying happen in the parent.
+   */
+  async loadWorkerForked(filePath) {
+    const { fork } = require('child_process');
+    const self = this;
+
+    // Supply chain verification (same as in-process)
+    const crypto = require('crypto');
+    const workerHash = crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+    const manifestPath = path.join(__dirname, '..', 'workers', 'manifest.json');
+    if (fs.existsSync(manifestPath)) {
+      try {
+        const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+        const fileName = path.basename(filePath);
+        if (manifest[fileName] && manifest[fileName] !== workerHash) {
+          throw new Error(`SUPPLY CHAIN: Worker ${fileName} hash mismatch`);
+        }
+      } catch (e) {
+        if (e.message.startsWith('SUPPLY CHAIN')) throw e;
+      }
+    }
+
+    // Peek at the worker module to get its ID (needed for config lookup)
+    const workerModule = require(filePath);
+    const { id, name, tasks, listeners: listenerDefs } = workerModule;
+    delete require.cache[require.resolve(filePath)]; // Unload — child will load it
+
+    if (!id || !tasks) {
+      throw new Error(`Worker ${filePath} missing required 'id' or 'tasks'`);
+    }
+
+    const agentConfig = this.config.team.members.find(m => m.id === id);
+    if (!agentConfig) {
+      throw new Error(`Worker ${id} not found in darkhan.config.json team members`);
+    }
+
+    // Generate onboarding brief for the child
+    let onboarding = { preamble: '', full: '' };
+    try {
+      onboarding = await this.onboardingService.generateBrief(id, agentConfig);
+    } catch (e) {
+      console.error(`[WorkerRuntime] ${id} onboarding failed:`, e.message);
+    }
+
+    // Build sandboxed environment
+    const sandboxEnv = this.sandbox.buildEnvironment(agentConfig);
+
+    // Fork the child process
+    const childPath = path.join(__dirname, 'worker-process.js');
+    const child = fork(childPath, [], {
+      env: sandboxEnv,
+      stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
+      cwd: path.join(__dirname, '..'),
+    });
+
+    console.log(`[WorkerRuntime] ${id} forked as PID ${child.pid}`);
+
+    // Handle child logs
+    child.stdout?.on('data', (data) => console.log(`[${id}] ${data.toString().trim()}`));
+    child.stderr?.on('data', (data) => console.error(`[${id}] ${data.toString().trim()}`));
+
+    // Wait for ready signal
+    const ready = await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error(`${id} init timeout`)), 30000);
+
+      child.on('message', function onMsg(msg) {
+        if (msg.type === 'alive') {
+          // Send init
+          child.send({
+            type: 'init',
+            workerPath: filePath,
+            agentId: id,
+            agentConfig,
+            onboardingPreamble: onboarding.preamble,
+            vaultPath: self.vaultPath,
+          });
+        } else if (msg.type === 'ready') {
+          clearTimeout(timeout);
+          child.removeListener('message', onMsg);
+          resolve(msg);
+        } else if (msg.type === 'init_failed') {
+          clearTimeout(timeout);
+          child.removeListener('message', onMsg);
+          reject(new Error(msg.error));
+        }
+      });
+
+      child.on('error', (e) => { clearTimeout(timeout); reject(e); });
+      child.on('exit', (code) => { clearTimeout(timeout); reject(new Error(`Child exited with code ${code}`)); });
+    });
+
+    // Set up IPC proxy handler for Darkhan API calls from the child
+    child.on('message', async (msg) => {
+      if (msg.type === 'proxy_request') {
+        try {
+          const result = await self._handleProxyRequest(id, msg.method, msg.args, agentConfig);
+          child.send({ type: 'response', requestId: msg.requestId, result });
+        } catch (e) {
+          child.send({ type: 'response', requestId: msg.requestId, error: e.message });
+        }
+      } else if (msg.type === 'log') {
+        const prefix = `[${id}]`;
+        if (msg.level === 'error') {
+          console.error(prefix, msg.message);
+          this._postToChannel('chan_alerts', `[${id}] ERROR: ${msg.message}`, id);
+        } else if (msg.level === 'warn') {
+          console.warn(prefix, msg.message);
+        } else {
+          console.log(prefix, msg.message);
+        }
+        self.activityLog.append({ actor: id, action: 'log_' + msg.level, details: msg.message });
+      } else if (msg.type === 'task_complete') {
+        const worker = self.workers.get(id);
+        if (worker) { worker.running = null; worker.status = 'idle'; worker.lastRun = new Date().toISOString(); }
+        self.activityLog.append({ actor: id, action: 'task_completed', target: msg.taskName, details: JSON.stringify({ elapsedMs: msg.elapsed }) });
+        self._pingHealth(id, 'active');
+        console.log(`[WorkerRuntime] ${id}.${msg.taskName} COMPLETED (${msg.elapsed}ms)`);
+      } else if (msg.type === 'task_failed') {
+        const worker = self.workers.get(id);
+        if (worker) { worker.running = null; worker.status = 'error'; }
+        self.activityLog.append({ actor: id, action: 'task_failed', target: msg.taskName, details: JSON.stringify({ error: msg.error, elapsedMs: msg.elapsed }) });
+        console.error(`[WorkerRuntime] ${id}.${msg.taskName} FAILED (${msg.elapsed}ms): ${msg.error}`);
+      }
+    });
+
+    // Handle child exit
+    child.on('exit', (code) => {
+      console.error(`[WorkerRuntime] ${id} child process exited (code ${code})`);
+      self.activityLog.append({ actor: id, action: 'worker_process_exited', details: JSON.stringify({ code }) });
+      const worker = self.workers.get(id);
+      if (worker) worker.status = 'dead';
+    });
+
+    // Schedule cron tasks (in parent — send run_task to child when cron fires)
+    const cronJobs = [];
+    for (const [taskName, taskDef] of Object.entries(tasks)) {
+      const { schedule, timeout = 300000, runOnLoad = false } = taskDef;
+      if (!schedule || !cron.validate(schedule)) continue;
+
+      const job = cron.schedule(schedule, () => {
+        const worker = self.workers.get(id);
+        if (!worker || worker.disabled || worker.running) return;
+        worker.running = taskName;
+        worker.status = 'busy';
+        child.send({ type: 'run_task', taskName, timeout });
+      }, { timezone: self.config.instance?.timezone || 'America/New_York' });
+
+      cronJobs.push({ taskName, job, schedule });
+      console.log(`[WorkerRuntime] ${id}.${taskName} scheduled (forked): ${schedule}`);
+
+      if (runOnLoad) {
+        setImmediate(() => {
+          const worker = self.workers.get(id);
+          if (worker) { worker.running = taskName; worker.status = 'busy'; }
+          child.send({ type: 'run_task', taskName, timeout });
+        });
+      }
+    }
+
+    // Register listeners (matching happens in parent, execution sent to child)
+    for (const [listenerName, listenerDef] of Object.entries(listenerDefs || {})) {
+      const { patterns = [], timeout = 60000 } = listenerDef;
+      const compiledPatterns = patterns.map(p => p instanceof RegExp ? p : new RegExp(p, 'i'));
+
+      this.messageListeners.push({
+        workerId: id,
+        listenerName,
+        patterns: compiledPatterns,
+        handler: async (ctx, { channelId, fromUser, body }) => {
+          child.send({ type: 'run_listener', listenerName, channelId, fromUser, body, timeout });
+        },
+        timeout,
+        context: null, // Not needed — child has its own context
+      });
+    }
+
+    // Register worker
+    this.workers.set(id, {
+      module: null, // Not loaded in parent
+      childProcess: child,
+      cronJobs,
+      running: null,
+      lastRun: null,
+      status: 'idle',
+      name: name || id,
+      context: null,
+      forked: true,
+    });
+
+    // Register for sandbox monitoring
+    this.sandbox.processes.set(id, {
+      proc: child,
+      limits: this.sandbox.getLimits(agentConfig),
+      allowedPaths: this.sandbox.getAllowedPaths(agentConfig),
+      env: sandboxEnv,
+    });
+
+    // Start resource watchdog
+    this.sandbox.startWatchdog(id, child, this.sandbox.getLimits(agentConfig));
+
+    this.activityLog.append({
+      actor: id,
+      action: 'worker_loaded_forked',
+      target: path.basename(filePath),
+      details: JSON.stringify({ pid: child.pid, tasks: Object.keys(tasks) }),
+    });
+
+    console.log(`[WorkerRuntime] ${id} loaded (forked, PID ${child.pid}, ${cronJobs.length} task(s))`);
+  }
+
+  /**
+   * Handle a proxy request from a forked child process.
+   * Routes the request to the appropriate service and returns the result.
+   */
+  async _handleProxyRequest(agentId, method, args, agentConfig) {
+    switch (method) {
+      case 'llm.complete':
+        return this.llmService.complete({ agentId, ...args[0] });
+      case 'llm.classify':
+        return this.llmService.classify ? this.llmService.classify({ agentId, ...args[0] }) : null;
+      case 'darkhan.post':
+        return this._postToChannel(args[0], args[1], agentId, args[2] || {});
+      case 'darkhan.getMessages':
+        return this._getMessages(args[0], args[1] || {});
+      case 'darkhan.createTask':
+        return this._createTask(args[0]);
+      case 'darkhan.ping':
+        return this._pingHealth(agentId, args[0] || 'active');
+      case 'darkhan.requestApproval':
+        return this._requestApproval(args[0], args[1], args[2]);
+      case 'darkhan.flagThreat': {
+        const { category, severity, description, evidence } = args[0];
+        const crypto = require('crypto');
+        const sig = crypto.createHash('sha256').update(`${category}|${description}|${agentId}`).digest('hex');
+        const alertBody = `**[THREAT FLAG]** ${severity?.toUpperCase() || 'UNKNOWN'}\n**From:** ${agentId}\n**Category:** ${category}\n**Description:** ${description}${evidence ? `\n**Evidence:** ${evidence}` : ''}`;
+        await this._postToChannel('chan_alerts', alertBody, agentId);
+        if (this.activityLog?.appendSpacer) {
+          this.activityLog.appendSpacer({ category: category || 'anomaly', signature: sig, description: `[${agentId}] ${severity}: ${description}` });
+        }
+        return { ok: true };
+      }
+      case 'tools.fs.write': {
+        const filePath = args[0];
+        const data = args[1];
+        const fullPath = filePath.startsWith('/') ? filePath : path.join(this.vaultPath, filePath);
+        // Check write permissions
+        const allowed = agentConfig.permissions?.fsWrite || [];
+        const relPath = path.relative(this.vaultPath, fullPath);
+        const permitted = allowed.length > 0 && allowed.some(prefix => relPath.startsWith(prefix));
+        if (!permitted) throw new Error(`Write permission denied: ${relPath}`);
+        const dir = path.dirname(fullPath);
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        await fs.promises.writeFile(fullPath, data, 'utf8');
+        return { ok: true };
+      }
+      case 'tools.shell.exec': {
+        const command = args[0];
+        const opts = args[1] || {};
+        // Security check
+        if (this.securityService) {
+          const check = this.securityService.checkShellCommand(agentId, command);
+          if (!check.allowed) throw new Error(`Security: ${check.reason}`);
+        }
+        const { execFile } = require('child_process');
+        return new Promise((resolve, reject) => {
+          execFile('/bin/sh', ['-c', command], {
+            cwd: opts.cwd || this.vaultPath,
+            timeout: opts.timeout || 30000,
+            env: { HOME: process.env.HOME, PATH: process.env.PATH, LANG: process.env.LANG || 'en_US.UTF-8', USER: process.env.USER, TERM: process.env.TERM || 'xterm-256color' },
+          }, (err, stdout, stderr) => {
+            if (err) reject(new Error(`Shell error: ${err.message}`));
+            else resolve({ stdout: stdout.trim(), stderr: stderr.trim() });
+          });
+        });
+      }
+      default:
+        throw new Error(`Unknown proxy method: ${method}`);
+    }
   }
 
   /**
@@ -852,6 +1147,12 @@ class WorkerRuntime {
     for (const { job } of worker.cronJobs) {
       job.stop();
     }
+
+    // For forked workers, also send shutdown to child process
+    if (worker.forked && worker.childProcess?.connected) {
+      worker.childProcess.send({ type: 'shutdown' });
+    }
+
     worker.status = 'disabled';
     worker.disabled = true;
 
@@ -917,8 +1218,20 @@ class WorkerRuntime {
       for (const { job } of worker.cronJobs) {
         job.stop();
       }
-      console.log(`[WorkerRuntime] ${id} stopped`);
+      // Kill forked child processes
+      if (worker.forked && worker.childProcess?.connected) {
+        worker.childProcess.send({ type: 'shutdown' });
+        // Give it 5 seconds to exit gracefully, then force kill
+        setTimeout(() => {
+          if (worker.childProcess?.connected) {
+            worker.childProcess.kill('SIGKILL');
+          }
+        }, 5000);
+      }
+      console.log(`[WorkerRuntime] ${id} stopped${worker.forked ? ' (child process)' : ''}`);
     }
+    // Clean up sandbox resources
+    this.sandbox.shutdown();
   }
 }
 
