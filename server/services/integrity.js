@@ -65,6 +65,16 @@ class IntegrityService {
     // so tampering with Darkhan code doesn't affect the baseline reference
     this.externalBaselinePath = path.join(process.env.HOME, '.darkhan-integrity-baseline.json');
 
+    // Development mode: skip integrity baseline checks during active development.
+    // All other security remains active (injection detection, identity enforcement, etc).
+    // Enabled via NODE_ENV=development or config.
+    this.devMode = process.env.NODE_ENV === 'development' || config.integrity?.devMode === true;
+    if (this.devMode) {
+      console.log('[Integrity] *** DEVELOPMENT MODE — integrity baseline checks DISABLED ***');
+      console.log('[Integrity] File tampering will not trigger lockdown. All other security is active.');
+      console.log('[Integrity] Set NODE_ENV=production for full integrity enforcement.');
+    }
+
     console.log('[Integrity] Service initializing...');
   }
 
@@ -150,40 +160,53 @@ class IntegrityService {
         }
 
         if (tampered.length > 0) {
-          // Files were modified since last known-good state — DO NOT overwrite baseline
-          this.activityLog.append({
-            actor: 'darkhan_integrity',
-            action: 'STARTUP_TAMPER_DETECTED',
-            details: JSON.stringify({
-              tamperedFiles: tampered,
-              count: tampered.length,
-              action: 'baseline_preserved_lockdown_triggered',
-            }),
-          });
+          // [DEV MODE] In development, log the changes but don't lockdown.
+          // Auto-update the baseline to the current file state.
+          if (this.devMode) {
+            console.warn(`[Integrity] DEV MODE: ${tampered.length} file(s) changed: ${tampered.join(', ')}`);
+            console.warn(`[Integrity] DEV MODE: Auto-updating baseline (no lockdown)`);
+            this.activityLog.append({
+              actor: 'darkhan_integrity',
+              action: 'dev_mode_baseline_auto_update',
+              details: JSON.stringify({ tamperedFiles: tampered, count: tampered.length }),
+            });
+            // Fall through to save the new baseline below
+          } else {
+            // PRODUCTION: Files were modified since last known-good state — DO NOT overwrite baseline
+            this.activityLog.append({
+              actor: 'darkhan_integrity',
+              action: 'STARTUP_TAMPER_DETECTED',
+              details: JSON.stringify({
+                tamperedFiles: tampered,
+                count: tampered.length,
+                action: 'baseline_preserved_lockdown_triggered',
+              }),
+            });
 
-          console.error(`[Integrity] *** ${tampered.length} file(s) modified since external baseline — LOCKDOWN ***`);
-          console.error(`[Integrity] External baseline NOT overwritten — preserving known-good state`);
+            console.error(`[Integrity] *** ${tampered.length} file(s) modified since external baseline — LOCKDOWN ***`);
+            console.error(`[Integrity] External baseline NOT overwritten — preserving known-good state`);
 
-          // Restore in-memory baseline from external (the known-good one)
-          this.baselineHashes = extHashes;
-          this.baselineUserCount = external.userCount || this.baselineUserCount;
-          this.baselineUserHash = external.userHash || this.baselineUserHash;
+            // Restore in-memory baseline from external (the known-good one)
+            this.baselineHashes = extHashes;
+            this.baselineUserCount = external.userCount || this.baselineUserCount;
+            this.baselineUserHash = external.userHash || this.baselineUserHash;
 
-          // Trigger lockdown
-          if (this.securityService) {
-            this.securityService.triggerLockdown(
-              `CRITICAL: ${tampered.length} file(s) modified since last known-good baseline on restart: ${tampered.join(', ')}`,
-              'darkhan_integrity'
-            );
+            // Trigger lockdown
+            if (this.securityService) {
+              this.securityService.triggerLockdown(
+                `CRITICAL: ${tampered.length} file(s) modified since last known-good baseline on restart: ${tampered.join(', ')}`,
+                'darkhan_integrity'
+              );
+            }
+
+            // Enforce permissions and return — do NOT save a new baseline
+            this._enforcePermissions();
+            return {
+              files: Object.keys(this.baselineHashes).length,
+              users: this.baselineUserCount,
+              tampered,
+            };
           }
-
-          // Enforce permissions and return — do NOT save a new baseline
-          this._enforcePermissions();
-          return {
-            files: Object.keys(this.baselineHashes).length,
-            users: this.baselineUserCount,
-            tampered,
-          };
         }
 
         // All hashes match — safe to proceed and update the baseline
@@ -288,8 +311,13 @@ class IntegrityService {
   /**
    * Verify integrity — compare current state against baseline.
    * Returns { clean: boolean, violations: [] }
+   * In dev mode, logs changes but does not trigger lockdown.
    */
   async verify() {
+    if (this.devMode) {
+      return { clean: true, violations: [], devMode: true };
+    }
+
     const violations = [];
 
     // Check critical file hashes
