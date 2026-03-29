@@ -98,6 +98,8 @@ darkhan/
 |       |-- lindsey.worker.js     # COO -- engineering execution, inbox processing, shift briefings
 |       `-- penny.worker.js       # CFO/CMO -- business dev, funding pipeline, market intelligence
 |   |-- break-glass.js           # Emergency admin recovery tool (interactive TTY only)
+|   |-- worker-process.js        # Child process entry point for forked worker isolation
+|   |-- model-verifier.js        # LLM model hash verification against Ollama manifests
 |   |-- services/                # (additional services beyond those listed above)
 |   |   |-- ground-truth.js      # Ground Truth Registry -- canonical verified facts
 |   |   |-- sandbox.js           # Native macOS sandbox -- process isolation for agents
@@ -107,6 +109,16 @@ darkhan/
 |       |-- setup-service-user.sh    # Creates _darkhan service user for privilege separation
 |       |-- setup-keychain.sh        # Provisions macOS Keychain items for Darkhan secrets
 |       `-- com.darkhan.server.plist # launchd template for running as _darkhan
+|
+|-- .githooks/
+|   `-- pre-commit               # Secret scanner -- blocks commits containing API keys, tokens, credentials
+|-- server/
+|   `-- secret-scanner.js        # Secret detection engine (AWS, Google, Anthropic, OpenAI, Azure, GitHub, Slack, Telegram, Darkhan keys, JWTs, private keys, connection strings)
+|
+|-- services/
+|   `-- telegram.js              # Telegram bridge service (long-polling in, HTTPS out, injection scanning)
+|-- workers/
+|   `-- telegram.worker.js       # Example Telegram bridge worker
 |
 |-- client/                       # Web UI (vanilla JS SPA)
 |   |-- index.html                # Main app shell
@@ -251,6 +263,15 @@ Native macOS process isolation for agent-executed commands. Enforces security bo
 - **SBPL profile generation:** Produces `sandbox-exec` profiles for macOS kernel-level enforcement
 - Configured via the `sandbox` section in `darkhan.config.json`
 
+### Model Verifier (`model-verifier.js`)
+
+Verifies the integrity of Ollama model files at startup by checking SHA-256 digests against the model manifest. Uses streaming hash computation to handle multi-GB model files efficiently.
+
+- Runs automatically on server start
+- Compares model file hashes against Ollama's manifest-stored SHA-256 digests
+- Detects tampered or corrupted model downloads before they are used for inference
+- Logs results to the activity log
+
 ### Keychain Service (`services/keychain.js`)
 
 macOS Keychain integration for storing critical secrets outside the filesystem.
@@ -269,6 +290,7 @@ Cron-scheduled agent task execution engine. See [WORKER-CONTRACT.md](WORKER-CONT
 - Sequential within a worker, parallel across workers
 - Provides `llm`, `darkhan`, `tools`, `config`, `log` interfaces
 - Shell commands enforced by security service permissions
+- **Forked process mode:** When `sandbox.processIsolation = true` in config, workers run as isolated child processes via `fork()`. The child process (`worker-process.js`) communicates with the parent via IPC. The parent handles cron scheduling and proxies all Darkhan API calls with full security checks. Graceful shutdown with 5-second timeout. In development mode (`NODE_ENV=development`), workers run in-process for faster iteration.
 
 `GET /api/workers` -- status of all loaded workers.
 
@@ -572,18 +594,25 @@ Each transition boundary is scanned.
 | Input scanning | Regex patterns against known injection techniques | `messages.js` POST route |
 | Origin tagging | External content flagged for higher scrutiny | Message metadata |
 | Critical blocking | Multi-pattern external injection -> HTTP 400 reject | `messages.js` POST route |
+| Tool output scanning | `tools.fs.read()` and `tools.shell.exec()` scan output for injection patterns before returning to the worker/LLM context. Critical severity blocks; lower severity warns. | `tool-executor.js` |
 | Output validation | Workers constrain LLM output format | `worker-runtime.js` |
 | Leak prevention | Outbound scan for API keys/passwords/private keys | `security.js` |
 | Tool enforcement | Per-agent shell command restrictions + env whitelist | `security.js` + `worker-runtime.js` |
+| Tool rate limiting | Max 200 fs reads, 50 fs writes, 10 shell execs per task. Counters reset per task. Prevents runaway loops. | `tool-executor.js` |
+| Path normalization | Shell commands resolve symlinks and absolute paths before blocklist comparison. Prevents bypass via `/usr/bin/python3` or symlinked binaries. | `security.js` |
 | Interpreter blocking | `python`, `node`, `perl`, `ruby`, `php` blocked in restricted shell | `security.js` |
+| Process isolation | Workers run as forked child processes via `fork()` when `sandbox.processIsolation = true`. IPC communication only. | `worker-runtime.js` + `worker-process.js` |
+| Network egress | Deny-default network policy. Only allowed: Ollama (localhost:11434), Gemini API, Anthropic API. Shell blocklist prevents curl/wget. | `sandbox.js` |
 | Identity enforcement | Agents cannot impersonate humans or other agents | `middleware/auth.js` |
 | Credential isolation | Password hashes, API keys, PIN in separate database | `secrets.db` (not accessible to workers) |
+| Model verification | Ollama model file SHA-256 digests verified against manifest at startup. Detects tampered downloads. | `model-verifier.js` |
 | Claim verification | Agent messages auto-tagged with evidence of claim accuracy | `claim-verifier.js` |
 | Evidence-based reporting | Security reports use SHA-256-hashed code-level checks | `evidence.js` |
 | Active monitoring | 15-minute automated channel sweeps (evidence-based) | `darkhan.worker.js` |
 | Daily red team audit | Comprehensive security review at 0100 ET daily | `darkhan.worker.js` (corey_daily_audit) |
 | File integrity | SHA-256 hash verification every 5 minutes | `integrity.js` |
 | Audit trail | Every event logged immutably (SQLite triggers) | `activity-log.js` |
+| Pre-commit scanning | Secret scanner blocks commits containing API keys, tokens, private keys, JWTs, connection strings | `.githooks/pre-commit` |
 
 ### Agent Permissions
 
@@ -747,6 +776,8 @@ All endpoints require authentication via session cookie (web UI) or `X-API-Key` 
 | GET | `/api/health/status` | Status lights for all agents (green/amber/red) |
 | POST | `/api/health/ping` | Agent heartbeat |
 | GET | `/api/workers` | Worker runtime status |
+| POST | `/api/workers/:id/disable` | Disable an agent (stops cron jobs, admin only) |
+| POST | `/api/workers/:id/enable` | Re-enable a disabled agent (admin only) |
 | GET | `/api/rates` | Rate limiter summary |
 | GET | `/api/costs/daily?date=YYYY-MM-DD` | Daily cost breakdown |
 | GET | `/api/costs/total` | All-time cost totals |
@@ -951,6 +982,36 @@ Returns a summary of today's security events by category.
 
 ---
 
+## Development Tools
+
+### Pre-Commit Secret Scanner
+
+A git pre-commit hook that scans every staged diff for accidentally committed secrets. Automatically installed when you run `git config core.hooksPath .githooks` (included in the install steps).
+
+**What it catches:**
+- API keys: AWS, Google, Anthropic, OpenAI, Azure, GitHub, Slack, Telegram, Darkhan (`dk_agent_`, `dk_admin_`)
+- Private keys (RSA, EC, Ed25519)
+- JWTs (`eyJ...`)
+- Database connection strings
+- Hardcoded secret assignments (`secret = "..."`, `password = "..."`, etc.)
+
+**Behavior:**
+- Blocks the commit with a clear error listing the file, line, and match type
+- Provides remediation instructions (remove the secret, use `.env`, revoke if exposed)
+- Runs `server/secret-scanner.js` on the staged diff
+
+### Telegram Bridge
+
+Optional bridge service (`services/telegram.js`) that connects Telegram groups to Darkhan channels. Useful for teams transitioning from Telegram or for external stakeholders who prefer Telegram.
+
+- Long-polling for incoming Telegram messages (no webhook server required)
+- HTTPS POST for outgoing messages to Telegram
+- Injection scanning on all incoming messages before they enter Darkhan
+- Zero external dependencies beyond Node.js built-in `https`
+- Example worker: `workers/telegram.worker.js`
+
+---
+
 ## Roadmap
 
 - **Phase 6:** ~~Integrated knowledge base~~ **DONE** (vault browser, markdown renderer, search, edit -- built 2026-03-28)
@@ -989,3 +1050,13 @@ Post-v1 additions (2026-03-29):
 - **Session invalidation on password change:** Destroys all other sessions for the user.
 - **Chief daily briefing:** 0545 ET consolidated overnight report saved to the configured output directory.
 - **GitHub repo:** Community docs (SECURITY.md, CONTRIBUTING.md, issue/PR templates).
+- **Forked worker process isolation:** Workers run as isolated child processes via `fork()` with IPC communication. Config: `sandbox.processIsolation = true`. Graceful shutdown with 5s timeout.
+- **Network egress restrictions:** Deny-default network policy in sandbox profile. Only Ollama, Gemini API, and Anthropic API allowed.
+- **Tool output injection scanning:** `tools.fs.read()` and `tools.shell.exec()` scan output for injection patterns before returning to the worker/LLM context.
+- **Path normalization:** Shell command checker resolves symlinks and absolute paths before blocklist comparison.
+- **Tool invocation rate limiting:** Max 200 fs reads, 50 fs writes, 10 shell execs per task.
+- **Per-agent enable/disable toggle:** Admin endpoints to disable/enable individual agents without full lockdown.
+- **Pre-commit secret scanner:** Blocks commits containing API keys, tokens, private keys, JWTs, connection strings.
+- **LLM model hash verification:** SHA-256 digest verification of Ollama model files against manifest at startup.
+- **Telegram bridge:** Optional service bridging Telegram groups to Darkhan channels with injection scanning.
+- **Repo sanitized for open-source:** Generic example config, example workers, all internal references removed from shipping code.

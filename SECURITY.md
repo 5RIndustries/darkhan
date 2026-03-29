@@ -39,6 +39,26 @@ Darkhan's security is foundational, not bolted on. Key components:
 ### Identity Enforcement
 Agents cannot impersonate humans or each other. Every message carries a verified sender identity backed by the authentication layer.
 
+### Process Isolation
+Workers can run as isolated child processes via `fork()` when `sandbox.processIsolation = true`. Each worker gets its own V8 isolate with IPC-only communication to the parent. The parent proxies all Darkhan API calls with full security checks. A crashing worker cannot affect the server or other workers.
+
+### Tool Output Injection Scanning
+`tools.fs.read()` and `tools.shell.exec()` scan their output for injection patterns before returning results to the worker/LLM context. This prevents a compromised file or malicious command output from injecting instructions into the LLM's context window. Critical-severity matches block the operation entirely; lower-severity matches warn and log.
+
+### Tool Invocation Rate Limiting
+Each task execution is subject to per-tool invocation limits: 200 filesystem reads, 50 filesystem writes, and 10 shell executions per task. Counters reset at the start of each task. This prevents runaway loops from exhausting resources or amplifying an attack.
+
+### Network Egress Restrictions
+The sandbox profile enforces a deny-default network policy. Only three endpoints are permitted:
+- Ollama (`localhost:11434`)
+- Google Gemini API (`generativelanguage.googleapis.com:443`)
+- Anthropic API (`api.anthropic.com:443`)
+
+The shell command blocklist separately prevents `curl`, `wget`, and other network tools.
+
+### Path Normalization
+The shell command checker resolves symlinks and absolute paths before comparing against the blocklist. This prevents bypass attempts via `/usr/bin/python3`, symlinked binaries, or relative path traversal.
+
 ### Evidence-Based Reporting
 Agent claims are tagged as verified, unverified, or self-reported. Verified claims are backed by SHA-256 evidence hashes binding the claim to its method, result, and timestamp.
 
@@ -60,8 +80,14 @@ Security events trigger automatic lockdown. All agent traffic is blocked until a
 ### File Integrity Monitoring
 Critical server files are SHA-256 hashed at startup and verified against an external baseline. Modified files trigger automatic lockdown.
 
+### LLM Model Verification
+At startup, `model-verifier.js` computes SHA-256 digests of Ollama model files and compares them against the digests stored in the Ollama manifest. This detects tampered or corrupted model downloads before they are used for inference. Uses streaming hash computation to handle multi-GB files efficiently.
+
 ### Injection Detection
 Two-tier detection: regex pattern matching (fast, always-on) plus local LLM classification for external-origin messages. High-confidence threats are blocked; suspicious content is escalated.
+
+### Pre-Commit Secret Scanner
+A git pre-commit hook (`.githooks/pre-commit`) runs `secret-scanner.js` on every staged diff. It catches API keys (AWS, Google, Anthropic, OpenAI, Azure, GitHub, Slack, Telegram, Darkhan), private keys, JWTs, database connection strings, and hardcoded secret assignments. Commits containing secrets are blocked with clear remediation instructions.
 
 ### Break-Glass Recovery
 The admin always retains control. `break-glass.js` operates outside the security stack for emergency password reset, lockdown lift, and baseline reset. All actions are logged to the immutable audit trail.
@@ -70,11 +96,11 @@ The admin always retains control. `break-glass.js` operates outside the security
 
 We believe in transparency about what our security does NOT cover:
 
-1. **Secrets.db is not encrypted at rest.** Anyone with shell access as the Darkhan user can read credentials. Planned fix: macOS Keychain or environment-variable-based encryption.
-2. **Workers share the host user environment.** No OS-level sandboxing yet. Planned fix: macOS sandbox-exec profiles.
-3. **SQLite triggers can be dropped** by someone with direct `sqlite3` CLI access. The hash chain provides tamper detection but not tamper prevention at the database level.
-4. **Federation (Mokume) is designed but not yet deployed.** Cross-instance security features are implemented but untested in production federation.
-5. **No TLS on localhost.** Tailscale encrypts inter-node traffic, but local connections are plaintext. Acceptable for single-machine deployment; requires mTLS for multi-machine without VPN.
+1. **Secrets.db is not encrypted at rest.** Anyone with shell access as the Darkhan user can read credentials. Mitigated by macOS Keychain integration (Layer 3 hardening), but the database itself is not encrypted.
+2. **SQLite triggers can be dropped** by someone with direct `sqlite3` CLI access. The hash chain provides tamper detection but not tamper prevention at the database level.
+3. **Federation (Mokume) is designed but not yet deployed.** Cross-instance security features are implemented but untested in production federation.
+4. **No TLS on localhost.** Tailscale encrypts inter-node traffic, but local connections are plaintext. Acceptable for single-machine deployment; mTLS is available for multi-machine without VPN.
+5. **macOS sandbox only.** Process isolation via `sandbox-exec` is macOS-specific. Linux and Windows deployments do not yet have equivalent OS-level sandboxing.
 
 ## Supported Versions
 

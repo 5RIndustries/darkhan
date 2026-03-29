@@ -29,6 +29,19 @@
 - [x] ~~Shell command parser~~ — interpreters + env + sqlite3 + base64 blocked
 - [x] ~~Brute-force login~~ — exponential backoff after 5 failures
 
+### OWASP ASI Top 10 Audit [COMPLETE]
+- [x] ~~P0-1: Forked worker process isolation~~ — Workers run as isolated child processes via fork(). IPC comms. Config: `sandbox.processIsolation = true`. **COMPLETE (2026-03-29)**
+- [x] ~~P0-3: Network egress restrictions~~ — Deny-default sandbox network. Only Ollama, Gemini API, Anthropic API allowed. **COMPLETE (2026-03-29)**
+- [x] ~~P1-1: Tool output injection scanning~~ — tools.fs.read() and tools.shell.exec() scan output before LLM context. Critical blocks, lower warns. **COMPLETE (2026-03-29)**
+- [x] ~~P1-2: Path normalization~~ — Shell commands resolve symlinks and absolute paths before blocklist. **COMPLETE (2026-03-29)**
+- [x] ~~P1-3: Tool invocation rate limiting~~ — Max 200 reads, 50 writes, 10 shell execs per task. **COMPLETE (2026-03-29)**
+- [x] ~~P1-8: Per-agent enable/disable toggle~~ — POST /api/workers/:id/disable and /enable. Admin only. **COMPLETE (2026-03-29)**
+- [x] ~~LLM model hash verification~~ — SHA-256 digest verification against Ollama manifests at startup. **COMPLETE (2026-03-29)**
+- [x] ~~Pre-commit secret scanner~~ — .githooks/pre-commit blocks API keys, tokens, private keys, JWTs, connection strings. **COMPLETE (2026-03-29)**
+- [x] ~~Repo sanitized for open-source~~ — Generic example config, example workers, internal references removed. **COMPLETE (2026-03-29)**
+- [x] ~~Telegram bridge~~ — Long-polling in, HTTPS out, injection scanning, zero external deps. **COMPLETE (2026-03-29)**
+- [x] ~~Corey OWASP ASI Top 10 audit~~ — Grade: B+. All P0s and critical P1s fixed. **COMPLETE (2026-03-29)**
+
 ### Remaining P1 [IN PROGRESS]
 - [x] ~~Approval queue UI + workflow~~ — Backend + UI complete (2026-03-28)
 - [x] ~~Force password change on first login~~ — Backend + UI complete (2026-03-28)
@@ -99,7 +112,7 @@
 ## Recommended Execution Schedule
 
 ### Week of March 29 -- COMPLETED
-All P1 and P2 items shipped on 2026-03-29 (15 features in one session). Only remaining P1 items are Gmail OAuth (requires interactive auth) and secrets.db encryption at rest.
+All P1 and P2 items shipped on 2026-03-29 (15 features in one session). OWASP ASI Top 10 audit completed with B+ grade; all P0s and critical P1s fixed in the same session. Only remaining P1 items are Gmail OAuth (requires interactive auth) and secrets.db encryption at rest.
 
 ### Week of April 5 (P3 start)
 | Day | Primary | Secondary |
@@ -171,3 +184,15 @@ All P1 and P2 items shipped on 2026-03-29 (15 features in one session). Only rem
 | 2026-03-29 | Private GitHub repo | 16 commits |
 | 2026-03-29 | Community docs | SECURITY.md, CONTRIBUTING.md, issue/PR templates, .github/ |
 | 2026-03-29 | Professional docs update | README, SETUP, WORKER-CONTRACT, BACKLOG updated for all 15 features |
+| 2026-03-29 | P0-1: Forked process isolation | Workers as child processes via fork(), IPC, 5s graceful shutdown |
+| 2026-03-29 | P0-3: Network egress restrictions | Deny-default sandbox, Ollama/Gemini/Anthropic only |
+| 2026-03-29 | P1-1: Tool output injection scanning | fs.read/shell.exec output scanned before LLM context |
+| 2026-03-29 | P1-2: Path normalization | Symlink + absolute path resolution before shell blocklist |
+| 2026-03-29 | P1-3: Tool invocation rate limiting | 200/50/10 per task for reads/writes/shell |
+| 2026-03-29 | P1-8: Per-agent enable/disable | Admin toggle without full lockdown |
+| 2026-03-29 | Pre-commit secret scanner | Blocks API keys, tokens, private keys, JWTs in staged diffs |
+| 2026-03-29 | LLM model hash verification | SHA-256 against Ollama manifests at startup |
+| 2026-03-29 | Telegram bridge | Long-polling in, HTTPS out, injection scanning, zero deps |
+| 2026-03-29 | Corey OWASP ASI Top 10 audit | Grade B+. All P0s and critical P1s fixed |
+| 2026-03-29 | Open-source repo sanitization | Generic config, example workers, internal refs removed |
+| 2026-03-29 | Azure OAuth credential incident | Hardcoded creds removed, moved to .env, secret revoked, scanner prevents recurrence |
