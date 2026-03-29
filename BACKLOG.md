@@ -54,7 +54,13 @@
 - [ ] Channel-level encryption for cross-instance messages
 - [ ] Vault NEVER federated — Only explicit versioned snapshots shared
 - [ ] Three-tier permission model: Instance / Federation / Mokume
-- [ ] Lockdown quarantine (non-propagating) — One instance lockdown doesn't cascade
+- [ ] Lockdown vs Quarantine architecture (Corey recommendation 2026-03-28):
+  - **Lockdown** = LOCAL. One Darkhan instance shuts down its own agent traffic. Local admin unlocks with PIN. Does NOT propagate to peers.
+  - **Quarantine** = NETWORK. Mokume disconnects a compromised instance from the federation. Other instances stop accepting messages from it. Mokume admin (or local admins by mutual consent) can quarantine.
+  - **Why not auto-propagate lockdown?** A compromised instance could deliberately trigger lockdown across the entire network as a DoS attack. Each instance must make its own security decisions.
+  - **Notification protocol:** When an instance enters lockdown, it sends a signed notification to peers (informational only, not actionable). Peers log it and alert their local admin. The local admin decides whether to quarantine the locked-down peer.
+  - **Recovery:** Quarantined instance must re-generate keypair, re-register with Mokume, get re-approved by each peer admin before rejoining. Activity logs from compromised period flagged as tainted.
+  - Design needed: quarantine API, peer notification protocol, re-admission workflow
 - [ ] Compromise recovery protocol — Key revocation, re-registration, forensic log retention
 
 ### Scalability
@@ -69,6 +75,9 @@
 - [ ] Plugin system — Workers ARE plugins. Need: packaging format, versioning, distribution registry (npm-style or Darkhan-native). Must support both Mokume (enterprise, paid) and Darkhan (free, community). Design: each worker.js is a plugin; plugin manifest declares permissions, dependencies, LLM requirements. Marketplace for community-contributed workers.
 - [ ] Voice/video calling — WebRTC between Darkhan instances for real-time comms. Whisper (local, open source) or Deepgram (cloud) for speech-to-text. Granola-style meeting worker: listens to call, transcribes, auto-generates Intel summary with action items. Could be a worker plugin.
 - [ ] Penetration testing framework — Automated red team test suite
+- [ ] Pre-mortem protocol — Before major changes, structured "assume this failed, what went wrong?" exercise across all agents. Each contributes from their domain. Scheduled Darkhan task.
+- [ ] "What aren't we monitoring?" meta-audit — Weekly Darkhan sweep that asks not "are checks passing" but "what checks don't exist yet?" Identifies blind spots before they become incidents.
+- [ ] Threat flag capability for all workers — Any agent can flag a concern to chan_alerts at any time (not just Darkhan/Corey). Lindsey flags engineering risks, Penny flags business risks, Chief flags operational risks. Builds adversarial thinking into the whole team, not just red team.
 - [ ] US government classification levels — NIST SP 800-171 (CUI), CMMC Level 2+ compliance. Data-at-rest encryption, data-in-transit encryption, NIST-compliant audit logging, classification-level separation (Secret Darkhan can't federate with Unclassified), FedRAMP-equivalent for cloud LLM calls. Massive differentiator if done right.
 
 ### Organizational Model
