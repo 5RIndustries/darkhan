@@ -66,9 +66,34 @@
 
 ### Product Features
 - [ ] Obsidian-replacement knowledge base — Built-in markdown file system with UI (Phase 6 started, needs expansion)
-- [ ] Plugin system for Darkhan + Mokume updates
-- [ ] Voice/video calling investigation — Granola-type voice-to-text capabilities
+- [ ] Plugin system — Workers ARE plugins. Need: packaging format, versioning, distribution registry (npm-style or Darkhan-native). Must support both Mokume (enterprise, paid) and Darkhan (free, community). Design: each worker.js is a plugin; plugin manifest declares permissions, dependencies, LLM requirements. Marketplace for community-contributed workers.
+- [ ] Voice/video calling — WebRTC between Darkhan instances for real-time comms. Whisper (local, open source) or Deepgram (cloud) for speech-to-text. Granola-style meeting worker: listens to call, transcribes, auto-generates Intel summary with action items. Could be a worker plugin.
 - [ ] Penetration testing framework — Automated red team test suite
+- [ ] US government classification levels — NIST SP 800-171 (CUI), CMMC Level 2+ compliance. Data-at-rest encryption, data-in-transit encryption, NIST-compliant audit logging, classification-level separation (Secret Darkhan can't federate with Unclassified), FedRAMP-equivalent for cloud LLM calls. Massive differentiator if done right.
+
+### Organizational Model
+- [ ] "Forge" terminology — Darkhan = forge (master craftsman's workshop). Each team member is a craftsman. Mokume = forge network (multiple forges, one brand). Aligns with mokume-gane (forging technique). Replace "swarm/hive/government" language throughout docs and UI.
+
+### Launch Sequence (the admin approved 2026-03-28)
+1. **Private GitHub repo** — Push to github.com/outlaw4shrt/darkhan as PRIVATE first
+2. **Tino onboarding** — Tino pulls from private repo, stands up his own Darkhan instance, stress tests with his agent team
+3. **Feedback loop** — Tino's feedback + his agents' feedback → fix/improve → iterate
+4. **Mokume architecture** — Build enterprise federation layer BEFORE going public, so paid tier is ready at launch
+5. **Go public** — Open-source Darkhan (free) + launch Mokume (paid enterprise) simultaneously
+6. **Community infrastructure** — Issue templates, CONTRIBUTING.md, SECURITY.md, CI/CD, triage agent
+
+### Open Source & Community Infrastructure
+- [ ] GitHub hosting — Push to github.com/outlaw4shrt/darkhan. PRIVATE first for Tino testing, then public with Mokume ready as paid tier.
+- [ ] Pull request workflow — Branch protection on main (require review). PR template with: description, security impact, test plan. Labels: security, feature, bugfix, docs. CI pipeline: syntax check, security scan (no credentials in diff), evidence service tests.
+- [ ] Community support infrastructure:
+  - GitHub Issues with templates (bug report, feature request, security vulnerability)
+  - GitHub Discussions for Q&A and community ideas
+  - CONTRIBUTING.md with: code style, PR process, security policy, CLA requirement
+  - SECURITY.md with: responsible disclosure process, security contact, bounty policy (future)
+  - Issue triage: Lindsey-class worker that monitors new issues, classifies priority, assigns labels, posts acknowledgment. Community members see fast response even before human review.
+  - Release process: semantic versioning, changelog, GitHub Releases with signed artifacts
+- [ ] Community response agent — A Darkhan worker (or dedicated instance) that monitors GitHub issues/PRs. Classifies, triages, drafts initial responses for human review. NEVER auto-merges or auto-closes without human approval.
+- [ ] License decision — Darkhan free (Apache 2.0 or similar), Mokume paid (proprietary or BSL). Need legal review (Peter Weissman or separate IP counsel).
 
 ---
 

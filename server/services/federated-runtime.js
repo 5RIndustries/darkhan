@@ -39,6 +39,21 @@ class FederatedWorkerRuntime extends WorkerRuntime {
     this.apiKeys = apiKeys || {};
     this._pollingIntervals = [];
     this._lastSeenTimestamps = {}; // channelId -> ISO timestamp of last seen message
+
+    // [DARKHAN SECURITY] TLS enforcement for federation
+    // HTTP is acceptable on Tailscale networks (WireGuard-encrypted). For non-Tailscale
+    // deployments, require HTTPS or explicit opt-in via FEDERATION_ALLOW_HTTP=true.
+    if (this.remoteHost.startsWith('http://')) {
+      if (process.env.FEDERATION_ALLOW_HTTP === 'true') {
+        console.warn('[FederatedRuntime] WARNING: Federation using unencrypted HTTP. ' +
+          'This is acceptable on Tailscale networks. For non-Tailscale deployments, use HTTPS.');
+      } else {
+        console.error('[FederatedRuntime] FATAL: Federation target uses HTTP (unencrypted). ' +
+          'Set FEDERATION_ALLOW_HTTP=true if running on a Tailscale/WireGuard network, ' +
+          'or use an https:// URL for the remote host.');
+        process.exit(1);
+      }
+    }
   }
 
   /**

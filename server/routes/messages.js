@@ -138,6 +138,50 @@ router.post('/', async (req, res) => {
         lockdown: securityService.getLockdownStatus(),
       });
     }
+
+    // [DARKHAN SECURITY] Cloud escalation for external/federated messages
+    // Uses local Ollama/Qwen (free) to classify ambiguous messages from untrusted origins.
+    const injectionScan = securityService.scanForInjection(body, { origin, source: userId });
+    if (injectionScan.recommendCloudEscalation) {
+      const classification = await securityService.classifyWithLocalLLM(body);
+      if (classification === 'MALICIOUS') {
+        securityService.recordSecurityEvent('criticalInjections');
+        securityService.activityLog.append({
+          actor: 'darkhan_security',
+          action: 'llm_injection_blocked',
+          target: userId,
+          details: JSON.stringify({ origin, classification, preview: body.substring(0, 100) }),
+        });
+        return res.status(400).json({
+          error: 'Message blocked by LLM security classification',
+          classification: 'MALICIOUS',
+        });
+      } else if (classification === 'SUSPICIOUS') {
+        // Allow but tag and alert
+        securityMetadata.llmClassification = 'SUSPICIOUS';
+        securityService.activityLog.append({
+          actor: 'darkhan_security',
+          action: 'llm_injection_suspicious',
+          target: userId,
+          details: JSON.stringify({ origin, classification, preview: body.substring(0, 100) }),
+        });
+        // Post alert to chan_alerts
+        const alertDb = req.app.locals.db;
+        const alertIo = req.app.locals.io;
+        const alertId = uuidv4();
+        alertDb.run(
+          'INSERT INTO messages (id, channel_id, from_user, body, priority, type) VALUES (?, ?, ?, ?, ?, ?)',
+          [alertId, 'chan_alerts', 'agent_darkhan',
+           `[SECURITY] Suspicious external message from ${userId} in ${channel_id}. LLM classified as SUSPICIOUS. Review recommended.\n\nPreview: ${body.substring(0, 200)}`,
+           'high', 'alert']
+        );
+        if (alertIo) alertIo.to('chan_alerts').emit('new_message', { id: alertId, channel_id: 'chan_alerts', from_user: 'agent_darkhan', body: '[SECURITY] Suspicious external message flagged', priority: 'high', type: 'alert' });
+      }
+      // SAFE or null (LLM unavailable) → proceed normally
+      if (!classification) {
+        console.warn('[Security] No local LLM available for external message classification — proceeding with regex-only scan');
+      }
+    }
   }
 
   const id = uuidv4();

@@ -76,6 +76,28 @@ app.use(session({
   }
 }));
 
+// [DARKHAN SECURITY] CSRF protection — require custom header on state-changing requests
+// Browsers enforce that custom headers can't be sent cross-origin without CORS preflight.
+// API-key-authenticated requests are already CSRF-safe (the key acts as the token).
+app.use((req, res, next) => {
+  // Only check state-changing methods
+  if (!['POST', 'PATCH', 'PUT', 'DELETE'].includes(req.method)) return next();
+
+  // API key auth is inherently CSRF-safe — skip check
+  if (req.headers['x-api-key']) return next();
+
+  // Login endpoint must be exempt (user hasn't authenticated yet, no session to exploit)
+  if (req.path === '/api/auth/login') return next();
+
+  // For session-authenticated requests, require the custom header
+  if (req.headers['x-darkhan-client'] !== 'true') {
+    console.warn(`[Security] CSRF check failed: missing X-Darkhan-Client header on ${req.method} ${req.path}`);
+    return res.status(403).json({ error: 'CSRF validation failed — missing X-Darkhan-Client header' });
+  }
+
+  next();
+});
+
 // Serve static client files
 app.use(express.static(path.join(__dirname, '../client')));
 
@@ -216,6 +238,12 @@ app.get('/api/activity', secReqAuth, async (req, res) => {
     });
     res.json({ events });
   } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Activity log hash chain verification
+app.get('/api/activity/verify', secReqAuth, async (req, res) => {
+  try { res.json(await activityLog.verify()); }
+  catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // Worker runtime status

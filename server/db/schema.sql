@@ -116,12 +116,14 @@ CREATE TABLE IF NOT EXISTS cost_tracking (
 CREATE INDEX IF NOT EXISTS idx_cost_agent_date ON cost_tracking (agent, created_at);
 
 -- [DARKHAN] Immutable activity log — append only, no DELETE/UPDATE
+-- [DARKHAN SECURITY] chain_hash: SHA-256 hash chain for tamper evidence
 CREATE TABLE IF NOT EXISTS activity_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   actor TEXT NOT NULL,
   action TEXT NOT NULL,
   target TEXT,
   details TEXT,
+  chain_hash TEXT,                      -- [DARKHAN] SHA-256(prev_hash + entry_data) — tamper-evident chain
   origin TEXT,                          -- [DARKHAN] Federation: source instance ID
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
