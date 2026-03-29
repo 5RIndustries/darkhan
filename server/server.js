@@ -19,6 +19,7 @@ const { SecurityService } = require('./services/security');
 const { IntegrityService } = require('./services/integrity');
 const { ClaimVerifierService } = require('./services/claim-verifier');
 const { GroundTruthRegistry } = require('./services/ground-truth');
+const { KeychainService } = require('./services/keychain');
 
 // Load config
 const CONFIG_PATH = path.join(__dirname, 'darkhan.config.json');
@@ -224,6 +225,10 @@ app.locals.groundTruth = groundTruth;
 // Wire ground truth into claim verifier (both must be initialized first)
 claimVerifier.groundTruth = groundTruth;
 
+// macOS Keychain integration (Layer 3 security)
+const keychainService = new KeychainService({ activityLog });
+app.locals.keychainService = keychainService;
+
 // Existing routes (evolved from DARYL)
 const authRoutes = require('./routes/auth');
 const messageRoutes = require('./routes/messages');
@@ -389,6 +394,14 @@ app.get('/api/workers', secReqAuth, (req, res) => {
   } else {
     res.json({ workers: [], message: 'Worker runtime not initialized' });
   }
+});
+
+// Keychain status (Layer 3)
+app.get('/api/keychain', secReqAuth, (req, res) => {
+  if (!req.session?.userId || req.session.role !== 'admin') {
+    return res.status(403).json({ error: 'Admin only' });
+  }
+  res.json(keychainService.getStatus());
 });
 
 // Sandbox status
