@@ -9,18 +9,18 @@
   <key>GroupName</key>
   <string>darkhan</string>
   <key>WorkingDirectory</key>
-  <string>/Users/adminoutlaw/darkhan</string>
+  <string>/Users/YOUR_USERNAME/darkhan/server</string>
   <key>ProgramArguments</key>
   <array>
     <string>/opt/homebrew/bin/node</string>
-    <string>/Users/adminoutlaw/darkhan/server/server.js</string>
+    <string>/Users/YOUR_USERNAME/darkhan/server/server.js</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
     <key>HOME</key>
-    <string>/Users/adminoutlaw</string>
+    <string>/Users/YOUR_USERNAME</string>
     <key>NODE_ENV</key>
-    <string>production</string>
+    <string>development</string>
     <key>PATH</key>
     <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
   </dict>

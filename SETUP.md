@@ -342,8 +342,8 @@ PLIST
 ```
 
 Replace the placeholders:
-- `DARKHAN_PATH` -- absolute path to your darkhan directory (e.g., `~/darkhan`)
-- `YOUR_HOME` -- your home directory (e.g., `/Users/tino`)
+- `DARKHAN_PATH` -- absolute path to your darkhan directory (e.g., `/Users/yourname/darkhan`)
+- `YOUR_HOME` -- your home directory (e.g., `/Users/yourname`)
 
 Then load it:
 
@@ -358,7 +358,7 @@ launchctl list | grep darkhan
 # Should show a PID (first column) and exit status 0
 ```
 
-**Important for launchd:** The `PATH` in `EnvironmentVariables` must include the directory where `node` is installed. launchd does not inherit your shell's PATH. If you use tools like `bun`, add its path here too (e.g., `~/.bun/bin`).
+**Important for launchd:** The `PATH` in `EnvironmentVariables` must include the directory where `node` is installed. launchd does not inherit your shell's PATH. If you use tools like `bun`, add its path here too (e.g., `/Users/yourname/.bun/bin`).
 
 ---
 

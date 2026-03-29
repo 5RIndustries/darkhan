@@ -24,16 +24,16 @@ class ClaimVerifierService {
 
     // File reference patterns — capture the path portion
     this.filePatterns = [
-      // "saved to DRAFT/filename.md" or "saved to project/output/filename.md"
+      // "saved to path/filename.md"
       { regex: /saved\s+to\s+([A-Za-z0-9_\-/.]+\.(?:md|txt|json|csv|pdf|py|js|yaml|yml))/gi, type: 'file_exists' },
-      // "output at project/output/filename.md"
+      // "output at path/filename.md"
       { regex: /output\s+(?:at|to|in)\s+([A-Za-z0-9_\-/.]+\.(?:md|txt|json|csv|pdf|py|js|yaml|yml))/gi, type: 'file_exists' },
-      // "wrote to project/output/filename.md" or "written to ..."
+      // "wrote to path/filename.md" or "written to ..."
       { regex: /writ(?:ten|e|ing)\s+to\s+([A-Za-z0-9_\-/.]+\.(?:md|txt|json|csv|pdf|py|js|yaml|yml))/gi, type: 'file_exists' },
-      // "created project/output/filename.md" or "created file ..."
+      // "created path/filename.md" or "created file ..."
       { regex: /created\s+(?:file\s+)?([A-Za-z0-9_\-/.]+\.(?:md|txt|json|csv|pdf|py|js|yaml|yml))/gi, type: 'file_exists' },
-      // Explicit path references: "DRAFT/2026-03-28_something.md" or "project/output/something.md"
-      { regex: /(?:DRAFT|Intel|Sprints|Decisions|Pipeline|CoS|Lindsey\/Results)\/[A-Za-z0-9_\-]+\.(?:md|txt|json)/g, type: 'file_exists' },
+      // Explicit vault-relative path references
+      { regex: /(?:DRAFT|Intel|Sprints|Decisions|Pipeline|output|drafts)\/[A-Za-z0-9_\-]+\.(?:md|txt|json)/g, type: 'file_exists' },
     ];
 
     // Completion claim patterns — "completed X", "done with X", "finished X"
@@ -270,7 +270,6 @@ class ClaimVerifierService {
    * Handles common vault-relative patterns:
    *   - "DRAFT/filename.md" → vaultPath/project/drafts/filename.md
    *   - "Intel/filename.md" → vaultPath/project/output/filename.md
-   *   - "project/output/filename.md" → vaultPath/project/output/filename.md
    *   - Absolute paths pass through
    */
   _resolveFilePath(filePath) {
@@ -285,13 +284,18 @@ class ClaimVerifierService {
     }
 
     // Common vault-relative prefixes
-    const prefixMap = {
+    // Load custom prefix map from config if available
+    let configPrefixMap;
+    try {
+      const cfg = require('../darkhan.config.json');
+      configPrefixMap = cfg.vault?.pathAliases;
+    } catch (e) { /* not loaded yet */ }
+    const prefixMap = configPrefixMap || {
       'DRAFT/': 'project/drafts/',
       'Intel/': 'project/output/',
       'Sprints/': 'project/sprints/',
       'Decisions/': 'project/decisions/',
       'Pipeline/': 'project/pipeline/',
-      'CoS/': 'project/cos/',
     };
 
     for (const [prefix, expanded] of Object.entries(prefixMap)) {
@@ -300,7 +304,7 @@ class ClaimVerifierService {
       }
     }
 
-    // Already has OMC-OS prefix or other vault-relative path
+    // Already a vault-relative path
     return path.join(this.vaultPath, filePath);
   }
 
