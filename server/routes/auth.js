@@ -123,17 +123,21 @@ router.post('/login', (req, res) => {
       try {
         // SECURITY: Password hashes are stored ONLY in secrets.db — no fallback to darkhan.db
         let passwordHash = null;
+        let mustChangePassword = false;
 
         if (!secretsDb) {
           return res.status(500).json({ error: 'Credential store unavailable' });
         }
 
         const cred = await new Promise((resolve, reject) => {
-          secretsDb.get('SELECT password_hash FROM credentials WHERE user_id = ?', [user.id], (err2, row) => {
+          secretsDb.get('SELECT password_hash, must_change_password FROM credentials WHERE user_id = ?', [user.id], (err2, row) => {
             if (err2) reject(err2); else resolve(row);
           });
         });
-        if (cred) passwordHash = cred.password_hash;
+        if (cred) {
+          passwordHash = cred.password_hash;
+          mustChangePassword = cred.must_change_password === 1;
+        }
 
         if (!passwordHash) {
           _recordFailedLogin(ip, username);
@@ -163,10 +167,17 @@ router.post('/login', (req, res) => {
         req.session.role = user.role;
         req.session.userType = 'human'; // Only humans can login via web UI
 
-        return res.json({
+        const response = {
           ok: true,
           user: { id: user.id, username: user.username, role: user.role }
-        });
+        };
+
+        // Flag if the user must change their password before accessing the app
+        if (mustChangePassword) {
+          response.mustChangePassword = true;
+        }
+
+        return res.json(response);
       } catch (e) {
         console.error('Login bcrypt error:', e.message);
         return res.status(500).json({ error: 'Internal server error' });
@@ -256,16 +267,17 @@ router.post('/change-password', requireAuth, async (req, res) => {
     const newHash = await bcrypt.hash(newPassword, 12);
 
     // Update in secrets.db ONLY — no dual-write to darkhan.db
+    // Also clear must_change_password flag so user is not prompted again.
     await new Promise((resolve, reject) => {
       secretsDb.run(
-        `INSERT INTO credentials (user_id, password_hash) VALUES (?, ?)
-         ON CONFLICT(user_id) DO UPDATE SET password_hash = ?, updated_at = CURRENT_TIMESTAMP`,
+        `INSERT INTO credentials (user_id, password_hash, must_change_password) VALUES (?, ?, 0)
+         ON CONFLICT(user_id) DO UPDATE SET password_hash = ?, must_change_password = 0, updated_at = CURRENT_TIMESTAMP`,
         [userId, newHash, newHash],
         function (err) { if (err) reject(err); else resolve(this); }
       );
     });
 
-    console.log(`[Auth] Password changed for ${userId}`);
+    console.log(`[Auth] Password changed for ${userId} (must_change_password cleared)`);
     return res.json({ ok: true, message: 'Password changed successfully' });
   } catch (e) {
     console.error('Password change error:', e.message);
