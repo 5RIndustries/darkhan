@@ -15,17 +15,18 @@ with a defined specialty. Darkhan coordinates them.
 1. [Quick Start](#quick-start)
 2. [Architecture](#architecture)
 3. [Core Services](#core-services)
-4. [Federated Architecture](#federated-architecture)
-5. [Configuration](#configuration)
-6. [Database](#database)
-7. [Workers](#workers)
-8. [Security Model](#security-model)
-9. [API Reference](#api-reference)
-10. [Web UI](#web-ui)
-11. [Deployment](#deployment)
-12. [Troubleshooting](#troubleshooting)
-13. [Roadmap](#roadmap)
-14. [Evolution](#evolution)
+4. [Evidence and Claim Verification](#evidence-and-claim-verification)
+5. [Federated Architecture](#federated-architecture)
+6. [Configuration](#configuration)
+7. [Database](#database)
+8. [Workers](#workers)
+9. [Security Model](#security-model)
+10. [API Reference](#api-reference)
+11. [Web UI](#web-ui)
+12. [Deployment](#deployment)
+13. [Troubleshooting](#troubleshooting)
+14. [Roadmap](#roadmap)
+15. [Evolution](#evolution)
 
 ---
 
@@ -56,8 +57,10 @@ darkhan/
 |   |-- .env                      # Secrets (API keys, session secret) -- NEVER committed
 |   |-- .env.example              # Template for .env with all supported variables
 |   |-- db/
-|   |   |-- schema.sql            # SQLite schema (all tables)
+|   |   |-- schema.sql            # SQLite schema (operational tables)
+|   |   |-- secrets-schema.sql    # Secrets DB schema (credentials, PINs -- isolated)
 |   |   |-- darkhan.db            # SQLite database (auto-created by seed.js)
+|   |   |-- secrets.db            # Credentials database (auto-created, 600 permissions)
 |   |   `-- seed.js               # Auto-seed team members from config
 |   |-- routes/
 |   |   |-- auth.js               # Login, logout, session management, password change
@@ -76,6 +79,8 @@ darkhan/
 |   |   |-- activity-log.js       # Immutable append-only audit trail
 |   |   |-- security.js           # Injection detection, identity enforcement, leak prevention, lockdown
 |   |   |-- integrity.js          # File hash monitoring, external baseline, tamper detection
+|   |   |-- evidence.js           # Evidence-based reporting with SHA-256 hashing
+|   |   |-- claim-verifier.js     # Automatic claim tagging on agent messages
 |   |   |-- onboarding.js         # Verified identity/rules brief for every agent at startup
 |   |   |-- worker-runtime.js     # Cron scheduler, sequential task execution, listener polling
 |   |   |-- federated-runtime.js  # Extends WorkerRuntime for cross-node HTTP federation
@@ -211,6 +216,58 @@ Also dispatches to worker message listeners when a message matches a registered 
 
 ---
 
+## Evidence and Claim Verification
+
+Darkhan separates verified facts from LLM-generated analysis in every report. Two services work together to ensure agents cannot fabricate claims.
+
+### Evidence Service (`services/evidence.js`)
+
+Structured evidence-based reporting. Every factual claim in a Darkhan report is backed by a code-level check with a tamper-detection hash.
+
+**How `evidence.check()` works:**
+
+```javascript
+const result = await evidence.check({
+  claim: 'File .env has 600 permissions',   // What is being asserted
+  method: 'fs.stat',                         // How it is checked
+  target: '/path/to/.env',                   // What is being checked
+  check: async () => {                       // The actual check function
+    const stat = await fs.promises.stat(target);
+    const mode = (stat.mode & 0o777).toString(8);
+    return { pass: mode === '600', actual: mode };
+  },
+});
+// Returns: { claim, method, target, result: { pass, actual }, timestamp, hash }
+```
+
+Each evidence record includes a SHA-256 hash computed from `claim + method + JSON(result) + timestamp`. The hash and all check results are appended to the immutable activity log. This creates a tamper-evident audit chain: if anyone modifies a finding after the fact, the hash will not match.
+
+**Report generation:** `evidence.buildReport()` produces a structured markdown report with three sections:
+1. **Verified Findings** -- code-checked, evidence-logged, with actual values
+2. **Evidence Hashes** -- SHA-256 hashes for cross-referencing against the activity log
+3. **Analysis (LLM-generated)** -- clearly labeled as advisory, not verified fact
+
+The LLM formats and analyzes findings but cannot add, remove, or alter them. The `evidence.buildFindingsSummary()` helper produces a plain-text summary of PASS/FAIL results that is given to the LLM for analysis. The LLM never sees or controls the evidence hashes.
+
+### Claim Verifier Service (`services/claim-verifier.js`)
+
+Automatic message tagging for agent claims. Runs on every agent message AFTER security scanning but BEFORE database insert. Deterministic pattern matching only -- no LLM calls, target under 100ms per message.
+
+**What it checks:**
+- **File references:** "saved to Intel/report.md" -- verifies the file exists via `fs.existsSync`, records file size and modification time
+- **Status claims:** "Lindsey is operational" -- checks the heartbeat table for recent pings
+- **Count/quantity claims:** "scanned 47 messages" -- tagged as `self-reported` (not independently verified)
+
+**Verification states:**
+- `true` -- independently verified (file exists, heartbeat confirms status)
+- `false` -- claim failed verification (file not found, no heartbeat record)
+- `self-reported` -- numeric claim that cannot be independently verified
+- `deferred` -- path could not be resolved or check failed
+
+The verification result is stored in the message's `metadata.claimVerification` field. The web UI can display trust signals based on this metadata. The verifier never modifies the message body -- it only adds metadata.
+
+---
+
 ## Federated Architecture
 
 Darkhan supports distributed deployment across multiple machines. One node runs the main server (hub); other nodes run remote workers that communicate with the hub via HTTP API.
@@ -280,7 +337,7 @@ See `.env.example` for all supported variables. The critical ones:
 
 | Variable | Required | Purpose |
 |----------|----------|---------|
-| `SESSION_SECRET` | Yes | Express session encryption key |
+| `SESSION_SECRET` | **Yes** | Express session encryption key. **Server refuses to start without it.** Also used to derive HMAC keys for lockdown state signing. No fallback, no default. |
 | `PORT` | No | Server port (default: 3001) |
 | `OLLAMA_HOST` | No | Ollama hostname (default: localhost) |
 | `OLLAMA_PORT` | No | Ollama port (default: 11434) |
@@ -295,13 +352,28 @@ See `.env.example` for all supported variables. The critical ones:
 
 ## Database
 
-SQLite with WAL mode and 5-second busy timeout. Tables:
+### Credential Separation (secrets.db)
+
+Darkhan uses two separate SQLite databases for credential isolation:
+
+| Database | File | Permissions | Contains | Accessed by |
+|----------|------|-------------|----------|-------------|
+| **darkhan.db** | `db/darkhan.db` | 600 | Operational data (users, messages, tasks, activity log) | Server, workers, routes |
+| **secrets.db** | `db/secrets.db` | 600 | Credentials only (password hashes, API keys, lockdown PIN hash) | Server and auth middleware **only** |
+
+**Why two databases:** Workers receive the `db` handle (darkhan.db) for operational queries but **never** receive the `secretsDb` handle. This means a compromised worker cannot read password hashes, API keys, or the lockdown PIN hash -- even if it has full database query access to darkhan.db.
+
+The `users` table in darkhan.db contains non-sensitive profile data (username, role, type, display name, status). The `credentials` table in secrets.db contains password hashes and API keys, keyed by `user_id`. The `secret_settings` table in secrets.db stores the lockdown PIN hash.
+
+### darkhan.db Tables
+
+Both databases use SQLite with WAL mode and 5-second busy timeout.
 
 | Table | Purpose | Mutable? |
 |-------|---------|----------|
-| `users` | Team members (humans + agents) | Yes |
+| `users` | Team members -- profile data only (no credentials) | Yes |
 | `channels` | Communication channels | Yes |
-| `messages` | All messages with origin tracking | Yes |
+| `messages` | All messages with origin tracking and claim verification metadata | Yes |
 | `tasks` | Task assignment and tracking | Yes |
 | `agent_heartbeats` | Current status per agent | Yes |
 | `agent_health` | Historical health snapshots | Yes |
@@ -309,6 +381,14 @@ SQLite with WAL mode and 5-second busy timeout. Tables:
 | `activity_log` | Immutable audit trail | **Append only -- enforced by SQLite triggers** |
 | `approval_queue` | Pending action approvals | Yes |
 | `claude_conversations` | Claude relay history | Yes |
+| `settings` | Non-sensitive system settings | Yes |
+
+### secrets.db Tables
+
+| Table | Purpose | Mutable? |
+|-------|---------|----------|
+| `credentials` | Password hashes and API keys (keyed by user_id) | Yes |
+| `secret_settings` | Lockdown PIN hash and other sensitive settings | Yes |
 
 The `activity_log` table has SQLite triggers that prevent DELETE and UPDATE operations. This is the system's tamper-evident audit trail.
 
@@ -369,9 +449,28 @@ Restart Darkhan to load the new worker.
 | Worker | Agent | Tasks | Schedule |
 |--------|-------|-------|----------|
 | `chief.worker.js` | Chief (Executive Assistant) | morning_digest, evening_digest, deadline_monitor, heartbeat | 0700/1800/6h/5m |
-| `darkhan.worker.js` | Darkhan (Security) | security_sweep, activity_audit, heartbeat | 15m/1h/5m |
+| `darkhan.worker.js` | Darkhan (Security) | security_sweep, activity_audit, corey_daily_audit, heartbeat | 15m/1h/0100 daily/5m |
 | `lindsey.worker.js` | Lindsey (COO) | morning_readiness, inbox_processor, draft_review_check, shift_change, heartbeat | 0630/2h/3h/2100/5m |
 | `penny.worker.js` | Penny (CFO/CMO) | morning_business_scan, sttr_monitor, product_exploration, weekly_market_brief, heartbeat | 0800/10+16h/11h weekdays/Mon 0700/5m |
+
+### Corey Daily Security Audit
+
+The `corey_daily_audit` task runs at 0100 ET every day as part of the Darkhan security worker. It is a comprehensive red team review that uses the Evidence Service for every verification:
+
+**What it checks:**
+- File permissions on sensitive files (.env, database files)
+- Credential exposure in all channels (24-hour lookback)
+- Activity log anomalies (injection attempts, lockdown events, shell violations)
+- Agent activity volume (flags agents with >1000 actions in 24h)
+- Configuration integrity (valid JSON, secure agent settings)
+- Integrity baseline existence, age, and permissions
+
+**How it works:**
+1. Each check uses `evidence.check()` to produce a tamper-evident finding
+2. Findings are summarized and sent to an LLM (Gemini primary, Ollama fallback) playing the Corey red team persona
+3. The LLM produces analysis, grading, and GO/NO-GO recommendation
+4. `evidence.buildReport()` assembles the final report with verified findings, evidence hashes, and LLM analysis clearly separated
+5. The report is saved to `project/output/` and posted to #alerts (and #command if any checks failed)
 
 All workers also support **message listeners** -- event-driven responses to channel messages.
 Every worker responds to "comms check" and `@name` mentions in real-time.
@@ -408,9 +507,14 @@ Each transition boundary is scanned.
 | Critical blocking | Multi-pattern external injection -> HTTP 400 reject | `messages.js` POST route |
 | Output validation | Workers constrain LLM output format | `worker-runtime.js` |
 | Leak prevention | Outbound scan for API keys/passwords/private keys | `security.js` |
-| Tool enforcement | Per-agent shell command restrictions | `security.js` + `worker-runtime.js` |
+| Tool enforcement | Per-agent shell command restrictions + env whitelist | `security.js` + `worker-runtime.js` |
+| Interpreter blocking | `python`, `node`, `perl`, `ruby`, `php` blocked in restricted shell | `security.js` |
 | Identity enforcement | Agents cannot impersonate humans or other agents | `middleware/auth.js` |
-| Active monitoring | 15-minute automated channel sweeps | `darkhan.worker.js` |
+| Credential isolation | Password hashes, API keys, PIN in separate database | `secrets.db` (not accessible to workers) |
+| Claim verification | Agent messages auto-tagged with evidence of claim accuracy | `claim-verifier.js` |
+| Evidence-based reporting | Security reports use SHA-256-hashed code-level checks | `evidence.js` |
+| Active monitoring | 15-minute automated channel sweeps (evidence-based) | `darkhan.worker.js` |
+| Daily red team audit | Comprehensive security review at 0100 ET daily | `darkhan.worker.js` (corey_daily_audit) |
 | File integrity | SHA-256 hash verification every 5 minutes | `integrity.js` |
 | Audit trail | Every event logged immutably (SQLite triggers) | `activity-log.js` |
 
@@ -427,8 +531,10 @@ Configured per-agent in `darkhan.config.json` under `permissions`:
 
 Shell modes:
 - `full` -- unrestricted shell access
-- `restricted` -- dangerous commands blocked (rm, sudo, kill, curl to external hosts, ssh, etc.)
+- `restricted` -- dangerous commands blocked (rm, sudo, kill, curl to external hosts, ssh, etc.) and interpreter commands blocked (python, node, perl, ruby, php). Command substitution and pipe-to-shell also blocked.
 - `none` -- no shell access
+
+**Environment whitelist:** Workers executing shell commands receive only `HOME`, `PATH`, `LANG`, `USER`, and `TERM` environment variables. Secrets (`SESSION_SECRET`, `GOOGLE_API_KEY`, `ANTHROPIC_API_KEY`, etc.) are never exposed to worker shell processes.
 
 File write permissions are enforced by the permissions service. Agents can only write to their designated directories.
 
@@ -451,17 +557,19 @@ Darkhan can shut down all agent traffic when a security threat is detected. Duri
 - File integrity violation -> lockdown
 
 **Lockdown behavior:**
-- Lockdown persists across server restarts (stored in database)
+- Lockdown persists across server restarts (stored in database with HMAC signature)
+- HMAC is derived from `SESSION_SECRET` with a domain separator -- if the lockdown state is tampered with in the database, the signature will not match and the system **fails closed** (stays locked)
 - During lockdown: human messages work normally, agent messages return 403
 - Lockdown alerts are posted to #alerts and #command channels
 - Only human admin users can lift lockdown via the web UI Settings view
 - Agents cannot unlock the system -- this is enforced at the code level, not configuration
 - PIN-based unlock adds a second factor to prevent social engineering attacks
+- **Fail-closed PIN requirement:** If no lockdown PIN is configured in secrets.db, the system refuses to unlock. You must set a PIN via Settings before you can recover from lockdown.
 
 **Managing lockdown:**
 - **Check status:** Open the Settings view in the web UI
-- **Manual lockdown:** Available from the Settings view for human admins
-- **Unlock:** Requires admin session authentication plus lockdown PIN
+- **Manual lockdown:** Available from the Settings view for human admins (requires browser session -- API key auth is rejected for security-critical actions)
+- **Unlock:** Requires admin browser session authentication plus lockdown PIN (stored in secrets.db only)
 
 ### Onboarding Security
 
@@ -486,7 +594,8 @@ All endpoints require authentication via session cookie (web UI) or `X-API-Key` 
 | POST | `/api/auth/login` | Login (username + password) |
 | POST | `/api/auth/logout` | Logout |
 | GET | `/api/auth/me` | Current authenticated user |
-| POST | `/api/auth/change-password` | Change password (requires current password) |
+| POST | `/api/auth/change-password` | Change password (requires current password). Session auth only -- agents cannot call this. Minimum 8 characters. |
+| POST | `/api/auth/set-lockdown-pin` | Set or change the lockdown PIN. Admin session auth only. Minimum 4 characters. PIN hash stored in secrets.db. |
 
 ### Messages
 
@@ -559,7 +668,7 @@ The web UI is a vanilla JavaScript SPA (no framework dependencies) with a dark t
 - **Health:** Agent status dashboard with green/amber/red lights
 - **Vault:** Knowledge base browser with markdown rendering, search, and file editing
 - **Costs:** Token usage and cost reporting by agent, provider, and model
-- **Settings (admin):** Password change, lockdown PIN management, lockdown status and controls
+- **Settings (admin):** Password change, lockdown PIN setup/change, manual lockdown button, unlock with PIN, lockdown status display with trigger reason and timestamp
 
 The UI is served as static files from the `client/` directory. It works as a PWA (Progressive Web App) with a service worker for offline capability.
 
@@ -665,15 +774,21 @@ Open the **Settings** view in the web UI (admin users only). The lockdown status
 
 | Symptom | Likely Cause | Fix |
 |---------|-------------|-----|
+| Server refuses to start | `SESSION_SECRET` not set | Add `SESSION_SECRET` to `.env`. Generate one with `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` |
 | Workers not responding | Ollama not running | `brew services start ollama` then verify with `ollama list` |
 | "Cannot connect to database" | Database not initialized | Run `node db/seed.js` |
 | Workers not loading | Worker ID mismatch | Ensure `id` in worker file matches `id` in `darkhan.config.json` |
+| Workers blocked on startup | Integrity violation detected | Check logs for the violation. If caused by development changes, restart the server to re-establish the baseline |
 | Port already in use | Another process on 3001 | Change `PORT` in `.env` or find/kill the conflicting process |
 | Remote workers not posting | Network or auth issue | Verify Tailscale connectivity: `ping <hub-tailscale-ip>`. Check API key in remote `.env` |
 | `GOOGLE_API_KEY` errors | Env var not set | Add to `.env` on the node running Gemini-powered workers |
 | Agent shows red in Health | Worker crashed or not started | Check logs, restart Darkhan |
-| Login fails after seed | Password hash issue | Re-run `node db/seed.js` to reset |
+| Login fails after seed | Password hash not in secrets.db | Re-run `node db/seed.js` to reset. Ensure secrets.db exists in `db/` |
+| API key auth fails | secrets.db missing or not migrated | If upgrading from v1, run `node db/seed.js` to populate secrets.db with credentials |
 | Lockdown triggered unexpectedly | Auto-lockdown threshold hit | Check activity log (`GET /api/activity?action=lockdown_activated`) for the trigger reason. Unlock via Settings UI |
+| Lockdown after file changes | Integrity service detected modifications | Expected during development. Restart the server to re-establish the integrity baseline |
+| Cannot unlock -- "no PIN configured" | Lockdown PIN not set in secrets.db | You must set a lockdown PIN via Settings before lockdown can be lifted. If locked out, re-seed the database |
+| Cannot unlock -- "signature mismatch" | Lockdown state tampered in database | System fails closed. Re-seed the database to reset lockdown state |
 | Claude relay not working | CLI not found or Max plan inactive | Verify `CLAUDE_CLI_PATH` in `.env` points to the correct binary |
 
 ### Checking Worker Status
@@ -710,3 +825,10 @@ for Your Organization. Darkhan v1 (2026-03-28) rebuilt from scratch with:
 config-driven architecture, federated worker runtime, onboarding service,
 security service with lockdown, integrity monitoring, cost tracking,
 activity log with immutable audit trail, and rate limiting.
+
+Post-v1 additions:
+- **Credential separation:** secrets.db isolates password hashes, API keys, and lockdown PIN from the operational database. Workers cannot access credentials.
+- **Evidence-based reporting:** EvidenceService produces SHA-256-hashed, tamper-evident findings for all security reports. LLM analysis clearly separated from verified facts.
+- **Claim verification:** ClaimVerifierService auto-tags agent messages with evidence of whether file references, status claims, and numeric assertions check out.
+- **Corey daily audit:** Comprehensive red team security review at 0100 ET using evidence-based checks and LLM analysis (Gemini primary, Ollama fallback).
+- **Hardened security:** SESSION_SECRET required (no fallback), HMAC-signed lockdown state with fail-closed tamper detection, lockdown PIN fail-closed (must be set before unlock works), interpreter commands blocked in restricted shell, environment whitelist for worker shell processes.

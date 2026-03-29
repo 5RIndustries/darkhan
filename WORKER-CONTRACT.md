@@ -82,6 +82,60 @@ module.exports = {
 
 Every task and listener `run()` function receives these interfaces as its first argument. The runtime injects them; workers never construct them.
 
+### `evidence` -- Evidence-Based Reporting
+
+```
+evidence.check({ claim, method, target, check })
+  -> { claim, method, target, result: { pass, actual, detail?, error? }, timestamp, hash }
+```
+
+- The `check` function runs a code-level verification (fs.stat, DB query, etc.)
+- Result is hashed with SHA-256: `hash = SHA-256(claim + method + JSON(result) + timestamp)`
+- Evidence is automatically appended to the immutable activity log
+- Use for security audits, compliance checks, or any assertion that needs tamper-evident proof
+
+```
+evidence.buildReport({ title, findings, llmAnalysis?, metadata? })
+  -> Formatted markdown report with verified findings, evidence hashes, and optional LLM analysis
+```
+
+- Produces a deterministic facts section from evidence data
+- LLM analysis (if provided) is clearly labeled as advisory, not verified fact
+
+```
+evidence.buildFindingsSummary(findings)
+  -> Plain-text summary of PASS/FAIL results for LLM consumption
+```
+
+- Strips hashes and formatting -- only passes facts to the LLM
+- Use this as input when asking an LLM to analyze findings
+
+**Example usage in a worker task:**
+
+```javascript
+async run({ evidence, darkhan, log }) {
+  const findings = [];
+
+  findings.push(await evidence.check({
+    claim: 'Config file is valid JSON',
+    method: 'fs.readFile + JSON.parse',
+    target: '/path/to/config.json',
+    check: async () => {
+      const raw = await fs.promises.readFile(target, 'utf8');
+      JSON.parse(raw);
+      return { pass: true, actual: 'Valid JSON' };
+    },
+  }));
+
+  const report = evidence.buildReport({
+    title: 'Config Audit',
+    findings,
+    metadata: { agent: 'My Agent' },
+  });
+  await darkhan.alert(report);
+}
+```
+
 ### `llm` -- LLM Interface
 
 ```
@@ -124,6 +178,13 @@ darkhan.ping(status?)
 ```
 
 **Identity enforcement:** The `darkhan.post()` method always posts as the authenticated agent. A worker cannot impersonate another agent or a human. The system will override any attempt and log it.
+
+**Claim verification:** Every agent message posted via `darkhan.post()` is automatically scanned by the Claim Verifier before being saved. The verifier checks:
+- File references ("saved to Intel/report.md") against the filesystem
+- Status claims ("Lindsey is operational") against the heartbeat table
+- Numeric claims ("scanned 47 messages") tagged as self-reported
+
+Verification results are stored in the message's `metadata.claimVerification` field. This is non-blocking -- the verifier never modifies the message body or prevents posting. It only adds trust signals for human review.
 
 ### `tools` -- External Tool Access
 
@@ -251,8 +312,20 @@ Each agent has a permission set defined in `darkhan.config.json`. The `tools` in
 - `sudo`, `su` -- privilege escalation
 - `kill`, `killall`, `pkill` -- process termination
 - `curl`, `wget` (to external hosts) -- network access
-- `ssh`, `scp` -- remote access
-- Access to sensitive file paths (`.env`, database files, etc.)
+- `ssh`, `scp`, `nc`, `ncat` -- remote access
+- `python`, `python3`, `node`, `perl`, `ruby`, `php` -- interpreter commands (prevents arbitrary code execution)
+- Pipe to shell (`| bash`, `| sh`, `| zsh`, `| node`, `| python`) -- blocked
+- Command substitution (`$(...)` and backticks) -- blocked in restricted mode
+- Access to sensitive file paths (`.env`, database files, secrets, tokens, etc.)
+
+**Environment whitelist:** Shell commands executed by workers receive only these environment variables:
+- `HOME` -- user home directory
+- `PATH` -- system path
+- `LANG` -- locale (defaults to `en_US.UTF-8`)
+- `USER` -- current user
+- `TERM` -- terminal type (defaults to `xterm-256color`)
+
+All other environment variables (including `SESSION_SECRET`, `GOOGLE_API_KEY`, `ANTHROPIC_API_KEY`, and any other secrets in `.env`) are **not** passed to worker shell processes. This prevents a worker from reading secrets via `printenv`, `env`, or `echo $VAR`.
 
 ---
 

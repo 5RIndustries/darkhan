@@ -390,7 +390,9 @@ class WorkerRuntime {
             // Check write permissions
             const allowed = agentConfig.permissions?.fsWrite || [];
             const relPath = path.relative(self.vaultPath, fullPath);
-            const permitted = allowed.length === 0 || allowed.some(prefix => relPath.startsWith(prefix));
+            // SECURITY: Empty allowed array = NO write permissions (principle of least privilege).
+            // Workers must have explicit fsWrite paths configured to write anything.
+            const permitted = allowed.length > 0 && allowed.some(prefix => relPath.startsWith(prefix));
             if (!permitted) {
               throw new Error(`Write permission denied: ${relPath} (allowed: ${allowed.join(', ')})`);
             }
