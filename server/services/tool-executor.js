@@ -194,7 +194,7 @@ async function writeFile(input, context) {
             success: true,
             queued: true,
             approval_id: id,
-            message: `Write to ${vaultPath} queued for the admin's approval`
+            message: `Write to ${vaultPath} queued for admin approval`
           });
         }
       );

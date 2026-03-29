@@ -9,10 +9,10 @@
  * Usage: node remote-runner.js
  *
  * Required .env (same directory):
- *   REMOTE_HOST=http://192.168.1.100:3001
+ *   REMOTE_HOST=http://<darkhan-hub-ip>:3001
  *   CHIEF_API_KEY=dk_agent_xxx
  *   LINDSEY_API_KEY=dk_agent_xxx
- *   GOOGLE_API_KEY=AIzaSy...
+ *   GOOGLE_API_KEY=<your-key>
  *   OLLAMA_HOST=localhost
  *   OLLAMA_PORT=11434
  */
@@ -29,7 +29,7 @@ const configPath = path.join(__dirname, 'darkhan.config.json');
 const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
 
 // --- Environment ---
-const REMOTE_HOST = process.env.REMOTE_HOST || 'http://192.168.1.100:3001';
+const REMOTE_HOST = process.env.REMOTE_HOST || 'http://localhost:3001';
 
 // [DARKHAN SECURITY] mTLS certificate loading for federation
 let globalTlsOptions = null;

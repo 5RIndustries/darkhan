@@ -8,6 +8,12 @@ server/.env
 # Use darkhan.config.example.json as a template
 server/darkhan.config.json
 
+# Live workers (team-specific — NEVER commit)
+# Use server/workers/examples/ as templates
+server/workers/*.worker.js
+!server/workers/examples/*.worker.js
+server/workers/_node1/
+
 # Database (generated, contains user data)
 server/db/*.db
 server/db/*.db-wal

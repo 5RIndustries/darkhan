@@ -35,7 +35,13 @@ const MAX_SESSION_AGE_MS = 18 * 3600000;
 const MAX_INACTIVITY_MS = 8 * 3600000;
 
 // Trigger configuration
-const HUMAN_USERS = ['user_admin'];
+// Load human users from config
+let configHumanUsers;
+try {
+  const cfg = require('../darkhan.config.json');
+  configHumanUsers = cfg.team?.members?.filter(m => m.type === 'human').map(m => m.id);
+} catch (e) { /* not loaded yet */ }
+const HUMAN_USERS = configHumanUsers || ['user_admin'];
 const RELAY_TRIGGERS = ['agent_lindsey', 'agent_penny'];
 const SYSTEM_TRIGGERS = ['system_heartbeat'];
 
@@ -166,7 +172,13 @@ function buildDarylContext(db, channelId) {
  * Build the context-loading preamble for new Claude relay sessions.
  */
 function buildSessionInitPreamble(channelId, darylContext, fromUser, messageBody) {
-  const logDir = path.join(VAULT_DIR, 'project/session-logs');
+  // Look for session logs in a configurable location
+  let logSubdir;
+  try {
+    const cfg = require('../darkhan.config.json');
+    logSubdir = cfg.vault?.sessionLogDir || 'project/session-logs';
+  } catch (e) { logSubdir = 'project/session-logs'; }
+  const logDir = path.join(VAULT_DIR, logSubdir);
   let latestLog = '';
   try {
     if (fs.existsSync(logDir)) {
@@ -180,10 +192,10 @@ function buildSessionInitPreamble(channelId, darylContext, fromUser, messageBody
   return `You are starting a new Darkhan relay session. Darkhan is your primary interface — the admin communicates with you here instead of a terminal.
 
 Before responding to the message below, silently perform these startup actions:
-1. Read project/state.md for current sprint status, blockers, and priorities
-2. Read project/session-logs/${latestLog || 'Session-Log_' + today + '.md'} for context from the last session
-3. Check project/drafts/ for any unreviewed Lindsey output
-4. Note today's date (${today}) and the STTR deadline status
+1. Read the project state document for current priorities and blockers
+2. Read the latest session log for context from the last session
+3. Check for any unreviewed agent output
+4. Note today's date (${today})
 
 Recent Darkhan conversation:
 ${darylContext}
@@ -337,7 +349,7 @@ function classifyMessage(messageBody, fromUser) {
   }
 
   // Agent relay triggers (Lindsey) → Claude relay (needs comprehension)
-  if (fromUser !== 'user_admin') {
+  if (!HUMAN_USERS.includes(fromUser)) {
     return 'claude_relay';
   }
 
@@ -423,11 +435,11 @@ function getClaudeStatus(db) {
 }
 
 /**
- * Escalate to the admin via Pushover when Claude is in REST mode
+ * Escalate to admin via Pushover when Claude is in REST mode
  */
 function escalateToTerminal(db, io, channelId, fromUser, messageBody) {
   const summary = messageBody.substring(0, 200);
-  const escalationMsg = `[ESCALATION] ${fromUser}: "${summary}" — Claude is in REST mode. Pinging the admin via Pushover.`;
+  const escalationMsg = `[ESCALATION] ${fromUser}: "${summary}" — Claude is in REST mode. Pinging admin via Pushover.`;
   postToChannel(db, io, channelId, escalationMsg, 'agent_darkhan');
 
   const pushScript = path.join(HOME, 'scripts', 'push-alert.sh');

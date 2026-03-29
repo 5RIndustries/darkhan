@@ -37,15 +37,18 @@ const MAX_SESSION_MESSAGES = 60;
 const MAX_SESSION_AGE_MS = 18 * 3600000;
 const MAX_INACTIVITY_MS = 8 * 3600000;
 
-// Allowed write paths (relative to vault)
-const WRITE_ALLOWLIST = [
+// Allowed write paths (relative to vault — override in darkhan.config.json)
+let configRelayWritePaths;
+try {
+  const cfg = require('../darkhan.config.json');
+  configRelayWritePaths = cfg.vault?.writeAllowlist;
+} catch (e) { /* not loaded yet */ }
+const WRITE_ALLOWLIST = configRelayWritePaths || [
   'project/output/',
   'project/state.md',
   'project/sprints/',
   'project/decisions/',
   'project/pipeline/',
-  'project/cos/',
-  'Daily Journal/',
 ];
 
 /**

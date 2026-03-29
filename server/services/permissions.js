@@ -23,12 +23,16 @@ const VAULT_BASE = path.normalize(
     : path.join(process.env.HOME || '', 'darkhan-vault')
 );
 
-// Paths Claude can write to without approval
-const ALLOWLIST_WRITE = [
-  'project/cos/',          // Chief of Staff workspace
-  'project/output/',        // Research and analysis
-  'project/decisions/',    // Decision logs
-  'project/ops/',      // COO workspace (subdirs)
+// Paths agents can write to without approval (override in darkhan.config.json)
+let configWritePaths;
+try {
+  const cfg = require('../darkhan.config.json');
+  configWritePaths = cfg.vault?.writeAllowlist;
+} catch (e) { /* not loaded yet */ }
+const ALLOWLIST_WRITE = configWritePaths || [
+  'project/output/',      // Default output directory
+  'project/intel/',       // Research and analysis
+  'project/decisions/',   // Decision logs
 ];
 
 // Paths that are completely blocked (never allowed, never queued)
@@ -46,8 +50,8 @@ const BLOCKLIST = [
 
 /**
  * Normalize a vault-relative path
- * Input: "project/output/some-file.md"
- * Output: "/full/path/to/project/output/some-file.md"
+ * Input: "project/intel/some-file.md"
+ * Output: "/full/path/to/project/intel/some-file.md"
  */
 function normalizePath(relativePath) {
   const full = path.normalize(path.join(VAULT_BASE, relativePath));

@@ -659,7 +659,7 @@
       }
       messageInput.value = '';
 
-      // Post the admin's question as a regular message first
+      // Post the user's question as a regular message first
       try {
         await api('POST', '/messages', { channel_id: currentChannel, body: query });
       } catch (err) { /* continue even if message post fails */ }

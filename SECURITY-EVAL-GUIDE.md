@@ -1,4 +1,4 @@
-# Tino Onboarding — Darkhan Security Evaluation
+# Darkhan Security Evaluation Guide
 
 > Welcome to Darkhan. This document walks you from zero to a running instance,
 > then guides you through a structured security evaluation.
@@ -19,7 +19,7 @@
 
 ### Get the Code
 ```bash
-# Clone the private repo (the admin will add you as a collaborator)
+# Clone the repo
 gh repo clone outlaw4shrt/darkhan
 cd darkhan
 
@@ -295,15 +295,15 @@ Document what your agent finds that you didn't, and vice versa.
 
 ## Phase 4: Report Your Findings
 
-Create a markdown file: `~/darkhan/PENTEST-RESULTS-TINO.md`
+Create a markdown file: `~/darkhan/PENTEST-RESULTS.md`
 
 Structure:
 
 ```markdown
-# Darkhan Penetration Test Results — Tino Dinh
+# Darkhan Penetration Test Results
 
 **Date:** YYYY-MM-DD
-**Tester:** Tino Dinh + Claude Code agent
+**Tester:** [Your name] + Claude Code agent
 **Instance:** Fresh clone, version [commit hash]
 **Platform:** [your OS + hardware]
 
@@ -330,7 +330,7 @@ Structure:
 - Ship / No-Ship recommendation with conditions
 ```
 
-**Send the report to the admin when complete. Do NOT push it to the repo (it may contain sensitive details).**
+**Send the report to the repo owner when complete. Do NOT push it to the repo (it may contain sensitive details).**
 
 ---
 
@@ -363,4 +363,4 @@ Full operational procedures: [RUNBOOK.md](RUNBOOK.md)
 
 ## Questions?
 
-Reach the admin directly. Do not post questions in public channels — this is pre-release, NDA-protected work.
+Reach the repo owner directly. Do not post questions in public channels — this is pre-release work.
