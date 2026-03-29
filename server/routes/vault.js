@@ -29,7 +29,7 @@ router.use(requireAuth);
  */
 function getVaultPath(req) {
   const config = req.app.locals.config;
-  const raw = config?.vault?.path || '~/Documents/darkhan-vault';
+  const raw = config?.vault?.path || '~/darkhan-vault';
   return raw.replace('~', process.env.HOME);
 }
 

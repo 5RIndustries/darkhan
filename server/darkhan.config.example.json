@@ -1,0 +1,85 @@
+{
+  "instance": {
+    "name": "My Team",
+    "brandName": "Darkhan",
+    "port": 3001,
+    "timezone": "America/New_York"
+  },
+  "team": {
+    "members": [
+      {
+        "id": "user_admin",
+        "name": "Admin",
+        "type": "human",
+        "role": "admin",
+        "channels": ["chan_command", "chan_alerts"],
+        "notifications": { "pushover": false }
+      },
+      {
+        "id": "agent_assistant",
+        "name": "Assistant",
+        "type": "agent",
+        "role": "agent",
+        "model": { "provider": "ollama", "model": "qwen2.5:14b", "mode": "worker" },
+        "worker": "assistant.worker.js",
+        "rateLimits": { "requestsPerDay": 0, "requestsPerMinute": 0 },
+        "channels": ["chan_command", "chan_alerts"],
+        "permissions": { "fsWrite": ["project/output/"], "shell": "restricted" }
+      },
+      {
+        "id": "agent_security",
+        "name": "Security",
+        "type": "agent",
+        "role": "system",
+        "model": { "provider": "ollama", "model": "qwen2.5:14b", "mode": "triage" },
+        "worker": "security.worker.js",
+        "rateLimits": { "requestsPerDay": 50, "requestsPerMinute": 3 },
+        "channels": ["chan_command", "chan_alerts"],
+        "permissions": { "fsWrite": ["project/output/"], "shell": "restricted" }
+      }
+    ]
+  },
+  "llm": {
+    "triage": {
+      "provider": "ollama",
+      "model": "qwen2.5:14b"
+    },
+    "providers": {
+      "ollama": { "host": "localhost", "port": 11434 },
+      "google": { "keyEnvVar": "GOOGLE_API_KEY" },
+      "anthropic": { "keyEnvVar": "ANTHROPIC_API_KEY" }
+    },
+    "globalRateLimits": {
+      "google": { "requestsPerDay": 1000, "requestsPerMinute": 15 },
+      "anthropic": { "requestsPerDay": 500, "requestsPerMinute": 10 },
+      "ollama": { "requestsPerDay": 0, "requestsPerMinute": 0 }
+    }
+  },
+  "channels": [
+    { "id": "chan_command", "name": "#command", "description": "Primary team channel" },
+    { "id": "chan_alerts", "name": "#alerts", "description": "System alerts" }
+  ],
+  "vault": {
+    "path": "~/darkhan-vault"
+  },
+  "sandbox": {
+    "enabled": true,
+    "limits": {
+      "maxMemoryMB": 512,
+      "maxFileDescriptors": 256,
+      "watchdogIntervalMs": 30000,
+      "killOnExceed": true
+    }
+  },
+  "tls": {
+    "enabled": false,
+    "ca": "~/.darkhan-certs/ca.crt",
+    "cert": "~/.darkhan-certs/my-node.crt",
+    "key": "~/.darkhan-certs/my-node.key"
+  },
+  "federation": {
+    "enabled": false,
+    "instanceId": "my-instance",
+    "peers": []
+  }
+}

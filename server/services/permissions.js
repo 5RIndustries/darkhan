@@ -1,14 +1,27 @@
 /**
- * DARYL — Permission Management
- * 
- * Enforces safe paths for Claude's file operations via DARYL API.
+ * Darkhan — Permission Management
+ *
+ * Enforces safe paths for file operations via Darkhan API.
  * Define allowlists, blocklists, and escalation to approval queue.
  */
 
 const path = require('path');
 
-// Allowed vault base directory (Obsidian vault root)
-const VAULT_BASE = path.normalize(path.join(process.env.HOME || '/Users/adminoutlaw', 'Documents/darkhan-vault'));
+// Load vault path from config, fall back to HOME-relative default
+let configVaultPath;
+try {
+  const config = require('../darkhan.config.json');
+  configVaultPath = config.vault?.path;
+} catch (e) {
+  // Config not loaded yet; will use fallback
+}
+
+// Resolve vault base directory from config or environment
+const VAULT_BASE = path.normalize(
+  configVaultPath
+    ? configVaultPath.replace(/^~/, process.env.HOME || '')
+    : path.join(process.env.HOME || '', 'darkhan-vault')
+);
 
 // Paths Claude can write to without approval
 const ALLOWLIST_WRITE = [

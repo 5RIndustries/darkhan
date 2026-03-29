@@ -32,13 +32,13 @@ let systemPrompt = null;
 
 /**
  * Load the system prompt from CLAUDE.md
- * Path: CLAUDE_PROMPT_PATH env var, or default to ~/Documents/darkhan-vault/CLAUDE.md
+ * Path: CLAUDE_PROMPT_PATH env var, or default to ~/darkhan-vault/CLAUDE.md
  */
 function loadSystemPrompt() {
   if (systemPrompt) return systemPrompt;
 
   const promptPath = process.env.CLAUDE_PROMPT_PATH || 
-    path.join(process.env.HOME || '/root', 'Documents/darkhan-vault/CLAUDE.md');
+    path.join(process.env.HOME || '/root', 'darkhan-vault/CLAUDE.md');
 
   try {
     const content = fs.readFileSync(promptPath, 'utf8');
@@ -48,10 +48,8 @@ function loadSystemPrompt() {
   } catch (err) {
     console.warn(`[Claude API] Failed to load system prompt from ${promptPath}:`, err.message);
     // Fallback system prompt
-    systemPrompt = `You are DARYL, the command center assistant for Your Organization (OMC).
-You are NOT Claude — Claude (agent_claude) is the Chief of Staff who operates through your Opus relay tier.
-You handle fast responses: comms checks, greetings, simple status. Be concise and direct.
-Always refer to yourself as DARYL, never as Claude.`;
+    systemPrompt = `You are Darkhan, the command center assistant.
+You handle fast responses: comms checks, greetings, simple status. Be concise and direct.`;
     return systemPrompt;
   }
 }
@@ -114,7 +112,7 @@ function getToolDefinitions() {
         properties: {
           path: {
             type: 'string',
-            description: 'Vault-relative path (e.g., "project/state.md")'
+            description: 'Vault-relative path (e.g., "project/status.md")'
           }
         },
         required: ['path']
@@ -122,7 +120,7 @@ function getToolDefinitions() {
     },
     {
       name: 'write_file',
-      description: 'Write a file to the vault. If outside allowlist, queued for the admin\'s approval.',
+      description: 'Write a file to the vault. If outside allowlist, queued for admin approval.',
       input_schema: {
         type: 'object',
         properties: {
@@ -247,14 +245,12 @@ async function sendMessage(channelId, userMessage, context) {
 
   // DARYL identity override: Sonnet tier presents as DARYL, not Claude
   const darylIdentity = `IDENTITY OVERRIDE — READ THIS FIRST:
-You are DARYL, the command center assistant for Your Organization. You are NOT Claude.
-- Always refer to yourself as "DARYL" — never "Claude" or "Claude Code"
-- Claude (agent_claude) is the Chief of Staff who operates through your Opus relay tier. You are a separate entity.
+You are Darkhan, the command center assistant. You are NOT Claude.
+- Always refer to yourself as "Darkhan"
 - You handle fast responses: comms checks, greetings, simple status queries, quick lookups
-- Complex/strategic questions get routed to Claude (agent_claude) via the Opus tier — not you
+- Complex/strategic questions get routed to the appropriate agent or admin
 - Be concise, direct, and helpful. One-line answers when possible.
-- When asked "are you online?" or "comms check", confirm as DARYL (e.g., "DARYL online. Comms confirmed.")
-- You have awareness of the team (the admin = CEO, Claude = CoS, Lindsey = COO) but you are the command center, not any of them.
+- When asked "are you online?" or "comms check", confirm as Darkhan (e.g., "Darkhan online. Comms confirmed.")
 
 ---
 

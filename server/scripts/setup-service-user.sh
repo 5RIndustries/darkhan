@@ -4,23 +4,23 @@
 #
 # Creates a '_darkhan' system user on macOS and transfers ownership of
 # sensitive files (databases, secrets, .env) to that user. This prevents
-# any process running as 'adminoutlaw' (including AI agents with shell
-# access) from reading credentials or modifying the database directly.
+# any process running as your developer account (including AI agents with
+# shell access) from reading credentials or modifying the database directly.
 #
 # WHAT THIS DOES:
 #   1. Creates _darkhan system user (no login, no home directory)
 #   2. Transfers ownership of db/, .env, and integrity baseline to _darkhan
 #   3. Sets permissions so only _darkhan can read/write these files
 #   4. Creates a launchd plist to run Darkhan as _darkhan
-#   5. Adds adminoutlaw to a 'darkhan' group for code file access
+#   5. Adds the owner user to a 'darkhan' group for code file access
 #
 # WHAT THIS DOES NOT DO:
-#   - Does not modify code files (they stay owned by adminoutlaw)
+#   - Does not modify code files (they stay owned by the developer user)
 #   - Does not move any files (they stay in the same locations)
 #   - Does not delete anything
 #
 # REVERSIBLE:
-#   To undo: sudo chown -R adminoutlaw:staff ~/darkhan/server/db ~/darkhan/server/.env
+#   To undo: sudo chown -R $(whoami):staff ~/darkhan/server/db ~/darkhan/server/.env
 #
 # REQUIRES: sudo (macOS admin password)
 #
@@ -38,7 +38,7 @@ DB_DIR="$SERVER_DIR/db"
 ENV_FILE="$SERVER_DIR/.env"
 BASELINE_FILE="$HOME/.darkhan-integrity-baseline.json"
 CERTS_DIR="$HOME/.darkhan-certs"
-OWNER_USER="adminoutlaw"
+OWNER_USER="${DARKHAN_OWNER:-$(whoami)}"
 
 echo "=== Darkhan Service User Setup (Layer 2) ==="
 echo ""

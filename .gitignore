@@ -4,6 +4,10 @@ node_modules/
 # Environment (secrets — NEVER commit)
 server/.env
 
+# Live config (contains team-specific data — NEVER commit)
+# Use darkhan.config.example.json as a template
+server/darkhan.config.json
+
 # Database (generated, contains user data)
 server/db/*.db
 server/db/*.db-wal

@@ -312,7 +312,7 @@ Each agent has a permission set defined in `darkhan.config.json`. The `tools` in
 ```json
 {
   "permissions": {
-    "fsWrite": ["project/output/", "project/cos/"],
+    "fsWrite": ["project/output/", "project/reports/"],
     "shell": "restricted"
   }
 }
@@ -480,7 +480,7 @@ async run({ llm, darkhan, log }) {
   await darkhan.post('chan_command', 'Starting daily analysis...');
 
   // Step 1
-  const data = await tools.fs.read('project/state.md');
+  const data = await tools.fs.read('project/status.md');
   log.info('State file loaded');
 
   // Step 2
@@ -491,7 +491,7 @@ async run({ llm, darkhan, log }) {
 
   // Step 3
   await tools.fs.write('project/output/analysis.md', result.response);
-  await darkhan.post('chan_command', 'Analysis complete. Saved to Intel/analysis.md.');
+  await darkhan.post('chan_command', 'Analysis complete. Saved to project/output/analysis.md.');
 }
 ```
 

@@ -537,7 +537,7 @@ The `corey_daily_audit` task runs at 0100 ET every day as part of the Darkhan se
 2. Findings are summarized and sent to an LLM (Gemini primary, Ollama fallback) playing the Corey red team persona
 3. The LLM produces analysis, grading, and GO/NO-GO recommendation
 4. `evidence.buildReport()` assembles the final report with verified findings, evidence hashes, and LLM analysis clearly separated
-5. The report is saved to `project/output/` and posted to #alerts (and #command if any checks failed)
+5. The report is saved to the configured output directory and posted to #alerts (and #command if any checks failed)
 
 All workers also support **message listeners** -- event-driven responses to channel messages.
 Every worker responds to "comms check" and `@name` mentions in real-time.
@@ -591,7 +591,7 @@ Configured per-agent in `darkhan.config.json` under `permissions`:
 
 ```json
 "permissions": {
-  "fsWrite": ["project/output/", "project/cos/"],
+  "fsWrite": ["project/output/", "project/reports/"],
   "shell": "restricted"
 }
 ```
@@ -962,8 +962,8 @@ Returns a summary of today's security events by category.
 
 ## Evolution
 
-Evolved from DARYL v1-v5 (2026-03-23 to 2026-03-27), the internal command center
-for Your Organization. Darkhan v1 (2026-03-28) rebuilt from scratch with:
+Evolved from DARYL v1-v5 (2026-03-23 to 2026-03-27), an internal command center.
+Darkhan v1 (2026-03-28) rebuilt from scratch with:
 config-driven architecture, federated worker runtime, onboarding service,
 security service with lockdown, integrity monitoring, cost tracking,
 activity log with immutable audit trail, and rate limiting.
@@ -987,5 +987,5 @@ Post-v1 additions (2026-03-29):
 - **Forge branding:** "Darkhan -- The Forge" throughout UI, manifest, and documentation.
 - **Threat flag capability:** `darkhan.flagThreat()` available to all workers. Posts structured alert + creates CRISPR spacer.
 - **Session invalidation on password change:** Destroys all other sessions for the user.
-- **Chief daily briefing:** 0545 ET consolidated overnight report saved to `project/cos/Daily-Briefings/`.
-- **Private GitHub repo:** `outlaw4shrt/darkhan`, community docs (SECURITY.md, CONTRIBUTING.md, issue/PR templates).
+- **Chief daily briefing:** 0545 ET consolidated overnight report saved to the configured output directory.
+- **GitHub repo:** Community docs (SECURITY.md, CONTRIBUTING.md, issue/PR templates).
