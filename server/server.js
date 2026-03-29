@@ -20,6 +20,7 @@ const { IntegrityService } = require('./services/integrity');
 const { ClaimVerifierService } = require('./services/claim-verifier');
 const { GroundTruthRegistry } = require('./services/ground-truth');
 const { KeychainService } = require('./services/keychain');
+const { ModelVerifier } = require('./services/model-verifier');
 
 // Load config
 const CONFIG_PATH = path.join(__dirname, 'darkhan.config.json');
@@ -228,6 +229,12 @@ claimVerifier.groundTruth = groundTruth;
 // macOS Keychain integration (Layer 3 security)
 const keychainService = new KeychainService({ activityLog });
 app.locals.keychainService = keychainService;
+
+// LLM model integrity verification (hostile model defense)
+const modelVerifier = new ModelVerifier({ activityLog, config });
+modelVerifier.verifyConfiguredModels().catch(e =>
+  console.error('[ModelVerifier] Verification error:', e.message)
+);
 
 // Existing routes (evolved from DARYL)
 const authRoutes = require('./routes/auth');
