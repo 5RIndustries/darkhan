@@ -77,6 +77,15 @@
     "cert": "~/.darkhan-certs/my-node.crt",
     "key": "~/.darkhan-certs/my-node.key"
   },
+  "telegram": {
+    "enabled": false,
+    "botToken": "ENV:TELEGRAM_BOT_TOKEN",
+    "channelMap": [
+      { "telegramChatId": "-100123456789", "darkhanChannelId": "chan_command" }
+    ],
+    "allowedChatIds": ["-100123456789"],
+    "pollingIntervalMs": 2000
+  },
   "federation": {
     "enabled": false,
     "instanceId": "my-instance",
