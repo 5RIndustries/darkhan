@@ -31,6 +31,23 @@ const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
 // --- Environment ---
 const REMOTE_HOST = process.env.REMOTE_HOST || 'http://192.168.1.100:3001';
 
+// [DARKHAN SECURITY] mTLS certificate loading for federation
+let globalTlsOptions = null;
+if (config.tls?.enabled) {
+  const resolvePath = (p) => p.replace('~', process.env.HOME);
+  try {
+    globalTlsOptions = {
+      ca: fs.readFileSync(resolvePath(config.tls.ca)),
+      cert: fs.readFileSync(resolvePath(config.tls.cert)),
+      key: fs.readFileSync(resolvePath(config.tls.key)),
+    };
+    console.log('[RemoteRunner] mTLS certificates loaded');
+  } catch (e) {
+    console.error(`[RemoteRunner] FATAL: Could not load TLS certificates: ${e.message}`);
+    process.exit(1);
+  }
+}
+
 // [DARKHAN SECURITY] TLS enforcement for federation
 // HTTP is acceptable on Tailscale networks (WireGuard-encrypted). For non-Tailscale
 // deployments, require HTTPS or explicit opt-in via FEDERATION_ALLOW_HTTP=true.
@@ -78,6 +95,7 @@ const costTracker = {
     // Optionally POST cost data to Node 2 for centralized tracking
     try {
       const http = require('http');
+      const https = require('https');
       const firstKey = Object.values(apiKeys)[0];
       if (!firstKey) return;
 
@@ -87,9 +105,11 @@ const costTracker = {
       });
 
       const url = new URL(REMOTE_HOST);
-      const req = http.request({
+      const isHttps = url.protocol === 'https:';
+      const transport = isHttps ? https : http;
+      const reqOpts = {
         hostname: url.hostname,
-        port: url.port || 80,
+        port: url.port || (isHttps ? 443 : 80),
         path: '/api/messages',
         method: 'POST',
         headers: {
@@ -98,7 +118,17 @@ const costTracker = {
           'Content-Length': Buffer.byteLength(payload),
         },
         timeout: 5000,
-      });
+      };
+
+      // [DARKHAN SECURITY] mTLS: attach client certs if available
+      if (isHttps && globalTlsOptions) {
+        reqOpts.ca = globalTlsOptions.ca;
+        reqOpts.cert = globalTlsOptions.cert;
+        reqOpts.key = globalTlsOptions.key;
+        reqOpts.rejectUnauthorized = true;
+      }
+
+      const req = transport.request(reqOpts);
       req.on('error', () => {}); // Swallow — cost reporting is best-effort
       req.write(payload);
       req.end();
