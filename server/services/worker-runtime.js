@@ -250,6 +250,12 @@ class WorkerRuntime {
     const worker = this.workers.get(workerId);
     if (!worker) return;
 
+    // Skip if worker is disabled
+    if (worker.disabled) {
+      console.log(`[WorkerRuntime] ${workerId}.${taskName} SKIPPED (worker disabled)`);
+      return;
+    }
+
     // Skip if worker is already running a task (sequential execution)
     if (worker.running) {
       console.log(`[WorkerRuntime] ${workerId}.${taskName} SKIPPED (${worker.running} still running)`);
@@ -265,6 +271,9 @@ class WorkerRuntime {
     worker.running = taskName;
     worker.status = 'busy';
     const startTime = Date.now();
+
+    // [ASI02] Reset tool rate limits for this task execution
+    if (context.tools?._toolLimits) context.tools._toolLimits.reset();
 
     console.log(`[WorkerRuntime] ${workerId}.${taskName} STARTED`);
     this.activityLog.append({
@@ -334,6 +343,28 @@ class WorkerRuntime {
    */
   async _buildContext(agentId, agentConfig) {
     const self = this;
+
+    // [ASI02] Tool rate limiter — caps per-task tool invocations.
+    // Reset at the start of each task execution.
+    const toolLimits = {
+      fsReads: 0, maxFsReads: 200,
+      fsWrites: 0, maxFsWrites: 50,
+      shellExecs: 0, maxShellExecs: 10,
+      reset() { this.fsReads = 0; this.fsWrites = 0; this.shellExecs = 0; },
+      checkFs(op) {
+        if (op === 'read' && ++this.fsReads > this.maxFsReads) {
+          throw new Error(`Tool rate limit: max ${this.maxFsReads} file reads per task exceeded`);
+        }
+        if (op === 'write' && ++this.fsWrites > this.maxFsWrites) {
+          throw new Error(`Tool rate limit: max ${this.maxFsWrites} file writes per task exceeded`);
+        }
+      },
+      checkShell() {
+        if (++this.shellExecs > this.maxShellExecs) {
+          throw new Error(`Tool rate limit: max ${this.maxShellExecs} shell executions per task exceeded`);
+        }
+      },
+    };
 
     // Generate the onboarding brief from verified system state
     let onboarding = null;
@@ -487,8 +518,10 @@ class WorkerRuntime {
 
       // File system tools (scoped to permissions)
       tools: {
+        _toolLimits: toolLimits, // Exposed for per-task reset by _executeTask
         fs: {
-          read: (filePath) => {
+          read: async (filePath) => {
+            toolLimits.checkFs('read');
             const fullPath = filePath.startsWith('/') ? filePath : path.join(self.vaultPath, filePath);
             // [SANDBOX] Check deny list for reads
             if (self.sandbox.enabled) {
@@ -499,9 +532,32 @@ class WorkerRuntime {
                 }
               }
             }
-            return fs.promises.readFile(fullPath, 'utf8');
+            const content = await fs.promises.readFile(fullPath, 'utf8');
+            // [ASI01] Scan file content for injection before it reaches LLM context.
+            // This catches indirect injection via vault files containing payloads.
+            if (self.securityService && content.length > 0) {
+              const scan = self.securityService.scanForInjection(content, {
+                source: `file:${filePath}`,
+                origin: 'vault',
+              });
+              if (!scan.safe) {
+                self.activityLog?.append({
+                  actor: agentId,
+                  action: 'tool_output_injection_detected',
+                  target: filePath,
+                  details: JSON.stringify({ severity: scan.severity, threats: scan.threats.length }),
+                });
+                if (scan.severity === 'critical') {
+                  throw new Error(`ASI01: File ${filePath} contains critical injection patterns — read blocked`);
+                }
+                // Non-critical: log warning but return content (may be false positive)
+                console.warn(`[ASI01] ${agentId} read file with injection patterns: ${filePath} (${scan.severity})`);
+              }
+            }
+            return content;
           },
           write: (filePath, data) => {
+            toolLimits.checkFs('write');
             const fullPath = filePath.startsWith('/') ? filePath : path.join(self.vaultPath, filePath);
             // [SANDBOX] Check deny list for writes
             if (self.sandbox.enabled) {
@@ -536,6 +592,7 @@ class WorkerRuntime {
         },
         shell: {
           async exec(command, opts = {}) {
+            toolLimits.checkShell();
             // Security: check shell permissions before execution
             if (self.securityService) {
               const check = self.securityService.checkShellCommand(agentId, command);
@@ -560,8 +617,26 @@ class WorkerRuntime {
                 TERM: process.env.TERM || 'xterm-256color',
               },
               }, (err, stdout, stderr) => {
-                if (err) reject(new Error(`Shell error: ${err.message}\n${stderr}`));
-                else resolve({ stdout: stdout.trim(), stderr: stderr.trim() });
+                if (err) reject(new Error(`Shell error: ${err.message}`));
+                const result = { stdout: stdout.trim(), stderr: stderr.trim() };
+                // [ASI01] Scan shell output for injection before it reaches LLM context
+                if (self.securityService && result.stdout.length > 0) {
+                  const scan = self.securityService.scanForInjection(result.stdout, {
+                    source: `shell:${command.substring(0, 50)}`,
+                    origin: 'local',
+                  });
+                  if (!scan.safe && scan.severity === 'critical') {
+                    self.activityLog?.append({
+                      actor: agentId,
+                      action: 'tool_output_injection_detected',
+                      target: 'shell',
+                      details: JSON.stringify({ command: command.substring(0, 100), severity: scan.severity }),
+                    });
+                    reject(new Error(`ASI01: Shell output contains critical injection patterns — blocked`));
+                    return;
+                  }
+                }
+                resolve(result);
               });
             });
           },
@@ -766,6 +841,55 @@ class WorkerRuntime {
   }
 
   /**
+   * [ASI08] Disable a specific agent without triggering lockdown.
+   * Stops all cron jobs and marks the worker as disabled.
+   * The agent's messages are still accepted but tasks won't execute.
+   */
+  disableWorker(workerId) {
+    const worker = this.workers.get(workerId);
+    if (!worker) return { ok: false, error: `Worker ${workerId} not found` };
+
+    for (const { job } of worker.cronJobs) {
+      job.stop();
+    }
+    worker.status = 'disabled';
+    worker.disabled = true;
+
+    this.activityLog.append({
+      actor: 'admin',
+      action: 'worker_disabled',
+      target: workerId,
+    });
+
+    console.log(`[WorkerRuntime] ${workerId} DISABLED by admin`);
+    return { ok: true, workerId, status: 'disabled' };
+  }
+
+  /**
+   * [ASI08] Re-enable a previously disabled agent.
+   * Restarts cron jobs.
+   */
+  enableWorker(workerId) {
+    const worker = this.workers.get(workerId);
+    if (!worker) return { ok: false, error: `Worker ${workerId} not found` };
+
+    for (const { job } of worker.cronJobs) {
+      job.start();
+    }
+    worker.status = 'idle';
+    worker.disabled = false;
+
+    this.activityLog.append({
+      actor: 'admin',
+      action: 'worker_enabled',
+      target: workerId,
+    });
+
+    console.log(`[WorkerRuntime] ${workerId} ENABLED by admin`);
+    return { ok: true, workerId, status: 'enabled' };
+  }
+
+  /**
    * Get status of all workers for dashboard.
    */
   getStatus() {
@@ -775,6 +899,7 @@ class WorkerRuntime {
         id,
         name: worker.name,
         status: worker.status,
+        disabled: worker.disabled || false,
         running: worker.running,
         lastRun: worker.lastRun,
         tasks: worker.cronJobs.map(j => ({ name: j.taskName, schedule: j.schedule })),

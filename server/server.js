@@ -403,6 +403,23 @@ app.get('/api/workers', secReqAuth, (req, res) => {
   }
 });
 
+// [ASI08] Per-agent enable/disable toggle (admin only)
+app.post('/api/workers/:id/disable', secReqAuth, (req, res) => {
+  if (!req.session?.userId || req.session.role !== 'admin') {
+    return res.status(403).json({ error: 'Only admins can disable workers' });
+  }
+  if (!app.locals.workerRuntime) return res.status(500).json({ error: 'Worker runtime not available' });
+  res.json(app.locals.workerRuntime.disableWorker(req.params.id));
+});
+
+app.post('/api/workers/:id/enable', secReqAuth, (req, res) => {
+  if (!req.session?.userId || req.session.role !== 'admin') {
+    return res.status(403).json({ error: 'Only admins can enable workers' });
+  }
+  if (!app.locals.workerRuntime) return res.status(500).json({ error: 'Worker runtime not available' });
+  res.json(app.locals.workerRuntime.enableWorker(req.params.id));
+});
+
 // Keychain status (Layer 3)
 app.get('/api/keychain', secReqAuth, (req, res) => {
   if (!req.session?.userId || req.session.role !== 'admin') {
