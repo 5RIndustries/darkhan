@@ -15,6 +15,7 @@ const { Glob } = require('glob');
 const { OnboardingService } = require('./onboarding');
 const { EvidenceService } = require('./evidence');
 const { ClaimVerifierService } = require('./claim-verifier');
+const { WorkerSandbox } = require('./sandbox');
 
 class WorkerRuntime {
   constructor({ llmService, db, io, config, activityLog, costTracker, securityService }) {
@@ -44,6 +45,9 @@ class WorkerRuntime {
       db,
       activityLog,
     });
+
+    // Worker sandbox — OS-level isolation and resource monitoring
+    this.sandbox = new WorkerSandbox({ config, activityLog });
 
     // Listener registry: pattern -> [{ workerId, listenerName, handler, timeout }]
     this.messageListeners = [];
@@ -93,6 +97,30 @@ class WorkerRuntime {
     const agentConfig = this.config.team.members.find(m => m.id === id);
     if (!agentConfig) {
       throw new Error(`Worker ${id} not found in darkhan.config.json team members`);
+    }
+
+    // [SANDBOX] Log sandbox configuration for this worker
+    if (this.sandbox.enabled) {
+      const sandboxEnv = this.sandbox.buildEnvironment(agentConfig);
+      const limits = this.sandbox.getLimits(agentConfig);
+      const paths = this.sandbox.getAllowedPaths(agentConfig);
+      console.log(`[Sandbox] ${id}: env=${Object.keys(sandboxEnv).length} vars, ` +
+        `mem=${limits.maxMemoryMB}MB, write=${paths.write.length} path(s), ` +
+        `deny=${paths.deny.length} path(s)`);
+
+      // Generate sandbox profile (macOS only, for future subprocess mode)
+      const profile = this.sandbox.generateSandboxProfile(id, agentConfig);
+      if (profile) {
+        this.sandbox.writeSandboxProfile(id, profile);
+      }
+
+      // Register for resource monitoring
+      this.sandbox.processes.set(id, {
+        proc: process, // Current process for now — future: child process
+        limits,
+        allowedPaths: paths,
+        env: sandboxEnv,
+      });
     }
 
     // Build the context object provided to all tasks (async — generates onboarding brief)
@@ -431,10 +459,28 @@ class WorkerRuntime {
         fs: {
           read: (filePath) => {
             const fullPath = filePath.startsWith('/') ? filePath : path.join(self.vaultPath, filePath);
+            // [SANDBOX] Check deny list for reads
+            if (self.sandbox.enabled) {
+              const denyPaths = self.sandbox.getAllowedPaths(agentConfig).deny;
+              for (const denied of denyPaths) {
+                if (fullPath.startsWith(denied)) {
+                  throw new Error(`Sandbox: read denied for ${filePath} (protected path)`);
+                }
+              }
+            }
             return fs.promises.readFile(fullPath, 'utf8');
           },
           write: (filePath, data) => {
             const fullPath = filePath.startsWith('/') ? filePath : path.join(self.vaultPath, filePath);
+            // [SANDBOX] Check deny list for writes
+            if (self.sandbox.enabled) {
+              const denyPaths = self.sandbox.getAllowedPaths(agentConfig).deny;
+              for (const denied of denyPaths) {
+                if (fullPath.startsWith(denied)) {
+                  throw new Error(`Sandbox: write denied for ${filePath} (protected path)`);
+                }
+              }
+            }
             // Check write permissions
             const allowed = agentConfig.permissions?.fsWrite || [];
             const relPath = path.relative(self.vaultPath, fullPath);
