@@ -441,7 +441,8 @@ Message: "${text.substring(0, 2000)}"`
       // Check against dangerous commands
       const dangerous = ['rm', 'rmdir', 'sudo', 'kill', 'killall', 'chmod', 'chown',
         'mkfs', 'dd', 'shutdown', 'reboot', 'curl', 'wget', 'ssh', 'scp', 'nc', 'ncat',
-        'python3', 'python', 'node', 'perl', 'ruby', 'php'];
+        'python3', 'python', 'node', 'perl', 'ruby', 'php',
+        'env', 'printenv', 'set', 'sqlite3', 'base64'];
 
       if (dangerous.includes(baseCmd)) {
         this.activityLog.append({
@@ -466,6 +467,17 @@ Message: "${text.substring(0, 2000)}"`
           });
           return { allowed: false, reason: `Access to sensitive file/path blocked for ${agentId}` };
         }
+      }
+
+      // Block redirection to sensitive file types (.db, .env)
+      if (/>{1,2}\s*\S*\.(db|env)\b/.test(command)) {
+        this.activityLog.append({
+          actor: 'darkhan_security',
+          action: 'redirect_to_sensitive_blocked',
+          target: agentId,
+          details: JSON.stringify({ command: command.substring(0, 100) }),
+        });
+        return { allowed: false, reason: `Redirection to sensitive file type blocked for ${agentId}` };
       }
 
       // Check for pipe to shell

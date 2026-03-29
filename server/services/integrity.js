@@ -132,53 +132,86 @@ class IntegrityService {
 
     console.log(`[Integrity] Baseline: ${Object.keys(this.baselineHashes).length} files hashed, ${this.baselineUserCount} users`);
 
-    // Save baseline EXTERNALLY (outside Darkhan directory — P0-R2)
-    // On first run: save the baseline
-    // On subsequent runs: compare against external baseline FIRST
+    // SECURITY: Verify against external baseline BEFORE overwriting.
+    // If an attacker modifies files and restarts Darkhan, the tampered files
+    // must NOT become the new known-good baseline.
     if (fs.existsSync(this.externalBaselinePath)) {
-      // Compare against external baseline
       try {
         const external = JSON.parse(fs.readFileSync(this.externalBaselinePath, 'utf8'));
         const extHashes = external.hashes || {};
+        const tampered = [];
 
-        // Check if integrity.js itself has changed since external baseline
-        const integrityKey = 'services/integrity.js';
-        if (extHashes[integrityKey] && extHashes[integrityKey] !== this.baselineHashes[integrityKey]) {
-          console.error('[Integrity] *** CRITICAL: integrity.js has been modified since external baseline ***');
+        // Compare ALL files against the external baseline
+        for (const [file, extHash] of Object.entries(extHashes)) {
+          if (this.baselineHashes[file] && this.baselineHashes[file] !== extHash) {
+            tampered.push(file);
+            console.error(`[Integrity] *** FILE TAMPERED: ${file} ***`);
+          }
+        }
+
+        if (tampered.length > 0) {
+          // Files were modified since last known-good state — DO NOT overwrite baseline
           this.activityLog.append({
             actor: 'darkhan_integrity',
-            action: 'INTEGRITY_SERVICE_TAMPERED',
+            action: 'STARTUP_TAMPER_DETECTED',
             details: JSON.stringify({
-              expected: extHashes[integrityKey]?.substring(0, 12),
-              current: this.baselineHashes[integrityKey]?.substring(0, 12),
+              tamperedFiles: tampered,
+              count: tampered.length,
+              action: 'baseline_preserved_lockdown_triggered',
             }),
           });
-          // Auto-lockdown — the verifier itself has been tampered with
+
+          console.error(`[Integrity] *** ${tampered.length} file(s) modified since external baseline — LOCKDOWN ***`);
+          console.error(`[Integrity] External baseline NOT overwritten — preserving known-good state`);
+
+          // Restore in-memory baseline from external (the known-good one)
+          this.baselineHashes = extHashes;
+          this.baselineUserCount = external.userCount || this.baselineUserCount;
+          this.baselineUserHash = external.userHash || this.baselineUserHash;
+
+          // Trigger lockdown
           if (this.securityService) {
             this.securityService.triggerLockdown(
-              'CRITICAL: integrity.js modified since last known-good state — possible attempt to neuter integrity monitoring',
+              `CRITICAL: ${tampered.length} file(s) modified since last known-good baseline on restart: ${tampered.join(', ')}`,
               'darkhan_integrity'
             );
           }
+
+          // Enforce permissions and return — do NOT save a new baseline
+          this._enforcePermissions();
+          return {
+            files: Object.keys(this.baselineHashes).length,
+            users: this.baselineUserCount,
+            tampered,
+          };
         }
 
-        // Check security.js
-        const secKey = 'services/security.js';
-        if (extHashes[secKey] && extHashes[secKey] !== this.baselineHashes[secKey]) {
-          console.error('[Integrity] *** CRITICAL: security.js has been modified since external baseline ***');
-          if (this.securityService) {
-            this.securityService.triggerLockdown(
-              'CRITICAL: security.js modified since last known-good state',
-              'darkhan_integrity'
-            );
-          }
-        }
+        // All hashes match — safe to proceed and update the baseline
+        console.log('[Integrity] External baseline verification passed — all files match');
       } catch (e) {
         console.warn('[Integrity] Could not read external baseline:', e.message);
       }
+    } else {
+      console.log('[Integrity] No external baseline found — first boot, creating initial baseline');
     }
 
-    // Save/update external baseline
+    // Save/update external baseline (only reached if verification passed or first boot)
+    this._saveExternalBaseline();
+
+    // Enforce file permissions
+    this._enforcePermissions();
+
+    return {
+      files: Object.keys(this.baselineHashes).length,
+      users: this.baselineUserCount,
+    };
+  }
+
+  /**
+   * Save external baseline to disk.
+   * Only called when: (a) first boot, (b) verification passed, or (c) admin reset.
+   */
+  _saveExternalBaseline() {
     try {
       const baselineData = {
         hashes: this.baselineHashes,
@@ -191,9 +224,60 @@ class IntegrityService {
     } catch (e) {
       console.warn('[Integrity] Could not save external baseline:', e.message);
     }
+  }
 
-    // Enforce file permissions
-    this._enforcePermissions();
+  /**
+   * Admin-triggered baseline reset.
+   * Re-hashes all current files and saves as the new known-good baseline.
+   * Use after making legitimate code changes.
+   */
+  async resetBaseline() {
+    console.log('[Integrity] Admin-triggered baseline reset...');
+
+    // Re-hash all critical files from current state
+    this.baselineHashes = {};
+    for (const file of this.criticalFiles) {
+      const fullPath = path.join(this.serverDir, file);
+      const hash = this._hashFile(fullPath);
+      if (hash) {
+        this.baselineHashes[file] = hash;
+      }
+    }
+
+    // Re-hash worker files
+    if (fs.existsSync(this.workerDir)) {
+      const workers = fs.readdirSync(this.workerDir).filter(f => f.endsWith('.js'));
+      for (const w of workers) {
+        const fullPath = path.join(this.workerDir, w);
+        const hash = this._hashFile(fullPath);
+        if (hash) {
+          this.baselineHashes[`workers/${w}`] = hash;
+        }
+      }
+    }
+
+    // Re-hash config and .env
+    this.baselineConfigHash = this._hashFile(path.join(this.serverDir, 'darkhan.config.json'));
+    const envHash = this._hashFile(path.join(this.serverDir, '.env'));
+    if (envHash) this.baselineHashes['.env'] = envHash;
+
+    // Re-record user baseline
+    this.baselineUserCount = await this._getUserCount();
+    this.baselineUserHash = await this._hashUserTable();
+
+    // Save to external baseline file
+    this._saveExternalBaseline();
+
+    this.activityLog.append({
+      actor: 'darkhan_integrity',
+      action: 'baseline_reset_by_admin',
+      details: JSON.stringify({
+        files: Object.keys(this.baselineHashes).length,
+        users: this.baselineUserCount,
+      }),
+    });
+
+    console.log(`[Integrity] Baseline reset: ${Object.keys(this.baselineHashes).length} files, ${this.baselineUserCount} users`);
 
     return {
       files: Object.keys(this.baselineHashes).length,
