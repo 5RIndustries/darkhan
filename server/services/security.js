@@ -559,6 +559,27 @@ Message: "${text.substring(0, 2000)}"`
         return { allowed: false, reason: 'Pipe to shell interpreter blocked' };
       }
 
+      // [M-2 FIX] Check for command chaining (;, &&, ||) and validate each subcommand
+      const chainOps = /[;]|&&|\|\|/;
+      if (chainOps.test(command)) {
+        // Split on chain operators and check each subcommand
+        const subcommands = command.split(/[;]|&&|\|\|/).map(s => s.trim()).filter(s => s.length > 0);
+        for (const sub of subcommands) {
+          const subBase = sub.split(/\s+/)[0].replace(/^.*\//, '');
+          let resolvedSub = subBase;
+          if (sub.split(/\s+/)[0].includes('/')) {
+            try { resolvedSub = require('fs').realpathSync(sub.split(/\s+/)[0]).replace(/^.*\//, ''); } catch (e) { /* */ }
+          }
+          if (dangerous.has(subBase) || dangerous.has(resolvedSub)) {
+            this.activityLog.append({
+              actor: 'darkhan_security', action: 'chained_command_blocked', target: agentId,
+              details: JSON.stringify({ command: command.substring(0, 100), blockedSubcommand: subBase }),
+            });
+            return { allowed: false, reason: `Chained dangerous command '${subBase}' blocked for ${agentId}` };
+          }
+        }
+      }
+
       // Check for command substitution
       if (/\$\(|`/.test(command)) {
         return { allowed: false, reason: 'Command substitution blocked in restricted mode' };

@@ -129,8 +129,9 @@ function buildContext() {
       fs: {
         async read(filePath) {
           toolLimits.checkFs('read');
-          const fullPath = filePath.startsWith('/') ? filePath : path.join(vaultPath, filePath);
-          return fs.promises.readFile(fullPath, 'utf8');
+          // [C-1 FIX] Proxy through parent for injection scanning
+          // Direct fs.read in child bypassed injection detection
+          return proxyCall('tools.fs.read', [filePath]);
         },
         async write(filePath, data) {
           toolLimits.checkFs('write');

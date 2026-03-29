@@ -123,9 +123,13 @@ router.post('/', async (req, res) => {
   // [DARKHAN SECURITY] Scan incoming messages for prompt injection
   let securityMetadata = null;
   if (securityService) {
-    // Determine origin: agents posting via API key are 'internal', web UI is 'internal',
-    // messages containing forwarded content should be tagged 'external' by the sender
-    const origin = (metadata && metadata.origin) || 'internal';
+    // [H-5 FIX] Determine origin SERVER-SIDE based on auth method — never trust client.
+    // API key from REMOTE_HOST header or federation = 'federated'
+    // API key from local agent = 'internal'
+    // Session (web UI) = 'internal'
+    const isApiKey = !req.session?.userId;
+    const isFederated = req.headers['x-darkhan-federation'] === 'true';
+    const origin = isFederated ? 'federated' : (isApiKey ? 'internal' : 'internal');
     const scan = securityService.sanitizeMessage(body, userId, origin);
     securityMetadata = scan.metadata;
 
