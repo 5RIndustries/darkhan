@@ -51,6 +51,61 @@ class RateLimiter {
   }
 
   /**
+   * Initialize rate limiter from persisted cost_tracking data.
+   * Must be called after DB is ready. Pre-populates today's usage counts
+   * so a server restart doesn't gift agents a fresh budget.
+   */
+  async init(db) {
+    return new Promise((resolve, reject) => {
+      db.all(
+        `SELECT agent, COUNT(*) as count FROM cost_tracking WHERE created_at > date('now', 'start of day') GROUP BY agent`,
+        [],
+        (err, rows) => {
+          if (err) {
+            console.warn('[RateLimiter] Could not load persisted usage:', err.message);
+            return resolve(); // Non-fatal — proceed with zero counts
+          }
+          if (!rows || rows.length === 0) {
+            console.log('[RateLimiter] No usage records for today — starting fresh');
+            return resolve();
+          }
+
+          const today = new Date().toISOString().substring(0, 10);
+          for (const row of rows) {
+            // Pre-populate agent usage
+            if (this.agentLimits[row.agent]) {
+              this.agentUsage[row.agent] = { today: row.count, lastReset: today };
+            }
+          }
+
+          // Also aggregate by provider if we can determine it
+          db.all(
+            `SELECT provider, COUNT(*) as count FROM cost_tracking WHERE created_at > date('now', 'start of day') GROUP BY provider`,
+            [],
+            (err2, providerRows) => {
+              if (!err2 && providerRows) {
+                for (const row of providerRows) {
+                  if (this.providerLimits[row.provider]) {
+                    this.providerUsage[row.provider] = {
+                      today: row.count,
+                      minuteBucket: 0,
+                      minuteStart: Date.now(),
+                    };
+                  }
+                }
+              }
+
+              const restored = (rows || []).reduce((sum, r) => sum + r.count, 0);
+              console.log(`[RateLimiter] Restored ${restored} usage records from cost_tracking for today`);
+              resolve();
+            }
+          );
+        }
+      );
+    });
+  }
+
+  /**
    * Check if a request is allowed. Throws if over limit.
    */
   async check(agentId, provider) {

@@ -329,6 +329,29 @@ app.post('/api/security/unlock', secReqAuth, (req, res) => {
   });
 });
 
+// RESET BASELINE: Admin says "I made legitimate changes, update the baseline."
+// Requires browser session auth + admin role (same as lockdown/unlock).
+app.post('/api/security/reset-baseline', secReqAuth, async (req, res) => {
+  if (!req.session?.userId) {
+    return res.status(403).json({ error: 'Baseline reset requires web UI login' });
+  }
+  if (req.session.userType !== 'human' || req.session.role !== 'admin') {
+    return res.status(403).json({ error: 'Only human admins can reset the integrity baseline' });
+  }
+
+  try {
+    const result = await integrityService.resetBaseline();
+    activityLog.append({
+      actor: req.session.userId,
+      action: 'baseline_reset_requested',
+      details: JSON.stringify({ files: result.files, users: result.users }),
+    });
+    res.json({ ok: true, baseline: result });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Team members (for dynamic UI)
 app.get('/api/team', secReqAuth, (req, res) => {
   const members = (config.team?.members || []).map(m => ({
@@ -429,6 +452,14 @@ server.listen(PORT, BIND_HOST, () => {
 
   // Delay startup sequence to ensure DB schema is fully applied
   setTimeout(async () => {
+    // RATE LIMITER: Restore today's usage from cost_tracking so restarts don't reset budgets
+    try {
+      await rateLimiter.init(db);
+      console.log('[Darkhan] Rate limiter usage restored from DB');
+    } catch (e) {
+      console.warn('[Darkhan] Rate limiter init failed (non-fatal):', e.message);
+    }
+
     // INTEGRITY: Establish baseline before loading workers
     try {
       await integrityService.establishBaseline();

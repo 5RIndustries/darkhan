@@ -10,11 +10,89 @@ const bcrypt = require('bcrypt');
 const router = express.Router();
 const { requireAuth, getCurrentUserId } = require('../middleware/auth');
 
+// === BRUTE-FORCE PROTECTION ===
+// Track failed login attempts per IP+username. Exponential backoff.
+// Does not persist across restarts (attacker would need to crash server to reset, which triggers lockdown).
+const loginAttempts = new Map(); // key: "ip:username" -> { count, firstAttempt, lastAttempt }
+const ATTEMPT_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
+
+function _getLockoutMinutes(failCount) {
+  if (failCount >= 15) return 15;
+  if (failCount >= 10) return 5;
+  if (failCount >= 5) return 1;
+  return 0;
+}
+
+function _checkBruteForce(ip, username) {
+  const key = `${ip}:${username}`;
+  const record = loginAttempts.get(key);
+  if (!record) return { blocked: false };
+
+  const now = Date.now();
+
+  // Prune stale records outside the window
+  if (now - record.firstAttempt > ATTEMPT_WINDOW_MS) {
+    loginAttempts.delete(key);
+    return { blocked: false };
+  }
+
+  const lockoutMinutes = _getLockoutMinutes(record.count);
+  if (lockoutMinutes === 0) return { blocked: false };
+
+  const lockoutMs = lockoutMinutes * 60 * 1000;
+  const timeSinceLastAttempt = now - record.lastAttempt;
+
+  if (timeSinceLastAttempt < lockoutMs) {
+    const remainingMs = lockoutMs - timeSinceLastAttempt;
+    const remainingMinutes = Math.ceil(remainingMs / 60000);
+    return { blocked: true, remainingMinutes, count: record.count };
+  }
+
+  return { blocked: false };
+}
+
+function _recordFailedLogin(ip, username) {
+  const key = `${ip}:${username}`;
+  const now = Date.now();
+  const record = loginAttempts.get(key);
+
+  if (!record || (now - record.firstAttempt > ATTEMPT_WINDOW_MS)) {
+    loginAttempts.set(key, { count: 1, firstAttempt: now, lastAttempt: now });
+  } else {
+    record.count++;
+    record.lastAttempt = now;
+  }
+}
+
+function _clearLoginAttempts(ip, username) {
+  const key = `${ip}:${username}`;
+  loginAttempts.delete(key);
+}
+
 // POST /api/auth/login
 router.post('/login', (req, res) => {
   const { username, password } = req.body;
   if (!username || !password) {
     return res.status(400).json({ error: 'Username and password required' });
+  }
+
+  const ip = req.ip || req.connection?.remoteAddress || 'unknown';
+  const activityLog = req.app.locals.activityLog;
+
+  // Check brute-force lockout BEFORE touching the database
+  const bruteCheck = _checkBruteForce(ip, username);
+  if (bruteCheck.blocked) {
+    if (activityLog) {
+      activityLog.append({
+        actor: 'darkhan_security',
+        action: 'login_rate_limited',
+        target: username,
+        details: JSON.stringify({ ip, attempts: bruteCheck.count, lockoutMinutes: bruteCheck.remainingMinutes }),
+      });
+    }
+    return res.status(429).json({
+      error: `Too many login attempts. Try again in ${bruteCheck.remainingMinutes} minute${bruteCheck.remainingMinutes !== 1 ? 's' : ''}.`,
+    });
   }
 
   const db = req.app.locals.db;
@@ -30,6 +108,15 @@ router.post('/login', (req, res) => {
         return res.status(500).json({ error: 'Internal server error' });
       }
       if (!user) {
+        _recordFailedLogin(ip, username);
+        if (activityLog) {
+          activityLog.append({
+            actor: 'darkhan_security',
+            action: 'login_failed',
+            target: username,
+            details: JSON.stringify({ ip, reason: 'unknown_user' }),
+          });
+        }
         return res.status(401).json({ error: 'Invalid credentials' });
       }
 
@@ -49,13 +136,26 @@ router.post('/login', (req, res) => {
         if (cred) passwordHash = cred.password_hash;
 
         if (!passwordHash) {
+          _recordFailedLogin(ip, username);
           return res.status(401).json({ error: 'Invalid credentials' });
         }
 
         const match = await bcrypt.compare(password, passwordHash);
         if (!match) {
+          _recordFailedLogin(ip, username);
+          if (activityLog) {
+            activityLog.append({
+              actor: 'darkhan_security',
+              action: 'login_failed',
+              target: username,
+              details: JSON.stringify({ ip, reason: 'bad_password' }),
+            });
+          }
           return res.status(401).json({ error: 'Invalid credentials' });
         }
+
+        // Successful login — clear failed attempt counter
+        _clearLoginAttempts(ip, username);
 
         // Set session — includes type for identity enforcement
         req.session.userId = user.id;

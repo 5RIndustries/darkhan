@@ -414,7 +414,12 @@
             <div id="pin-status" style="font-size:0.9rem;"></div>
           </form>
 
-          <h3 style="margin-bottom:1rem;">Manual Lockdown</h3>
+          <h3 style="margin-bottom:1rem;">Integrity Baseline</h3>
+          <p style="font-size:0.85rem;opacity:0.7;margin-bottom:0.75rem;">After making legitimate code changes, reset the integrity baseline so Darkhan recognizes the current files as trusted.</p>
+          <button id="reset-baseline-btn" style="padding:0.5rem 1rem;background:var(--accent);color:white;border:none;border-radius:4px;cursor:pointer;">Reset Integrity Baseline</button>
+          <div id="baseline-status" style="font-size:0.9rem;margin-top:0.5rem;"></div>
+
+          <h3 style="margin-top:2rem;margin-bottom:1rem;">Manual Lockdown</h3>
           <p style="font-size:0.85rem;opacity:0.7;margin-bottom:0.75rem;">Immediately halt all agent operations. Only you can unlock.</p>
           <button id="manual-lockdown-btn" style="padding:0.5rem 1rem;background:#c0392b;color:white;border:none;border-radius:4px;cursor:pointer;">Trigger Lockdown</button>
         </div>
@@ -455,6 +460,15 @@
           document.getElementById('lockdown-banner').style.display = 'none';
           alert('System unlocked');
         } catch (err) { alert('Unlock failed: ' + err.message); }
+      });
+
+      document.getElementById('reset-baseline-btn').addEventListener('click', async () => {
+        if (!confirm('Reset integrity baseline? This tells Darkhan the current files are trusted.')) return;
+        const status = document.getElementById('baseline-status');
+        try {
+          await api('POST', '/security/reset-baseline');
+          status.textContent = 'Baseline reset successfully'; status.style.color = '#27ae60';
+        } catch (err) { status.textContent = err.message; status.style.color = '#e74c3c'; }
       });
 
       document.getElementById('manual-lockdown-btn').addEventListener('click', async () => {
