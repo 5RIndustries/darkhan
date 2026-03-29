@@ -1,6 +1,7 @@
 require('dotenv').config({ path: require('path').join(__dirname, '.env') });
 const express = require('express');
 const http = require('http');
+const https = require('https');
 const fs = require('fs');
 const { Server } = require('socket.io');
 const sqlite3 = require('sqlite3').verbose();
@@ -31,10 +32,34 @@ try {
 }
 
 const app = express();
-const server = http.createServer(app);
+
+// [DARKHAN SECURITY] mTLS: Start HTTPS server if TLS config is enabled.
+// When TLS is enabled, the server requires valid client certificates signed by our CA
+// for all federation API calls. The web UI (localhost) can still use HTTP.
+const resolveTlsPath = (p) => p ? p.replace('~', process.env.HOME) : null;
+let server;
+if (config.tls?.enabled) {
+  try {
+    const tlsOpts = {
+      ca: fs.readFileSync(resolveTlsPath(config.tls.ca)),
+      cert: fs.readFileSync(resolveTlsPath(config.tls.cert)),
+      key: fs.readFileSync(resolveTlsPath(config.tls.key)),
+      requestCert: true,           // Ask clients for their certificate
+      rejectUnauthorized: false,    // Don't reject at TLS level — check per-route instead
+    };
+    server = https.createServer(tlsOpts, app);
+    console.log('[Darkhan] HTTPS server with mTLS — client certificates will be verified for federation routes');
+  } catch (e) {
+    console.error(`[Darkhan] FATAL: TLS enabled but certificates failed to load: ${e.message}`);
+    process.exit(1);
+  }
+} else {
+  server = http.createServer(app);
+}
+
 const io = new Server(server, {
   cors: {
-    origin: process.env.CORS_ORIGIN || `http://localhost:${config.instance?.port || 3001}`,
+    origin: process.env.CORS_ORIGIN || `http${config.tls?.enabled ? 's' : ''}://localhost:${config.instance?.port || 3001}`,
     credentials: true
   }
 });

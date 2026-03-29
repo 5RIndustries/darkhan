@@ -10,6 +10,8 @@
 
 const http = require('http');
 const https = require('https');
+const fs = require('fs');
+const path = require('path');
 const { URL } = require('url');
 const { WorkerRuntime } = require('./worker-runtime');
 
@@ -40,10 +42,35 @@ class FederatedWorkerRuntime extends WorkerRuntime {
     this._pollingIntervals = [];
     this._lastSeenTimestamps = {}; // channelId -> ISO timestamp of last seen message
 
+    // [DARKHAN SECURITY] mTLS certificate loading
+    // If TLS config is provided, load CA + client cert/key for mutual authentication.
+    // Both sides verify each other — the server checks the client cert, the client checks the server cert.
+    this._tlsOptions = null;
+    const tlsConfig = config?.tls;
+    if (tlsConfig?.enabled) {
+      const resolvePath = (p) => p.replace('~', process.env.HOME);
+      try {
+        this._tlsOptions = {
+          ca: fs.readFileSync(resolvePath(tlsConfig.ca)),
+          cert: fs.readFileSync(resolvePath(tlsConfig.cert)),
+          key: fs.readFileSync(resolvePath(tlsConfig.key)),
+          rejectUnauthorized: true, // Enforce CA verification
+        };
+        console.log('[FederatedRuntime] mTLS certificates loaded — mutual authentication enabled');
+      } catch (e) {
+        console.error(`[FederatedRuntime] FATAL: Could not load TLS certificates: ${e.message}`);
+        process.exit(1);
+      }
+    }
+
     // [DARKHAN SECURITY] TLS enforcement for federation
     // HTTP is acceptable on Tailscale networks (WireGuard-encrypted). For non-Tailscale
     // deployments, require HTTPS or explicit opt-in via FEDERATION_ALLOW_HTTP=true.
     if (this.remoteHost.startsWith('http://')) {
+      if (this._tlsOptions) {
+        console.warn('[FederatedRuntime] mTLS certs loaded but remote host is HTTP — certs will not be used. ' +
+          'Switch REMOTE_HOST to https:// to enable mutual authentication.');
+      }
       if (process.env.FEDERATION_ALLOW_HTTP === 'true') {
         console.warn('[FederatedRuntime] WARNING: Federation using unencrypted HTTP. ' +
           'This is acceptable on Tailscale networks. For non-Tailscale deployments, use HTTPS.');
@@ -92,6 +119,14 @@ class FederatedWorkerRuntime extends WorkerRuntime {
         },
         timeout: 15000,
       };
+
+      // [DARKHAN SECURITY] mTLS: attach client certificates for mutual authentication
+      if (isHttps && this._tlsOptions) {
+        options.ca = this._tlsOptions.ca;
+        options.cert = this._tlsOptions.cert;
+        options.key = this._tlsOptions.key;
+        options.rejectUnauthorized = this._tlsOptions.rejectUnauthorized;
+      }
 
       if (payload) {
         options.headers['Content-Length'] = Buffer.byteLength(payload);

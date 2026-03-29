@@ -13,6 +13,11 @@ server/db/backups/
 # Secrets database (credential-isolated — NEVER commit)
 server/db/secrets.db
 
+# TLS certificates (private keys — NEVER commit)
+*.key
+*.pem
+*.csr
+
 # Logs
 *.log
 
