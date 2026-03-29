@@ -6,23 +6,18 @@
  * This script runs OUTSIDE of Darkhan's security stack — it operates
  * directly on the database files.
  *
- * USE CASES:
- *   1. Forgot password → reset it
- *   2. Lockdown won't lift → force lift + reset baseline
- *   3. Integrity baseline stale after code changes → reset baseline
- *   4. Need to verify system state without starting Darkhan
- *
- * SECURITY:
- *   - Requires shell access as the Darkhan user (same as running the server)
- *   - Every action is logged to the activity log with "break_glass" actor
- *   - This script CANNOT be run from within Darkhan (it's not a route/endpoint)
- *   - It is a deliberate escape hatch — the admin always retains control
+ * SECURITY (Layer 1):
+ *   - Destructive commands require an INTERACTIVE TERMINAL (TTY check)
+ *   - Destructive commands require the LOCKDOWN PIN (verified against secrets.db)
+ *   - Cannot be executed by piping input or from a script
+ *   - `status` is the only command that runs without PIN (read-only)
+ *   - Every action is logged to the immutable activity trail
  *
  * USAGE:
- *   node break-glass.js reset-password
- *   node break-glass.js lift-lockdown
- *   node break-glass.js reset-baseline
- *   node break-glass.js status
+ *   node break-glass.js status              (no PIN required)
+ *   node break-glass.js reset-password      (requires TTY + PIN)
+ *   node break-glass.js lift-lockdown       (requires TTY + PIN)
+ *   node break-glass.js reset-baseline      (requires TTY + PIN)
  */
 
 const readline = require('readline');
@@ -35,14 +30,164 @@ const DB_PATH = path.join(SERVER_DIR, 'db', 'darkhan.db');
 const SECRETS_PATH = path.join(SERVER_DIR, 'db', 'secrets.db');
 const BASELINE_PATH = path.join(process.env.HOME, '.darkhan-integrity-baseline.json');
 
+// Commands that require PIN authentication
+const DESTRUCTIVE_COMMANDS = ['reset-password', 'lift-lockdown', 'reset-baseline'];
+
 function openDb(dbPath) {
   const sqlite3 = require('sqlite3').verbose();
   return new sqlite3.Database(dbPath);
 }
 
-function prompt(question) {
-  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-  return new Promise(resolve => rl.question(question, answer => { rl.close(); resolve(answer); }));
+/**
+ * Prompt for input with optional hidden echo (for PIN entry).
+ * REQUIRES a real TTY — will fail if stdin is piped or scripted.
+ */
+function prompt(question, { hidden = false } = {}) {
+  return new Promise((resolve, reject) => {
+    if (!process.stdin.isTTY) {
+      reject(new Error('SECURITY: This command requires an interactive terminal (TTY). Cannot run from scripts or pipes.'));
+      return;
+    }
+
+    if (hidden) {
+      // Use raw mode to hide PIN input
+      process.stdout.write(question);
+      const chars = [];
+      process.stdin.setRawMode(true);
+      process.stdin.resume();
+      process.stdin.setEncoding('utf8');
+
+      const onData = (char) => {
+        if (char === '\n' || char === '\r') {
+          process.stdin.setRawMode(false);
+          process.stdin.pause();
+          process.stdin.removeListener('data', onData);
+          process.stdout.write('\n');
+          resolve(chars.join(''));
+        } else if (char === '\u0003') {
+          // Ctrl+C
+          process.stdin.setRawMode(false);
+          process.exit(1);
+        } else if (char === '\u007F' || char === '\b') {
+          // Backspace
+          if (chars.length > 0) {
+            chars.pop();
+            process.stdout.write('\b \b');
+          }
+        } else {
+          chars.push(char);
+          process.stdout.write('*');
+        }
+      };
+
+      process.stdin.on('data', onData);
+    } else {
+      const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+      rl.question(question, answer => { rl.close(); resolve(answer); });
+    }
+  });
+}
+
+/**
+ * Verify the lockdown PIN against secrets.db.
+ * Returns true if PIN matches, false otherwise.
+ */
+async function verifyPin(pin) {
+  const bcrypt = require('bcrypt');
+  const secretsDb = openDb(SECRETS_PATH);
+
+  return new Promise((resolve) => {
+    secretsDb.get("SELECT value FROM secret_settings WHERE key = 'lockdown_pin_hash'", [], async (err, row) => {
+      secretsDb.close();
+
+      if (err || !row) {
+        // No PIN set — fall back to admin password verification
+        console.log('No lockdown PIN set. Verifying against admin password instead.');
+        const secretsDb2 = openDb(SECRETS_PATH);
+        secretsDb2.get("SELECT password_hash FROM credentials WHERE user_id = 'user_admin'", [], async (err2, row2) => {
+          secretsDb2.close();
+          if (err2 || !row2) {
+            console.error('Cannot verify identity — no PIN or password hash found.');
+            resolve(false);
+            return;
+          }
+          try {
+            const match = await bcrypt.compare(pin, row2.password_hash);
+            resolve(match);
+          } catch (e) {
+            resolve(false);
+          }
+        });
+        return;
+      }
+
+      try {
+        const match = await bcrypt.compare(pin, row.value);
+        resolve(match);
+      } catch (e) {
+        resolve(false);
+      }
+    });
+  });
+}
+
+/**
+ * Gate function: verify TTY and PIN before running a destructive command.
+ */
+async function requireAuth(commandName) {
+  // TTY check — prevents scripted execution
+  if (!process.stdin.isTTY) {
+    console.error('\n=== ACCESS DENIED ===');
+    console.error(`"${commandName}" requires an interactive terminal.`);
+    console.error('This command cannot be run from scripts, pipes, or automated agents.');
+    console.error('You must run it directly from a terminal session.\n');
+    process.exit(1);
+  }
+
+  console.log(`\n[SECURITY] "${commandName}" requires authentication.`);
+  console.log('Enter your lockdown PIN (or admin password if no PIN is set).\n');
+
+  let attempts = 0;
+  const maxAttempts = 3;
+
+  while (attempts < maxAttempts) {
+    try {
+      const pin = await prompt('PIN: ', { hidden: true });
+      if (!pin || pin.length === 0) {
+        console.log('Aborted.');
+        process.exit(1);
+      }
+
+      const valid = await verifyPin(pin);
+      if (valid) {
+        console.log('Authenticated.\n');
+
+        // Log the authentication to activity trail
+        const db = openDb(DB_PATH);
+        logAction(db, 'break_glass_authenticated', { command: commandName, method: 'pin' });
+        db.close();
+        return; // Success
+      }
+
+      attempts++;
+      const remaining = maxAttempts - attempts;
+      if (remaining > 0) {
+        console.log(`Invalid PIN. ${remaining} attempt(s) remaining.`);
+      }
+    } catch (e) {
+      console.error(e.message);
+      process.exit(1);
+    }
+  }
+
+  console.error('\nToo many failed attempts. Aborting.');
+
+  // Log failed authentication
+  const db = openDb(DB_PATH);
+  logAction(db, 'break_glass_auth_failed', { command: commandName, attempts: maxAttempts });
+  db.close();
+
+  process.exit(1);
 }
 
 function logAction(db, action, details) {
@@ -129,7 +274,8 @@ async function status() {
 }
 
 async function resetPassword() {
-  console.log('\n=== Password Reset ===\n');
+  await requireAuth('reset-password');
+  console.log('=== Password Reset ===\n');
 
   const bcrypt = require('bcrypt');
   const secretsDb = openDb(SECRETS_PATH);
@@ -145,7 +291,7 @@ async function resetPassword() {
   });
 
   const username = await prompt('\nUsername to reset: ');
-  const newPassword = await prompt('New password (min 8 chars): ');
+  const newPassword = await prompt('New password (min 8 chars): ', { hidden: true });
 
   if (newPassword.length < 8) {
     console.log('Password too short. Aborting.');
@@ -184,7 +330,8 @@ async function resetPassword() {
 }
 
 async function liftLockdown() {
-  console.log('\n=== Lift Lockdown ===\n');
+  await requireAuth('lift-lockdown');
+  console.log('=== Lift Lockdown ===\n');
 
   const db = openDb(DB_PATH);
 
@@ -215,7 +362,8 @@ async function liftLockdown() {
 }
 
 async function resetBaseline() {
-  console.log('\n=== Reset Integrity Baseline ===\n');
+  await requireAuth('reset-baseline');
+  console.log('=== Reset Integrity Baseline ===\n');
 
   const db = openDb(DB_PATH);
 
@@ -224,7 +372,7 @@ async function resetBaseline() {
     'server.js', 'darkhan.config.json', 'middleware/auth.js',
     'services/security.js', 'services/integrity.js', 'services/auto-responder.js',
     'services/worker-runtime.js', 'services/llm.js', 'services/activity-log.js',
-    'services/ground-truth.js', 'services/claim-verifier.js',
+    'services/ground-truth.js', 'services/claim-verifier.js', 'services/sandbox.js',
     'routes/messages.js', 'routes/auth.js', 'routes/vault.js',
     'db/schema.sql', 'db/secrets-schema.sql', 'db/seed.js',
   ];
@@ -249,7 +397,7 @@ async function resetBaseline() {
     hashes,
     userCount,
     createdAt: new Date().toISOString(),
-    createdBy: 'break-glass.js',
+    createdBy: 'break-glass.js (PIN-authenticated)',
   };
 
   fs.writeFileSync(BASELINE_PATH, JSON.stringify(baseline, null, 2));
@@ -280,10 +428,14 @@ Darkhan Break Glass Recovery Tool
 Usage: node break-glass.js <command>
 
 Commands:
-  status           Show system state (lockdown, users, processes)
-  reset-password   Reset a user's password
-  lift-lockdown    Force lift lockdown state
-  reset-baseline   Re-hash all files and save as new integrity baseline
+  status           Show system state (no auth required — read only)
+  reset-password   Reset a user's password (requires TTY + PIN)
+  lift-lockdown    Force lift lockdown state (requires TTY + PIN)
+  reset-baseline   Re-hash all files as new baseline (requires TTY + PIN)
+
+SECURITY: Destructive commands require:
+  1. An interactive terminal (TTY) — cannot run from scripts or agents
+  2. Your lockdown PIN — verified against the credential store
 
 This tool operates directly on Darkhan's databases.
 Every action is logged to the immutable activity trail.
