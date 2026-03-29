@@ -84,8 +84,39 @@ class WorkerRuntime {
 
   /**
    * Load a single worker module.
+   * [ASI04] Verifies worker file hash against manifest before loading.
    */
   async loadWorker(filePath) {
+    // [ASI04 SUPPLY CHAIN] Verify worker integrity before require()
+    const crypto = require('crypto');
+    const workerHash = crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+    const manifestPath = path.join(__dirname, '..', 'workers', 'manifest.json');
+    if (fs.existsSync(manifestPath)) {
+      try {
+        const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+        const fileName = path.basename(filePath);
+        if (manifest[fileName] && manifest[fileName] !== workerHash) {
+          const msg = `Worker ${fileName} hash mismatch — expected ${manifest[fileName].substring(0, 16)}..., got ${workerHash.substring(0, 16)}...`;
+          console.error(`[WorkerRuntime] SUPPLY CHAIN ALERT: ${msg}`);
+          this.activityLog.append({
+            actor: 'worker_runtime',
+            action: 'worker_hash_mismatch',
+            target: fileName,
+            details: JSON.stringify({ expected: manifest[fileName], actual: workerHash }),
+          });
+          // In production, block the load. In dev mode, warn and continue.
+          if (!this.sandbox.devMode && process.env.NODE_ENV !== 'development') {
+            throw new Error(`SUPPLY CHAIN: ${msg}`);
+          }
+          console.warn(`[WorkerRuntime] DEV MODE: Loading worker despite hash mismatch`);
+        }
+      } catch (e) {
+        if (e.message.startsWith('SUPPLY CHAIN')) throw e;
+        // Manifest parse error — log but don't block
+        console.warn(`[WorkerRuntime] Could not verify worker manifest: ${e.message}`);
+      }
+    }
+
     const workerModule = require(filePath);
     const { id, name, tasks, onLoad } = workerModule;
 

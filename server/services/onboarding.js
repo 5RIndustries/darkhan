@@ -176,7 +176,7 @@ class OnboardingService {
           heartbeatInfo = 'Agent heartbeats: no entries yet (system may have just started)';
         }
       } catch (e) {
-        heartbeatInfo = `Heartbeat data: query failed (${e.message})`;
+        heartbeatInfo = 'Heartbeat data: query failed (details redacted from agent context)';
       }
     }
 
