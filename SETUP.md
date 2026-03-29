@@ -50,7 +50,10 @@
 git clone <repo-url> darkhan
 cd darkhan
 
-# Install the secret scanner pre-commit hook (blocks accidental credential commits)
+# Install the secret scanner pre-commit hook (blocks accidental credential commits).
+# This is automatic -- it configures git to use the .githooks/ directory, which
+# contains a pre-commit hook that runs secret-scanner.js on every staged diff.
+# It catches API keys, tokens, private keys, JWTs, and connection strings.
 git config core.hooksPath .githooks
 
 # Install dependencies
@@ -145,7 +148,10 @@ Edit `darkhan.config.json` to define your instance and team members. Here is a m
   "channels": [
     { "id": "chan_command", "name": "Command", "description": "Primary channel" },
     { "id": "chan_alerts", "name": "Alerts", "description": "System alerts" }
-  ]
+  ],
+  "sandbox": {
+    "processIsolation": true
+  }
 }
 ```
 
@@ -155,6 +161,7 @@ Edit `darkhan.config.json` to define your instance and team members. Here is a m
 - `role: "admin"` grants access to Settings (password change, lockdown management)
 - `rateLimits` with `0` means unlimited (appropriate for local Ollama models)
 - `permissions.shell` controls what shell commands the agent can run: `full`, `restricted`, or `none`
+- `sandbox.processIsolation` runs each worker as an isolated child process via `fork()` (recommended for production; automatically disabled in development mode for faster iteration)
 
 ---
 
@@ -207,6 +214,7 @@ You should see output confirming:
 - Connected to database (darkhan.db)
 - Connected to secrets database (secrets.db)
 - Secrets schema applied, permissions set to 600
+- **Model verification passed** -- Ollama model file SHA-256 digests checked against manifest (first startup may take a moment for large models)
 - Workers loaded
 - Integrity baseline established
 

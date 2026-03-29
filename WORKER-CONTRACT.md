@@ -241,6 +241,46 @@ All log calls are automatically tagged with the agent ID and timestamp. They wri
 
 ---
 
+## Process Isolation
+
+Workers can run in two modes, controlled by the `sandbox.processIsolation` config flag:
+
+### In-Process Mode (default, `processIsolation = false`)
+
+Workers run in the main Darkhan server process. This is the default for development (`NODE_ENV=development`) because it is faster to iterate on.
+
+- Workers share the Node.js event loop with the server
+- A crashing worker is caught by try/catch but could theoretically affect the server's memory
+- Simpler debugging (single process, shared console)
+
+### Forked Process Mode (`processIsolation = true`)
+
+Workers run as isolated child processes via `fork()`. Each worker gets its own V8 isolate.
+
+- The child process entry point is `worker-process.js`
+- Communication between parent and child is via Node.js IPC (no shared memory)
+- The parent process handles cron scheduling and proxies all Darkhan API calls (post, getMessages, ping, alert, flagThreat)
+- All proxy requests go through the same security checks as direct API calls
+- If a child process crashes, the parent logs the error and can restart the worker without affecting the server
+- Graceful shutdown: on SIGTERM/SIGINT, the parent sends a shutdown message and waits up to 5 seconds before force-killing the child
+- **Recommended for production deployments**
+
+### Configuration
+
+In `darkhan.config.json`:
+
+```json
+{
+  "sandbox": {
+    "processIsolation": true
+  }
+}
+```
+
+When `NODE_ENV=development`, workers always run in-process regardless of this setting.
+
+---
+
 ## Execution Policies
 
 ### Scheduling
@@ -328,6 +368,27 @@ Each agent has a permission set defined in `darkhan.config.json`. The `tools` in
 - Pipe to shell (`| bash`, `| sh`, `| zsh`, `| node`, `| python`) -- blocked
 - Command substitution (`$(...)` and backticks) -- blocked in restricted mode
 - Access to sensitive file paths (`.env`, database files, secrets, tokens, etc.)
+
+### Tool Invocation Rate Limits
+
+Each task execution is subject to tool invocation limits that prevent runaway loops:
+
+| Tool | Max Invocations Per Task |
+|------|--------------------------|
+| `tools.fs.read()` | 200 |
+| `tools.fs.write()` | 50 |
+| `tools.shell.exec()` | 10 |
+
+Counters reset at the start of each task. If a task exceeds a limit, subsequent calls to that tool throw a `RateLimitError`. Workers should handle this gracefully (log a warning and return partial results rather than crashing).
+
+### Tool Output Injection Scanning
+
+`tools.fs.read()` and `tools.shell.exec()` automatically scan their output for injection patterns before returning the result to the worker/LLM context. This prevents a compromised file or command output from injecting instructions into the LLM's context window.
+
+- **Critical severity:** The operation is blocked and an error is thrown. The tool returns nothing to the worker.
+- **Lower severity:** A warning is logged and the output is returned with metadata indicating the detection. The worker proceeds but the detection is recorded in the activity log.
+
+This scanning is transparent to the worker -- no code changes are needed. It applies to both in-process and forked worker modes.
 
 **Environment whitelist:** Shell commands executed by workers receive only these environment variables:
 - `HOME` -- user home directory
@@ -446,6 +507,8 @@ Before deploying a new worker:
 - [ ] Timeouts are set appropriately (default 5 min for tasks, 60s for listeners)
 - [ ] `onLoad()` logs a startup message and posts to a channel so humans know it is online
 - [ ] Tested locally before deploying to production
+- [ ] Tested in forked process mode (`sandbox.processIsolation = true`) -- verify all API proxying works
+- [ ] Tool usage stays within rate limits (200 reads, 50 writes, 10 shell execs per task)
 
 ---
 

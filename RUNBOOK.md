@@ -17,7 +17,10 @@
 6. [Connecting a Second Instance (Federation)](#connecting-a-second-instance)
 7. [Backup and Restore](#backup-and-restore)
 8. [Certificate Management](#certificate-management)
-9. [Common Issues](#common-issues)
+9. [Process Isolation](#process-isolation)
+10. [Secret Scanner](#secret-scanner)
+11. [Model Verification](#model-verification)
+12. [Common Issues](#common-issues)
 
 ---
 
@@ -342,6 +345,119 @@ bash server/scripts/generate-certs.sh ~/.darkhan-certs remote-node
 # Distribute new ca.crt and node certs to all machines
 # Restart all nodes
 ```
+
+---
+
+## Process Isolation
+
+### Enabling forked worker mode
+
+In `darkhan.config.json`, set:
+
+```json
+{
+  "sandbox": {
+    "processIsolation": true
+  }
+}
+```
+
+Then restart Darkhan. Workers will run as isolated child processes. Check startup logs for confirmation messages like "Worker agent_chief started in forked process."
+
+**Note:** In development mode (`NODE_ENV=development`), workers always run in-process regardless of this setting.
+
+### Troubleshooting forked workers
+
+| Problem | Solution |
+|---------|----------|
+| Worker not responding after fork | Check for errors in the startup log. The child process may have crashed during initialization. |
+| IPC errors in logs | The parent-child communication channel failed. Restart Darkhan. |
+| Worker takes >5s to shut down | The graceful shutdown timeout was exceeded. The child process was force-killed. Check for long-running tasks that need shorter timeouts. |
+
+### Disabling a single agent
+
+To stop a specific agent without full lockdown:
+
+```bash
+# Disable (stops cron jobs, keeps the worker loaded)
+curl -X POST http://localhost:3001/api/workers/agent_chief/disable -H "X-API-Key: ADMIN_KEY"
+
+# Re-enable
+curl -X POST http://localhost:3001/api/workers/agent_chief/enable -H "X-API-Key: ADMIN_KEY"
+```
+
+Admin API key required. Disabled workers stop running cron tasks but remain loaded and can be re-enabled without a restart.
+
+---
+
+## Secret Scanner
+
+### How it works
+
+The pre-commit hook at `.githooks/pre-commit` runs `server/secret-scanner.js` on every `git commit`. It scans the staged diff (not the full file) for patterns matching:
+
+- API keys (AWS, Google, Anthropic, OpenAI, Azure, GitHub, Slack, Telegram, Darkhan)
+- Private keys (RSA, EC, Ed25519 PEM blocks)
+- JWTs (`eyJ...`)
+- Database connection strings
+- Hardcoded secret assignments (`secret = "..."`, `password = "..."`)
+
+### Setup
+
+The hook is installed during initial setup:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+If you cloned the repo without running this, run it now. It is idempotent.
+
+### Bypassing (emergency only)
+
+If a commit is falsely blocked and you are certain the match is a false positive:
+
+```bash
+git commit --no-verify -m "your message"
+```
+
+Document why you bypassed the scanner in the commit message.
+
+### After a real secret exposure
+
+If a secret was committed before the scanner was installed:
+
+1. Revoke the exposed credential immediately
+2. Remove it from the code and move to `.env`
+3. Force-push to remove the commit from history (or use `git filter-branch`)
+4. Generate a new credential
+
+---
+
+## Model Verification
+
+### Startup check
+
+On every server start, `model-verifier.js` verifies Ollama model files against their manifest SHA-256 digests. This runs automatically -- no action needed.
+
+Check startup logs for:
+- `Model verification passed` -- all digests match
+- `Model verification failed` -- a model file does not match its manifest digest
+
+### If verification fails
+
+| Cause | Fix |
+|-------|-----|
+| Corrupted download | Re-pull the model: `ollama pull qwen2.5:14b` |
+| Tampered model file | Delete and re-pull: `ollama rm qwen2.5:14b && ollama pull qwen2.5:14b` |
+| Ollama not running | Start Ollama: `brew services start ollama` |
+
+### Manual verification
+
+```bash
+cd ~/darkhan/server && node model-verifier.js
+```
+
+This runs the same check outside of the server startup sequence.
 
 ---
 
