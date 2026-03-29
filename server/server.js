@@ -8,6 +8,8 @@ const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 const session = require('express-session');
 const cors = require('cors');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 
 // Darkhan services
 const { ActivityLog } = require('./services/activity-log');
@@ -47,7 +49,7 @@ if (config.tls?.enabled) {
       cert: fs.readFileSync(resolveTlsPath(config.tls.cert)),
       key: fs.readFileSync(resolveTlsPath(config.tls.key)),
       requestCert: true,           // Ask clients for their certificate
-      rejectUnauthorized: false,    // Don't reject at TLS level — check per-route instead
+      rejectUnauthorized: true,    // [C-2 FIX] Reject connections without valid CA-signed cert
     };
     server = https.createServer(tlsOpts, app);
     console.log('[Darkhan] HTTPS server with mTLS — client certificates will be verified for federation routes');
@@ -79,10 +81,35 @@ if (!process.env.SESSION_SECRET) {
 }
 
 // Middleware
+// [C-3 FIX] Security headers
+app.use(helmet({
+  contentSecurityPolicy: false, // SPA manages its own CSP
+  crossOriginEmbedderPolicy: false, // Allow loading from same origin
+}));
+
 app.use(cors({
   origin: process.env.CORS_ORIGIN || `http://localhost:${PORT}`,
   credentials: true
 }));
+
+// [C-3 FIX] HTTP rate limiting — prevents DoS and brute-force on all endpoints
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000,   // 1 minute window
+  max: 120,              // 120 requests per minute per IP
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests. Try again in a minute.' },
+});
+const messageLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 30,               // 30 message posts per minute per IP
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Message rate limit exceeded.' },
+});
+app.use('/api', apiLimiter);
+app.use('/api/messages', messageLimiter);
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 // Persistent session store — survives server restarts
@@ -639,7 +666,16 @@ io.use((socket, next) => {
 
 io.on('connection', (socket) => {
   console.log('[Darkhan] Client connected:', socket.id);
-  socket.on('join_channel', (channelId) => { socket.join(channelId); });
+  // [H-3 FIX] Validate channel authorization before joining
+  socket.on('join_channel', (channelId) => {
+    // Public channels anyone can join (for web UI)
+    const publicChannels = (config.channels || []).map(c => c.id);
+    if (publicChannels.includes(channelId)) {
+      socket.join(channelId);
+    } else {
+      console.warn(`[Darkhan] Rejected channel join: ${channelId} (not in config)`);
+    }
+  });
   socket.on('disconnect', () => { console.log('[Darkhan] Client disconnected:', socket.id); });
 });
 

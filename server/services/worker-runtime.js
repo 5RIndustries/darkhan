@@ -499,6 +499,27 @@ class WorkerRuntime {
         }
         return { ok: true };
       }
+      case 'tools.fs.read': {
+        const filePath = args[0];
+        const fullPath = filePath.startsWith('/') ? filePath : path.join(this.vaultPath, filePath);
+        // Sandbox deny-list check
+        if (this.sandbox.enabled) {
+          const denyPaths = this.sandbox.getAllowedPaths(agentConfig).deny;
+          for (const denied of denyPaths) {
+            if (fullPath.startsWith(denied)) throw new Error(`Sandbox: read denied for ${filePath}`);
+          }
+        }
+        const content = await fs.promises.readFile(fullPath, 'utf8');
+        // [C-1 FIX] Injection scan on file content before returning to child
+        if (this.securityService && content.length > 0) {
+          const scan = this.securityService.scanForInjection(content, { source: `file:${filePath}`, origin: 'vault' });
+          if (!scan.safe && scan.severity === 'critical') {
+            this.activityLog?.append({ actor: agentId, action: 'tool_output_injection_detected', target: filePath, details: JSON.stringify({ severity: scan.severity }) });
+            throw new Error(`ASI01: File ${filePath} contains critical injection patterns — read blocked`);
+          }
+        }
+        return content;
+      }
       case 'tools.fs.write': {
         const filePath = args[0];
         const data = args[1];
