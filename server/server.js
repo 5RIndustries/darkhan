@@ -43,8 +43,11 @@ const BIND_HOST = process.env.BIND_HOST || '127.0.0.1';
 const DB_PATH = path.join(__dirname, 'db', 'darkhan.db');
 const SECRETS_DB_PATH = path.join(__dirname, 'db', 'secrets.db');
 
+// SECURITY: SESSION_SECRET is required — no fallback, no default
 if (!process.env.SESSION_SECRET) {
-  console.warn('[Darkhan] WARNING: SESSION_SECRET not set. Using fallback.');
+  console.error('[Darkhan] FATAL: SESSION_SECRET environment variable is not set.');
+  console.error('[Darkhan] Set SESSION_SECRET in .env before starting. Refusing to start with a hardcoded fallback.');
+  process.exit(1);
 }
 
 // Middleware
@@ -62,7 +65,7 @@ app.use(session({
     dir: path.join(__dirname, 'db'),
     concurrentDB: true,
   }),
-  secret: process.env.SESSION_SECRET || 'darkhan-session-fallback',
+  secret: process.env.SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
   cookie: {
@@ -309,14 +312,18 @@ app.post('/api/security/unlock', secReqAuth, (req, res) => {
     };
   };
 
+  // SECURITY: Lockdown PIN is stored ONLY in secrets.db — no fallback to darkhan.db settings
+  // If no PIN is configured in secrets.db, fail closed (refuse to unlock)
   secretsDb.get("SELECT value FROM secret_settings WHERE key = 'lockdown_pin_hash'", [], async (err, row) => {
-    if (err || !row) {
-      // Backward compatibility: fall back to main settings table
-      db.get("SELECT value FROM settings WHERE key = 'lockdown_pin_hash'", [], async (err2, row2) => {
-        if (err2) return res.status(500).json({ error: 'Internal server error' });
-        await checkPin(row2)();
+    if (err) {
+      return res.status(500).json({ error: 'Internal server error' });
+    }
+    if (!row || !row.value) {
+      // Fail closed: no PIN configured means you cannot unlock
+      return res.status(403).json({
+        error: 'No lockdown PIN configured. Set a PIN via Settings before unlocking.',
+        pinRequired: true,
       });
-      return;
     }
     await checkPin(row)();
   });
@@ -336,16 +343,10 @@ io.use((socket, next) => {
   const sessionCookie = socket.handshake.headers?.cookie;
 
   if (apiKey) {
-    // Look up API key in secrets.db (credential-isolated), then join with users table for role info
+    // SECURITY: API keys are stored ONLY in secrets.db — no fallback to darkhan.db
     secretsDb.get('SELECT user_id FROM credentials WHERE api_key = ?', [apiKey], (err, cred) => {
       if (err || !cred) {
-        // Backward compatibility: fall back to users table if secrets.db doesn't have this key yet
-        db.get('SELECT id, username, role FROM users WHERE api_key = ?', [apiKey], (err2, user2) => {
-          if (err2 || !user2) return next(new Error('Invalid API key'));
-          socket.user = user2;
-          return next();
-        });
-        return;
+        return next(new Error('Invalid API key'));
       }
       db.get('SELECT id, username, role FROM users WHERE id = ?', [cred.user_id], (err2, user) => {
         if (err2 || !user) return next(new Error('Invalid API key — user not found'));

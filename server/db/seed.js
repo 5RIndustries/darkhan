@@ -114,11 +114,12 @@ async function seed() {
     }
 
     // Write non-sensitive user data to main darkhan.db
+    // SECURITY: password_hash and api_key are NEVER written here — secrets.db only
     await run(
-      `INSERT OR IGNORE INTO users (id, username, password_hash, role, type, display_name, api_key, notification_prefs)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      [member.id, member.name.toLowerCase(), passwordHash, member.role, member.type,
-       member.name, apiKey, member.notifications ? JSON.stringify(member.notifications) : null]
+      `INSERT OR IGNORE INTO users (id, username, role, type, display_name, notification_prefs)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [member.id, member.name.toLowerCase(), member.role, member.type,
+       member.name, member.notifications ? JSON.stringify(member.notifications) : null]
     );
 
     // Write credentials to secrets.db (credential-isolated database)

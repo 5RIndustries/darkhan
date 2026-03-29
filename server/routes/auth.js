@@ -34,27 +34,19 @@ router.post('/login', (req, res) => {
       }
 
       try {
-        // Get password hash from secrets.db, fall back to users table for backward compatibility
+        // SECURITY: Password hashes are stored ONLY in secrets.db — no fallback to darkhan.db
         let passwordHash = null;
 
-        if (secretsDb) {
-          const cred = await new Promise((resolve, reject) => {
-            secretsDb.get('SELECT password_hash FROM credentials WHERE user_id = ?', [user.id], (err2, row) => {
-              if (err2) reject(err2); else resolve(row);
-            });
-          });
-          if (cred) passwordHash = cred.password_hash;
+        if (!secretsDb) {
+          return res.status(500).json({ error: 'Credential store unavailable' });
         }
 
-        // Backward compatibility: fall back to users table
-        if (!passwordHash) {
-          const fallback = await new Promise((resolve, reject) => {
-            db.get('SELECT password_hash FROM users WHERE id = ?', [user.id], (err2, row) => {
-              if (err2) reject(err2); else resolve(row);
-            });
+        const cred = await new Promise((resolve, reject) => {
+          secretsDb.get('SELECT password_hash FROM credentials WHERE user_id = ?', [user.id], (err2, row) => {
+            if (err2) reject(err2); else resolve(row);
           });
-          if (fallback) passwordHash = fallback.password_hash;
-        }
+        });
+        if (cred) passwordHash = cred.password_hash;
 
         if (!passwordHash) {
           return res.status(401).json({ error: 'Invalid credentials' });
@@ -135,31 +127,21 @@ router.post('/change-password', requireAuth, async (req, res) => {
   const secretsDb = req.app.locals.secretsDb;
   const userId = req.session.userId;
 
-  // Get current password hash from secrets.db, fall back to users table
+  // SECURITY: Password hashes are stored ONLY in secrets.db — no fallback to darkhan.db
   let passwordHash = null;
-  let usingSecretsDb = false;
 
   try {
-    if (secretsDb) {
-      const cred = await new Promise((resolve, reject) => {
-        secretsDb.get('SELECT password_hash FROM credentials WHERE user_id = ?', [userId], (err, row) => {
-          if (err) reject(err); else resolve(row);
-        });
-      });
-      if (cred) {
-        passwordHash = cred.password_hash;
-        usingSecretsDb = true;
-      }
+    if (!secretsDb) {
+      return res.status(500).json({ error: 'Credential store unavailable' });
     }
 
-    // Backward compatibility
-    if (!passwordHash) {
-      const fallback = await new Promise((resolve, reject) => {
-        db.get('SELECT password_hash FROM users WHERE id = ?', [userId], (err, row) => {
-          if (err) reject(err); else resolve(row);
-        });
+    const cred = await new Promise((resolve, reject) => {
+      secretsDb.get('SELECT password_hash FROM credentials WHERE user_id = ?', [userId], (err, row) => {
+        if (err) reject(err); else resolve(row);
       });
-      if (fallback) passwordHash = fallback.password_hash;
+    });
+    if (cred) {
+      passwordHash = cred.password_hash;
     }
 
     if (!passwordHash) {
@@ -173,23 +155,14 @@ router.post('/change-password', requireAuth, async (req, res) => {
 
     const newHash = await bcrypt.hash(newPassword, 12);
 
-    // Update in secrets.db (primary) and users table (backward compatibility)
-    if (secretsDb) {
-      await new Promise((resolve, reject) => {
-        secretsDb.run(
-          `INSERT INTO credentials (user_id, password_hash) VALUES (?, ?)
-           ON CONFLICT(user_id) DO UPDATE SET password_hash = ?, updated_at = CURRENT_TIMESTAMP`,
-          [userId, newHash, newHash],
-          function (err) { if (err) reject(err); else resolve(this); }
-        );
-      });
-    }
-
-    // Also update users table for backward compatibility
+    // Update in secrets.db ONLY — no dual-write to darkhan.db
     await new Promise((resolve, reject) => {
-      db.run('UPDATE users SET password_hash = ? WHERE id = ?', [newHash, userId], function (err) {
-        if (err) reject(err); else resolve(this);
-      });
+      secretsDb.run(
+        `INSERT INTO credentials (user_id, password_hash) VALUES (?, ?)
+         ON CONFLICT(user_id) DO UPDATE SET password_hash = ?, updated_at = CURRENT_TIMESTAMP`,
+        [userId, newHash, newHash],
+        function (err) { if (err) reject(err); else resolve(this); }
+      );
     });
 
     console.log(`[Auth] Password changed for ${userId}`);
@@ -217,27 +190,18 @@ router.post('/set-lockdown-pin', requireAuth, async (req, res) => {
   const secretsDb = req.app.locals.secretsDb;
   const pinHash = await bcrypt.hash(pin, 12);
 
-  // Store PIN hash in secrets.db (primary) and main settings table (backward compatibility)
-  if (secretsDb) {
-    secretsDb.run(
-      `INSERT INTO secret_settings (key, value) VALUES ('lockdown_pin_hash', ?)
-       ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = CURRENT_TIMESTAMP`,
-      [pinHash, pinHash],
-      function (err) {
-        if (err) {
-          console.error('[Auth] Failed to save PIN to secrets.db:', err.message);
-        }
-      }
-    );
+  // SECURITY: Store PIN hash in secrets.db ONLY — no dual-write to darkhan.db
+  if (!secretsDb) {
+    return res.status(500).json({ error: 'Credential store unavailable' });
   }
 
-  // Also store in main settings table for backward compatibility
-  db.run(
-    `INSERT INTO settings (key, value) VALUES ('lockdown_pin_hash', ?)
+  secretsDb.run(
+    `INSERT INTO secret_settings (key, value) VALUES ('lockdown_pin_hash', ?)
      ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = CURRENT_TIMESTAMP`,
     [pinHash, pinHash],
     function (err) {
       if (err) {
+        console.error('[Auth] Failed to save PIN to secrets.db:', err.message);
         return res.status(500).json({ error: 'Failed to save PIN' });
       }
       console.log(`[Auth] Lockdown PIN set by ${req.session.userId}`);
