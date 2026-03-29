@@ -39,44 +39,22 @@ function requireAuth(req, res, next) {
       });
     };
 
-    // Try secrets.db first
-    if (secretsDb) {
-      secretsDb.get('SELECT user_id FROM credentials WHERE api_key = ?', [apiKey], (err, cred) => {
-        if (err || !cred) {
-          // Backward compatibility: fall back to users table in darkhan.db
-          db.get('SELECT id, username, role, type FROM users WHERE api_key = ?', [apiKey], (err2, user) => {
-            if (err2) {
-              console.error('Auth middleware DB error:', err2.message);
-              return res.status(500).json({ error: 'Internal server error' });
-            }
-            if (!user) {
-              return res.status(401).json({ error: 'Invalid API key' });
-            }
-            req.user = user;
-            req.authenticatedId = user.id;
-            req.authenticatedType = user.type || 'agent';
-            return next();
-          });
-          return;
-        }
-        resolveUser(cred.user_id);
-      });
-    } else {
-      // No secrets.db available — use main DB directly (backward compatibility)
-      db.get('SELECT id, username, role, type FROM users WHERE api_key = ?', [apiKey], (err, user) => {
-        if (err) {
-          console.error('Auth middleware DB error:', err.message);
-          return res.status(500).json({ error: 'Internal server error' });
-        }
-        if (!user) {
-          return res.status(401).json({ error: 'Invalid API key' });
-        }
-        req.user = user;
-        req.authenticatedId = user.id;
-        req.authenticatedType = user.type || 'agent';
-        return next();
-      });
+    // SECURITY: API keys are stored ONLY in secrets.db — no fallback to darkhan.db
+    if (!secretsDb) {
+      console.error('Auth middleware: secrets.db not available — cannot authenticate API keys');
+      return res.status(500).json({ error: 'Credential store unavailable' });
     }
+
+    secretsDb.get('SELECT user_id FROM credentials WHERE api_key = ?', [apiKey], (err, cred) => {
+      if (err) {
+        console.error('Auth middleware secrets.db error:', err.message);
+        return res.status(500).json({ error: 'Internal server error' });
+      }
+      if (!cred) {
+        return res.status(401).json({ error: 'Invalid API key' });
+      }
+      resolveUser(cred.user_id);
+    });
     return;
   }
 

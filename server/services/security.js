@@ -440,7 +440,8 @@ Message: "${text.substring(0, 2000)}"`
 
       // Check against dangerous commands
       const dangerous = ['rm', 'rmdir', 'sudo', 'kill', 'killall', 'chmod', 'chown',
-        'mkfs', 'dd', 'shutdown', 'reboot', 'curl', 'wget', 'ssh', 'scp', 'nc', 'ncat'];
+        'mkfs', 'dd', 'shutdown', 'reboot', 'curl', 'wget', 'ssh', 'scp', 'nc', 'ncat',
+        'python3', 'python', 'node', 'perl', 'ruby', 'php'];
 
       if (dangerous.includes(baseCmd)) {
         this.activityLog.append({
@@ -665,8 +666,11 @@ Message: "${text.substring(0, 2000)}"`
   }
 
   _signLockdownState(state) {
-    const secret = process.env.SESSION_SECRET || 'darkhan-lockdown-key';
-    return crypto.createHmac('sha256', secret).update(state).digest('hex');
+    // SECURITY: Derive lockdown HMAC key from SESSION_SECRET with domain separator
+    // SESSION_SECRET is guaranteed to exist (server.js refuses to start without it)
+    const secret = process.env.SESSION_SECRET;
+    const lockdownKey = crypto.createHmac('sha256', secret).update('darkhan-lockdown').digest('hex');
+    return crypto.createHmac('sha256', lockdownKey).update(state).digest('hex');
   }
 
   _postLockdownAlert(reason) {

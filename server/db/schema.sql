@@ -7,15 +7,14 @@
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
   username TEXT UNIQUE NOT NULL,
-  password_hash TEXT NOT NULL,
   role TEXT NOT NULL,                    -- 'admin', 'member', 'agent', 'system'
   type TEXT DEFAULT 'agent',            -- [DARKHAN] 'human' or 'agent'
   display_name TEXT,                    -- [DARKHAN] Friendly name for UI
-  api_key TEXT UNIQUE,                  -- For agent/API access (X-API-Key header)
   notification_prefs TEXT,              -- [DARKHAN] JSON: { pushover, email, etc. }
   status TEXT DEFAULT 'offline',        -- [DARKHAN] 'online', 'away', 'dnd', 'offline'
   last_seen_at DATETIME,               -- [DARKHAN] Last activity timestamp
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  -- SECURITY: password_hash and api_key are stored ONLY in secrets.db (credential isolation)
 );
 
 -- Channels

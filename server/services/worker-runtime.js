@@ -423,7 +423,15 @@ class WorkerRuntime {
               execFile('/bin/sh', ['-c', command], {
                 cwd: opts.cwd || self.vaultPath,
                 timeout,
-                env: { ...process.env, HOME: process.env.HOME },
+                // SECURITY: Whitelist env vars — workers must NOT access SESSION_SECRET,
+              // GOOGLE_API_KEY, ANTHROPIC_API_KEY, or any other secrets via printenv/env
+              env: {
+                HOME: process.env.HOME,
+                PATH: process.env.PATH,
+                LANG: process.env.LANG || 'en_US.UTF-8',
+                USER: process.env.USER,
+                TERM: process.env.TERM || 'xterm-256color',
+              },
               }, (err, stdout, stderr) => {
                 if (err) reject(new Error(`Shell error: ${err.message}\n${stderr}`));
                 else resolve({ stdout: stdout.trim(), stderr: stderr.trim() });
