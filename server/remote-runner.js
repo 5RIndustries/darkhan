@@ -31,6 +31,21 @@ const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
 // --- Environment ---
 const REMOTE_HOST = process.env.REMOTE_HOST || 'http://192.168.1.100:3001';
 
+// [DARKHAN SECURITY] TLS enforcement for federation
+// HTTP is acceptable on Tailscale networks (WireGuard-encrypted). For non-Tailscale
+// deployments, require HTTPS or explicit opt-in via FEDERATION_ALLOW_HTTP=true.
+if (REMOTE_HOST.startsWith('http://')) {
+  if (process.env.FEDERATION_ALLOW_HTTP === 'true') {
+    console.warn('[RemoteRunner] WARNING: Federation using unencrypted HTTP. ' +
+      'This is acceptable on Tailscale networks. For non-Tailscale deployments, use HTTPS.');
+  } else {
+    console.error('[RemoteRunner] FATAL: Federation target uses HTTP (unencrypted). ' +
+      'Set FEDERATION_ALLOW_HTTP=true if running on a Tailscale/WireGuard network, ' +
+      'or use an https:// URL for REMOTE_HOST.');
+    process.exit(1);
+  }
+}
+
 const apiKeys = {};
 if (process.env.CHIEF_API_KEY) apiKeys['agent_chief'] = process.env.CHIEF_API_KEY;
 if (process.env.LINDSEY_API_KEY) apiKeys['agent_lindsey'] = process.env.LINDSEY_API_KEY;

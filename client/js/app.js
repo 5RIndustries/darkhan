@@ -30,7 +30,10 @@
   async function api(method, path, body) {
     const opts = {
       method,
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        'X-Darkhan-Client': 'true'  // CSRF protection — proves request comes from our UI
+      },
       credentials: 'include'
     };
     if (body) opts.body = JSON.stringify(body);
