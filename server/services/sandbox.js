@@ -53,6 +53,22 @@ const DEFAULT_LIMITS = {
   killOnExceed: true,        // Kill worker if limits exceeded
 };
 
+/**
+ * [ASI02/P0-3] Allowed network endpoints for workers.
+ * Workers can only reach these hosts. All other outbound is blocked.
+ */
+const ALLOWED_EGRESS = [
+  // Local LLM (Ollama)
+  { host: 'localhost', port: 11434, description: 'Ollama local LLM' },
+  { host: '127.0.0.1', port: 11434, description: 'Ollama local LLM' },
+  // Google Gemini API
+  { host: 'generativelanguage.googleapis.com', port: 443, description: 'Google Gemini API' },
+  // Anthropic Claude API
+  { host: 'api.anthropic.com', port: 443, description: 'Anthropic Claude API' },
+  // Darkhan hub (for federated workers)
+  { host: '*', port: 3001, description: 'Darkhan hub (configurable)' },
+];
+
 class WorkerSandbox {
   /**
    * @param {Object} opts
@@ -271,8 +287,13 @@ ${paths.write.map(p => `(allow file-write*\n  (subpath "${p}")\n)`).join('\n')}
 ;; Deny access to sensitive files
 ${paths.deny.map(p => `(deny file-read* file-write*\n  (subpath "${p}")\n)`).join('\n')}
 
-;; Allow network (for LLM API calls — Ollama localhost, Google, Anthropic)
-(allow network*)
+;; Network: deny-default, allow only LLM API endpoints
+;; [ASI02/P0-3] Workers can only reach Ollama (local), Google Gemini, Anthropic Claude
+(deny network*)
+(allow network* (remote tcp "localhost:11434"))
+(allow network* (remote tcp "127.0.0.1:11434"))
+(allow network* (remote tcp "generativelanguage.googleapis.com:443"))
+(allow network* (remote tcp "api.anthropic.com:443"))
 
 ;; Allow IPC (for parent-child communication)
 (allow ipc-posix*)

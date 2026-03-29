@@ -496,16 +496,29 @@ Message: "${text.substring(0, 2000)}"`
     }
 
     if (perms.shell === 'restricted') {
-      // Extract the base command
-      const baseCmd = command.trim().split(/\s+/)[0].replace(/^.*\//, '');
+      // Extract the base command and resolve paths
+      const cmdToken = command.trim().split(/\s+/)[0];
+      const baseCmd = cmdToken.replace(/^.*\//, '');
 
-      // Check against dangerous commands
-      const dangerous = ['rm', 'rmdir', 'sudo', 'kill', 'killall', 'chmod', 'chown',
+      // [ASI02] Resolve absolute paths and symlinks to catch bypass attempts
+      // e.g., /usr/bin/python3, /tmp/mylink -> python3
+      let resolvedBase = baseCmd;
+      if (cmdToken.includes('/')) {
+        try {
+          const realPath = require('fs').realpathSync(cmdToken);
+          resolvedBase = realPath.replace(/^.*\//, '');
+        } catch (e) {
+          // Path doesn't exist — use the basename as-is
+        }
+      }
+
+      // Check against dangerous commands (both original and resolved names)
+      const dangerous = new Set(['rm', 'rmdir', 'sudo', 'kill', 'killall', 'chmod', 'chown',
         'mkfs', 'dd', 'shutdown', 'reboot', 'curl', 'wget', 'ssh', 'scp', 'nc', 'ncat',
         'python3', 'python', 'node', 'perl', 'ruby', 'php',
-        'env', 'printenv', 'set', 'sqlite3', 'base64'];
+        'env', 'printenv', 'set', 'sqlite3', 'base64', 'su']);
 
-      if (dangerous.includes(baseCmd)) {
+      if (dangerous.has(baseCmd) || dangerous.has(resolvedBase)) {
         this.activityLog.append({
           actor: 'darkhan_security',
           action: 'dangerous_command_blocked',
