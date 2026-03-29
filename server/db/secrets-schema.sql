@@ -13,9 +13,15 @@ CREATE TABLE IF NOT EXISTS credentials (
   user_id TEXT PRIMARY KEY,
   password_hash TEXT NOT NULL,
   api_key TEXT UNIQUE,
+  must_change_password INTEGER DEFAULT 1,  -- [DARKHAN] Force password change on first login
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
+
+-- [DARKHAN] Migration: add must_change_password column if missing (existing databases)
+-- SQLite silently ignores duplicate column errors in ALTER TABLE when handled by the app.
+-- The server's applySchema() ignores "already exists" errors, so this is safe to re-run.
+ALTER TABLE credentials ADD COLUMN must_change_password INTEGER DEFAULT 1;
 
 -- Sensitive settings (lockdown PIN hash, etc.)
 -- Moved from darkhan.db settings table for credential isolation.

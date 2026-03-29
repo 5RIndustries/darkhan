@@ -131,10 +131,12 @@ async function seed() {
     );
 
     // Write credentials to secrets.db (credential-isolated database)
+    // Human users must change their temporary password on first login.
+    const mustChangePassword = member.type === 'human' ? 1 : 0;
     await secretsRun(
-      `INSERT OR IGNORE INTO credentials (user_id, password_hash, api_key)
-       VALUES (?, ?, ?)`,
-      [member.id, passwordHash, apiKey]
+      `INSERT OR IGNORE INTO credentials (user_id, password_hash, api_key, must_change_password)
+       VALUES (?, ?, ?, ?)`,
+      [member.id, passwordHash, apiKey, mustChangePassword]
     );
 
     newKeys[member.id] = apiKey;

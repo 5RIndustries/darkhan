@@ -140,7 +140,7 @@ function applySchema(database, schemaPath, label) {
   const statements = safeSql.split(';').map(s => s.replace(/##SEMI##/g, ';').trim()).filter(s => s.length > 0);
   for (const stmt of statements) {
     database.run(stmt + ';', (err) => {
-      if (err && !err.message.includes('already exists')) {
+      if (err && !err.message.includes('already exists') && !err.message.includes('duplicate column name')) {
         console.error(`[Darkhan] ${label} schema statement error:`, err.message);
       }
     });

@@ -376,6 +376,12 @@ class WorkerRuntime {
         getMessages: (channelId, opts) => self._getMessages(channelId, opts),
         createTask: (task) => self._createTask({ ...task, createdBy: agentId }),
         ping: (status) => self._pingHealth(agentId, status || 'active'),
+        /**
+         * Request approval for a sensitive action.
+         * @param {Object} opts - { action: string, detail: string }
+         * @returns {Promise<Object>} The created approval record
+         */
+        requestApproval: ({ action, detail }) => self._requestApproval(agentId, action, detail),
       },
 
       // File system tools (scoped to permissions)
@@ -531,6 +537,49 @@ class WorkerRuntime {
        ON CONFLICT(agent) DO UPDATE SET status = ?, last_ping_at = ?`,
       [agentId, status, now, status, now]
     );
+  }
+
+  /**
+   * Create an approval request on behalf of a worker agent.
+   * Returns a promise that resolves with the created approval record.
+   */
+  _requestApproval(agentId, actionType, actionDetail) {
+    const crypto = require('crypto');
+    const id = `appr_${crypto.randomBytes(8).toString('hex')}`;
+    const now = new Date().toISOString();
+
+    return new Promise((resolve, reject) => {
+      this.db.run(
+        `INSERT INTO approval_queue (id, requested_by, action_type, action_detail, status, created_at)
+         VALUES (?, ?, ?, ?, 'pending', ?)`,
+        [id, agentId, actionType, actionDetail, now],
+        (err) => {
+          if (err) return reject(new Error(`Failed to create approval request: ${err.message}`));
+
+          console.log(`[WorkerRuntime] Approval request ${id} from ${agentId}: ${actionType}`);
+
+          this.activityLog.append({
+            actor: agentId,
+            action: 'approval_requested',
+            target: id,
+            details: JSON.stringify({ action_type: actionType, action_detail: actionDetail }),
+          });
+
+          // Notify connected clients via WebSocket
+          if (this.io) {
+            this.io.emit('approval_update', {
+              id, requested_by: agentId, action_type: actionType,
+              action_detail: actionDetail, status: 'pending', created_at: now,
+            });
+          }
+
+          this.db.get('SELECT * FROM approval_queue WHERE id = ?', [id], (err2, row) => {
+            if (err2) return reject(err2);
+            resolve(row);
+          });
+        }
+      );
+    });
   }
 
   /**

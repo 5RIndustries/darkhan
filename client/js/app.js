@@ -57,6 +57,87 @@
   function showLogin() {
     loginScreen.classList.remove('hidden');
     appScreen.classList.add('hidden');
+    // Remove force-password overlay if it exists
+    const existing = document.getElementById('force-password-overlay');
+    if (existing) existing.remove();
+  }
+
+  /**
+   * Force password change overlay — shown after login when must_change_password is set.
+   * The user cannot dismiss this or navigate away. They must set a new password.
+   * @param {string} currentPassword — the password they just logged in with
+   */
+  function showForcePasswordChange(currentPassword) {
+    loginScreen.classList.add('hidden');
+    appScreen.classList.add('hidden');
+
+    // Remove any existing overlay
+    let overlay = document.getElementById('force-password-overlay');
+    if (overlay) overlay.remove();
+
+    overlay = document.createElement('div');
+    overlay.id = 'force-password-overlay';
+    overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;background:var(--bg-primary, #1e1e1e);display:flex;align-items:center;justify-content:center;z-index:10000;';
+    overlay.innerHTML = `
+      <div style="background:var(--bg-secondary, #2d2d2d);padding:2rem;border-radius:8px;max-width:400px;width:90%;border:1px solid var(--border, #404040);">
+        <h2 style="margin:0 0 0.5rem 0;color:var(--text-primary, #e0e0e0);">Password Change Required</h2>
+        <p style="color:var(--text-secondary, #aaa);font-size:0.9rem;margin:0 0 1.5rem 0;">Your account is using a temporary password. You must set a new password before continuing.</p>
+        <form id="force-password-form" style="display:flex;flex-direction:column;gap:0.75rem;">
+          <input type="password" id="fcp-new" placeholder="New password (8+ characters)" required minlength="8"
+            style="padding:0.6rem;background:var(--bg-primary, #1e1e1e);border:1px solid var(--border, #404040);border-radius:4px;color:var(--text-primary, #e0e0e0);font-size:1rem;">
+          <input type="password" id="fcp-confirm" placeholder="Confirm new password" required
+            style="padding:0.6rem;background:var(--bg-primary, #1e1e1e);border:1px solid var(--border, #404040);border-radius:4px;color:var(--text-primary, #e0e0e0);font-size:1rem;">
+          <button type="submit" style="padding:0.6rem 1rem;background:var(--accent, #3498db);color:white;border:none;border-radius:4px;cursor:pointer;font-size:1rem;font-weight:bold;">Set New Password</button>
+          <div id="fcp-status" style="font-size:0.9rem;min-height:1.2em;"></div>
+        </form>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+
+    // Prevent escape key from dismissing
+    const blockEscape = (e) => { if (e.key === 'Escape') e.preventDefault(); };
+    document.addEventListener('keydown', blockEscape);
+
+    document.getElementById('force-password-form').addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      const status = document.getElementById('fcp-status');
+      const newPw = document.getElementById('fcp-new').value;
+      const confirmPw = document.getElementById('fcp-confirm').value;
+
+      if (newPw.length < 8) {
+        status.textContent = 'Password must be at least 8 characters';
+        status.style.color = '#e74c3c';
+        return;
+      }
+      if (newPw !== confirmPw) {
+        status.textContent = 'Passwords do not match';
+        status.style.color = '#e74c3c';
+        return;
+      }
+      if (newPw === currentPassword) {
+        status.textContent = 'New password must be different from the current password';
+        status.style.color = '#e74c3c';
+        return;
+      }
+
+      status.textContent = 'Changing password...';
+      status.style.color = 'var(--text-secondary, #aaa)';
+
+      try {
+        await api('POST', '/auth/change-password', { currentPassword, newPassword: newPw });
+        status.textContent = 'Password changed. Loading...';
+        status.style.color = '#27ae60';
+        document.removeEventListener('keydown', blockEscape);
+        // Small delay so user sees success, then proceed to app
+        setTimeout(() => {
+          overlay.remove();
+          showApp();
+        }, 800);
+      } catch (err) {
+        status.textContent = err.message;
+        status.style.color = '#e74c3c';
+      }
+    });
   }
 
   async function showApp() {
@@ -196,6 +277,10 @@
     try {
       const data = await api('POST', '/auth/login', { username, password });
       currentUser = data.user;
+      if (data.mustChangePassword) {
+        showForcePasswordChange(password);
+        return;
+      }
       showApp();
     } catch (err) {
       alert(err.message);
@@ -253,6 +338,12 @@
         loadDashboard();
       }
       updateAgentStatus();
+    });
+
+    socket.on('approval_update', () => {
+      if (currentView === 'approvals') {
+        loadApprovals();
+      }
     });
 
     // Update status lights when any new message arrives (dynamic)
@@ -772,35 +863,87 @@
     const container = document.getElementById('approvals-content');
     if (!container) return;
     try {
-      const data = await api('GET', '/approvals?status=pending');
-      if (!data.approvals || data.approvals.length === 0) {
-        container.innerHTML = '<p class="empty">No pending approvals.</p>';
-        return;
+      // Load pending approvals
+      const pending = await api('GET', '/approvals?status=pending');
+      // Load history (approved + denied, most recent 50)
+      const history = await api('GET', '/approvals?limit=50');
+      const historyItems = (history.approvals || []).filter(a => a.status !== 'pending');
+
+      let html = '<h3 style="margin:0 0 1rem 0;">Pending Approvals</h3>';
+
+      if (!pending.approvals || pending.approvals.length === 0) {
+        html += '<p class="empty" style="margin-bottom:2rem;">No pending approvals.</p>';
+      } else {
+        html += pending.approvals.map(a => `
+          <div class="task-card status-${a.status}" style="margin-bottom:0.75rem;">
+            <div class="task-header">
+              <strong>${escapeHtml(a.action_type)}</strong>
+              <span class="task-priority" style="background:var(--accent);color:#fff;padding:0.15rem 0.5rem;border-radius:3px;font-size:0.75rem;">PENDING</span>
+            </div>
+            <div class="task-meta">Requested by: <strong>${escapeHtml(a.requested_by)}</strong> | ${new Date(a.created_at.endsWith('Z') ? a.created_at : a.created_at + 'Z').toLocaleString('en-US', { timeZone: 'America/New_York' })} ET</div>
+            <div class="task-desc" style="margin:0.5rem 0;white-space:pre-wrap;">${escapeHtml(a.action_detail)}</div>
+            <div style="margin-top:0.5rem;display:flex;gap:0.5rem;">
+              <button onclick="window._approveRequest('${a.id}')" style="background:var(--success, #27ae60);color:#fff;border:none;padding:0.4rem 1rem;border-radius:var(--radius);cursor:pointer;font-weight:bold;">Approve</button>
+              <button onclick="window._denyRequest('${a.id}')" style="background:var(--danger, #c0392b);color:#fff;border:none;padding:0.4rem 1rem;border-radius:var(--radius);cursor:pointer;font-weight:bold;">Deny</button>
+            </div>
+          </div>
+        `).join('');
       }
-      container.innerHTML = data.approvals.map(a => `
-        <div class="task-card status-${a.status}">
-          <div class="task-header">
-            <strong>${escapeHtml(a.action_type)}</strong>
-            <span class="task-priority">${a.status.toUpperCase()}</span>
-          </div>
-          <div class="task-meta">Requested by: ${escapeHtml(a.requested_by)} | ${new Date(a.created_at).toLocaleString('en-US', { timeZone: 'America/New_York' })} ET</div>
-          <div class="task-desc">${escapeHtml(a.action_detail)}</div>
-          <div style="margin-top:0.5rem;display:flex;gap:0.5rem;">
-            <button onclick="handleApproval('${a.id}','approved')" style="background:var(--success);color:#000;border:none;padding:0.3rem 0.8rem;border-radius:var(--radius);cursor:pointer;">Approve</button>
-            <button onclick="handleApproval('${a.id}','denied')" style="background:var(--danger);color:#fff;border:none;padding:0.3rem 0.8rem;border-radius:var(--radius);cursor:pointer;">Deny</button>
-          </div>
-        </div>
-      `).join('');
+
+      html += '<h3 style="margin:1.5rem 0 1rem 0;">History</h3>';
+
+      if (historyItems.length === 0) {
+        html += '<p class="empty">No approval history yet.</p>';
+      } else {
+        html += historyItems.map(a => {
+          const statusColor = a.status === 'approved' ? 'var(--success, #27ae60)' : 'var(--danger, #c0392b)';
+          const statusLabel = a.status.toUpperCase();
+          const reviewedAt = a.reviewed_at ? new Date(a.reviewed_at.endsWith('Z') ? a.reviewed_at : a.reviewed_at + 'Z').toLocaleString('en-US', { timeZone: 'America/New_York' }) : 'unknown';
+          return `
+            <div class="task-card" style="margin-bottom:0.5rem;opacity:0.8;">
+              <div class="task-header">
+                <strong>${escapeHtml(a.action_type)}</strong>
+                <span style="background:${statusColor};color:#fff;padding:0.15rem 0.5rem;border-radius:3px;font-size:0.75rem;">${statusLabel}</span>
+              </div>
+              <div class="task-meta">Requested by: ${escapeHtml(a.requested_by)} | Reviewed by: ${escapeHtml(a.reviewed_by || '?')} | ${reviewedAt} ET</div>
+              <div class="task-desc" style="font-size:0.85rem;opacity:0.7;">${escapeHtml(a.action_detail)}</div>
+            </div>
+          `;
+        }).join('');
+      }
+
+      container.innerHTML = html;
     } catch (err) {
       container.innerHTML = `<p class="error">Failed to load approvals: ${err.message}</p>`;
     }
   }
 
-  // Make handleApproval available globally for onclick
+  // Approval action handlers — use the new POST endpoints (session auth, human admin only)
+  window._approveRequest = async function(id) {
+    if (!confirm('Approve this request?')) return;
+    try {
+      await api('POST', `/approvals/${id}/approve`);
+      loadApprovals();
+    } catch (err) {
+      alert('Approve failed: ' + err.message);
+    }
+  };
+
+  window._denyRequest = async function(id) {
+    if (!confirm('Deny this request?')) return;
+    try {
+      await api('POST', `/approvals/${id}/deny`);
+      loadApprovals();
+    } catch (err) {
+      alert('Deny failed: ' + err.message);
+    }
+  };
+
+  // Legacy handler kept for backward compat
   window.handleApproval = async function(id, status) {
     try {
       await api('PATCH', `/approvals/${id}`, { status });
-      loadApprovals(); // Refresh
+      loadApprovals();
     } catch (err) {
       alert('Failed: ' + err.message);
     }
