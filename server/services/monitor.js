@@ -39,7 +39,12 @@ function startMonitor(db, io) {
  * Update agent status based on last message and health pings
  */
 function updateAgentStatus(db, io) {
-  const agents = ['agent_claude', 'agent_lindsey', 'agent_penny', 'agent_darkhan'];
+  let agents;
+  try {
+    const cfg = require('../darkhan.config.json');
+    agents = cfg.team?.members?.filter(m => m.type === 'agent').map(m => m.id) || [];
+  } catch (e) { /* fallback */ }
+  if (!agents?.length) agents = ['agent_darkhan'];
   const now = Date.now();
 
   agents.forEach(agent => {

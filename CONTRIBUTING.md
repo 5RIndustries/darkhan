@@ -22,12 +22,16 @@ Thank you for your interest in contributing to Darkhan. This document covers how
 
 Every PR must:
 
-1. **Describe what it does and why** — not just what files changed
-2. **Not introduce security regressions** — if you touch auth, permissions, or security services, explain the security implications
-3. **Include test evidence** — screenshots, terminal output, or test results showing it works
-4. **Not break the hash chain** — if you modify the activity log format, ensure backward compatibility in `verify()`
-5. **Not weaken credential isolation** — passwords, API keys, and PINs stay in `secrets.db`
-6. **Not bypass identity enforcement** — agents must not be able to impersonate humans or each other
+1. **Pass CI** — GitHub Actions runs dependency audit (`npm audit`), secret scanner, source map blocker, syntax check, and smoke test. PRs that fail CI will not be reviewed.
+2. **Pass the pre-commit hook** — install it with `cp scripts/pre-commit-hook.sh .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit`. It blocks secrets, source maps, database files, private keys, large files, and live worker configs.
+3. **Describe what it does and why** — not just what files changed
+4. **Not introduce security regressions** — if you touch auth, permissions, or security services, explain the security implications
+5. **Not add vulnerable dependencies** — run `npm audit` before submitting. Zero HIGH+ vulnerabilities required.
+6. **Include test evidence** — screenshots, terminal output, or test results showing it works
+7. **Not break the hash chain** — if you modify the activity log format, ensure backward compatibility in `verify()`
+8. **Not weaken credential isolation** — passwords, API keys, and PINs stay in `secrets.db`
+9. **Not bypass identity enforcement** — agents must not be able to impersonate humans or each other
+10. **Update CHANGELOG.md** — add your changes under the appropriate section
 
 ### Code Style
 
@@ -67,7 +71,7 @@ Use GitHub Issues with the appropriate template:
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under the same license as Darkhan (license TBD — see [BACKLOG.md](BACKLOG.md) for licensing discussion status).
+By contributing, you agree that your contributions will be licensed under the BSL 1.1 license. See [CLA.md](CLA.md) for the Contributor License Agreement and sign-off process.
 
 ## Questions?
 

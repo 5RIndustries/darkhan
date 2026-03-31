@@ -186,13 +186,13 @@ class OnboardingService {
     // Determine if this is a federated (remote) worker
     const isRemote = !!agentConfig.remoteHost;
 
-    // Check which other agents are in the config
+    // [P0-M3 FIX] Minimize infrastructure exposure to worker agents.
+    // Workers only need to know about agents they might interact with — not full
+    // deployment details (providers, models, infrastructure) that a compromised
+    // worker could use to map the system for targeted attacks.
     const otherAgents = this.config.team.members
       .filter(m => m.id !== agentId && m.type === 'agent')
-      .map(m => {
-        const status = m.worker ? 'worker (scheduled tasks)' : (m.model?.mode || 'configured');
-        return `  - ${m.name} (${m.id}): ${m.model?.provider}/${m.model?.model} [${status}]`;
-      });
+      .map(m => `  - ${m.name} (${m.id})`);
 
     // Check active heartbeats from database if available
     let heartbeatInfo = 'Heartbeat data: not available (no direct DB access)';
@@ -242,31 +242,28 @@ class OnboardingService {
     const fsWritePaths = agentConfig.permissions?.fsWrite || [];
     const vaultExists = fs.existsSync(this.vaultPath);
 
+    // [P0-M3 FIX] Stripped: hostname, platform, process uptime, port, other agents'
+    // providers/models. A compromised worker should not receive a deployment map.
+    // Workers get: their own identity, their LLM, their permissions, their channels,
+    // and other agent names (for coordination). Nothing more.
     const lines = [
       '## 2. Verified System State',
       '',
-      `- Hostname: ${hostname}`,
-      `- Platform: ${platform}`,
-      `- Process uptime: ${nodeUptime}s`,
-      `- Execution mode: ${isRemote ? 'federated (remote worker posting via HTTP API)' : 'local (direct DB/socket access)'}`,
-      `- Darkhan instance: ${this.config.instance?.name || 'unnamed'} (${this.config.instance?.brandName || 'Darkhan'})`,
-      `- Darkhan port: ${this.config.instance?.port || 'unknown'}`,
+      `- Execution mode: ${isRemote ? 'federated (remote worker posting via HTTP API)' : 'local'}`,
+      `- Darkhan instance: ${this.config.instance?.name || 'unnamed'}`,
       `- Timezone: ${this.config.instance?.timezone || 'unset'}`,
       '',
       `- Your LLM: ${providerDetails}`,
       `- Rate limits: ${agentConfig.rateLimits ? `${agentConfig.rateLimits.requestsPerDay} req/day, ${agentConfig.rateLimits.requestsPerMinute} req/min` : 'not configured (defaults apply)'}`,
       '',
-      `- Vault path: ${this.vaultPath}`,
       `- Vault accessible: ${vaultExists ? 'yes' : 'NO — path does not exist'}`,
       `- Write permissions: ${fsWritePaths.length > 0 ? fsWritePaths.join(', ') : 'none explicitly configured'}`,
       '',
-      'Configured channels:',
+      'Your channels:',
       ...channelNames.map(ch => `  - ${ch}`),
       '',
-      'Other agents in config:',
+      'Other agents:',
       ...otherAgents,
-      '',
-      heartbeatInfo,
     ];
 
     return lines.join('\n');

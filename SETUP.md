@@ -3,6 +3,15 @@
 > This guide walks a new team member through deploying Darkhan on their own machine.
 > Estimated time: 30-45 minutes for a single node, 60 minutes for a federated setup.
 
+## Quick Start (One-Line Install)
+
+```bash
+# Clone and run the interactive setup wizard
+git clone https://github.com/5RIndustries/darkhan.git && cd darkhan && node setup.js
+```
+
+The setup wizard checks prerequisites, creates your config, pulls the local LLM, seeds the database, and starts the server. If you prefer to configure manually, follow the steps below.
+
 ---
 
 ## Table of Contents
@@ -26,22 +35,41 @@
 
 ## Prerequisites
 
-**Required:**
+### Fresh Mac? Start here.
+
+If you are setting up on a brand new Mac, run these first:
+
+```bash
+# Install Homebrew (macOS package manager)
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+# IMPORTANT: Follow the instructions Homebrew prints at the end to add it to your PATH.
+# It will tell you to run two commands — do that before continuing.
+
+# Install Node.js and Ollama
+brew install node ollama
+
+# Start Ollama and pull the local LLM
+brew services start ollama
+ollama pull qwen2.5:3b
+```
+
+### Required
 - **macOS** (Apple Silicon recommended) or Linux
 - **Node.js 20+** -- `brew install node` or [nodejs.org](https://nodejs.org)
 - **Ollama** -- `brew install ollama` then `brew services start ollama`
-- **Git** -- for cloning the repo
+- **Git** -- included with macOS Xcode Command Line Tools (prompted automatically on first use), or `brew install git`
 
-**Optional (recommended for full capability):**
-- **Claude Code CLI** -- for integrated Claude terminal sessions. `npm install -g @anthropic-ai/claude-code`. Requires an Anthropic API key or a Claude Pro/Max/Team plan.
+### Optional (recommended for full capability)
+- **Claude Code CLI** -- for integrated Claude terminal sessions. Install: `curl -fsSL https://claude.ai/install.sh | bash`. Requires a Claude Pro/Max/Team plan or an Anthropic API key.
 - **Google API key** -- for Gemini-powered agents. Get one at [aistudio.google.com](https://aistudio.google.com)
 - **Anthropic API key** -- for security escalation to Claude and terminal sessions. Get one at [console.anthropic.com](https://console.anthropic.com)
 - **Tailscale** -- for multi-node federation. Get it at [tailscale.com](https://tailscale.com)
 
-**Hardware guidance:**
-- 16GB RAM minimum (runs Qwen 2.5 14B via Ollama comfortably)
-- 8GB RAM: use a smaller model (`qwen2.5:7b` or `qwen2.5:3b`)
-- 24GB+ RAM recommended if running multiple cloud-backed agents alongside local LLM
+### Hardware guidance
+- **8GB RAM** (e.g., MacBook Air M4 base): runs Qwen 2.5 3B comfortably -- this is the default model
+- **16GB RAM**: can run Qwen 2.5 14B for better triage accuracy
+- **24GB+ RAM**: recommended for running multiple cloud-backed agents alongside local LLM
 
 ---
 
@@ -52,28 +80,25 @@
 git clone https://github.com/5RIndustries/darkhan.git
 cd darkhan
 
-# Install the secret scanner pre-commit hook (blocks accidental credential commits).
-# This is automatic -- it configures git to use the .githooks/ directory, which
-# contains a pre-commit hook that runs secret-scanner.js on every staged diff.
-# It catches API keys, tokens, private keys, JWTs, and connection strings.
-git config core.hooksPath .githooks
+# Install the pre-commit hook (blocks secrets, source maps, db files, keys, large files)
+cp scripts/pre-commit-hook.sh .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
 
 # Install dependencies
 cd server
 npm install
 
-# Pull the local LLM
-ollama pull qwen2.5:14b
+# Pull the local LLM (3B is the default — runs on 8GB Macs)
+ollama pull qwen2.5:3b
 
-# If your machine has <16GB RAM, use a smaller model:
-# ollama pull qwen2.5:7b
+# If your machine has 16GB+ RAM, you can use the larger model for better accuracy:
+# ollama pull qwen2.5:14b
 ```
 
 Verify Ollama is running and the model is available:
 
 ```bash
 ollama list
-# Should show qwen2.5:14b (or your chosen model)
+# Should show qwen2.5:3b (or your chosen model)
 ```
 
 ---
@@ -94,7 +119,7 @@ Edit `.env` with your values:
 |----------|----------|-------------|
 | `SESSION_SECRET` | **Yes** | The random string you just generated. **Server refuses to start without it.** Also used to derive HMAC keys for lockdown state signing. |
 | `PORT` | No | Server port (default: 3001) |
-| `OLLAMA_MODEL` | No | Your Ollama model name (default: qwen2.5:14b) |
+| `OLLAMA_MODEL` | No | Your Ollama model name (default: qwen2.5:3b) |
 | `GOOGLE_API_KEY` | If using Gemini agents | Your Google AI Studio API key |
 | `ANTHROPIC_API_KEY` | If using security escalation | Your Anthropic API key |
 
@@ -132,7 +157,7 @@ Edit `darkhan.config.json` to define your instance and team members. Here is a m
         "role": "agent",
         "model": {
           "provider": "ollama",
-          "model": "qwen2.5:14b",
+          "model": "qwen2.5:3b",
           "mode": "worker"
         },
         "worker": "chief.worker.js",
@@ -219,6 +244,7 @@ You should see output confirming:
 - **Model verification passed** -- Ollama model file SHA-256 digests checked against manifest (first startup may take a moment for large models)
 - Workers loaded
 - Integrity baseline established
+- **Maintenance startup cleanup** -- orphan process detection, stale heartbeat purging, expired session cleanup (automatic on every start)
 
 **If the server refuses to start** with a `SESSION_SECRET` error, go back to Step 2 and ensure `SESSION_SECRET` is set in your `.env` file. There is no fallback -- this is a hard requirement.
 
@@ -236,6 +262,20 @@ You should see output confirming:
 **Both steps are critical.** If you skip setting the lockdown PIN and the system enters lockdown (auto-triggered or manual), you will not be able to unlock it. The system fails closed: no PIN configured means no unlock allowed. You would need to re-seed the database to recover.
 
 **Why the lockdown PIN matters:** If a security event triggers automatic lockdown, agents cannot unlock the system. You (the human admin) must authenticate via the web UI and provide the PIN to restore agent operations. The PIN hash is stored in `secrets.db` (not the main database), so even a worker with full database access to `darkhan.db` cannot read it.
+
+### Password Recovery
+
+If a user forgets their password, an admin can generate a one-time recovery token:
+
+1. Log in as admin and open **Settings**
+2. Scroll to **Password Recovery**
+3. Select the user from the dropdown and click **Generate Token**
+4. Give the token to the user (it expires in 1 hour and works once)
+5. The user clicks **Forgot password?** on the login page and enters their username, the token, and a new password
+
+Recovery tokens are bcrypt-hashed in secrets.db. All recovery attempts are logged to the immutable audit trail.
+
+Alternatively, use the break-glass tool from the terminal: `node break-glass.js reset-password` (requires lockdown PIN).
 
 ---
 
@@ -270,6 +310,12 @@ Click the **arrow button** (&#8599;) in the terminal toolbar to open the termina
 - **Second screen:** Pop-out terminal (Claude Code or Shell, full height)
 
 The pop-out window maintains its own connection and session. It auto-starts with your selected mode.
+
+### Terminal Security
+
+Terminal PTY sessions receive a filtered environment. Shell terminals get only: `HOME`, `PATH`, `LANG`, `USER`, `TERM`, `SHELL`, `TMPDIR`. Claude Code terminals additionally receive `ANTHROPIC_API_KEY` (required to function). All other environment variables — including `SESSION_SECRET`, `GOOGLE_API_KEY`, and any other secrets from `.env` — are not exposed to terminal sessions. This prevents credential exfiltration via `printenv`, `env`, or `echo $VAR`.
+
+The relay session file (`~/.claude/darkhan-relay-sessions.json`) is written with mode 600 (owner-only read/write).
 
 ### Terminal Configuration
 
@@ -566,6 +612,8 @@ After setup, verify everything works:
 - [ ] Ollama responds: `curl -s http://localhost:11434/api/tags` shows your model
 - [ ] Post "comms check" in #command -- all workers respond
 - [ ] (If federated) Remote workers respond to comms check
+- [ ] Maintenance ran on startup: check server log for `[Maintenance] Startup cleanup`
+- [ ] Pre-commit hook installed: try `git commit --allow-empty -m "test"` -- should see "Pre-commit checks passed"
 
 ### Ground Truth & Verification
 - [ ] Ground truth seeded: `curl -s http://localhost:3001/api/ground-truth -H "X-API-Key: YOUR_KEY"` returns entries
@@ -597,6 +645,8 @@ After setup, verify everything works:
 | "Cannot connect to database" | Database not initialized | Run `node db/seed.js` |
 | "EADDRINUSE" / port in use | Another process on port 3001 | Change `PORT` in `.env`, or find the conflicting process with `lsof -i :3001` |
 | "MODULE_NOT_FOUND" | Dependencies not installed | Run `npm install` in the `server/` directory |
+| npm audit shows vulnerabilities | Outdated dependencies | Run `npm audit fix`. If transitive, check if the parent package has an update. |
+| Orphan processes from previous crash | Stale PID file | Restart Darkhan normally -- the maintenance service auto-cleans orphans on startup |
 
 ### Workers Not Running
 
@@ -619,7 +669,7 @@ After setup, verify everything works:
 | Symptom | Likely Cause | Fix |
 |---------|-------------|-----|
 | "connection refused" on 11434 | Ollama not running | `brew services start ollama` |
-| Model not found | Not pulled | `ollama pull qwen2.5:14b` |
+| Model not found | Not pulled | `ollama pull qwen2.5:3b` |
 | Slow responses | Insufficient RAM | Use a smaller model: `ollama pull qwen2.5:7b` |
 
 ### Break-Glass Recovery

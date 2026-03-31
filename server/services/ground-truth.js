@@ -11,7 +11,7 @@
  *   - 'spec'     — Technical specifications (operating ranges, materials)
  *
  * Each ground truth has:
- *   - key:        Unique identifier (e.g., "lr8.system_efficiency")
+ *   - key:        Unique identifier (e.g., "server.uptime_target")
  *   - value:      The verified value
  *   - unit:       Unit of measurement (if applicable)
  *   - source:     Where this fact comes from (audit, paper, measurement)

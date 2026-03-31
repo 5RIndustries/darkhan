@@ -23,6 +23,12 @@ CREATE TABLE IF NOT EXISTS credentials (
 -- The server's applySchema() ignores "already exists" errors, so this is safe to re-run.
 ALTER TABLE credentials ADD COLUMN must_change_password INTEGER DEFAULT 1;
 
+-- [DARKHAN] Migration: add api_key_hmac for encrypted-at-rest API key lookup.
+-- HMAC is deterministic, used for O(1) lookups without decrypting every row.
+-- api_key column holds AES-256-GCM encrypted value. api_key_hmac holds HMAC-SHA256.
+ALTER TABLE credentials ADD COLUMN api_key_hmac TEXT;
+CREATE INDEX IF NOT EXISTS idx_credentials_api_key_hmac ON credentials(api_key_hmac);
+
 -- Sensitive settings (lockdown PIN hash, etc.)
 -- Moved from darkhan.db settings table for credential isolation.
 CREATE TABLE IF NOT EXISTS secret_settings (

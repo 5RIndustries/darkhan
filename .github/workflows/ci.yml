@@ -1,0 +1,132 @@
+name: Darkhan CI
+
+on:
+  push:
+    branches: [main, ui-workspace]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-security:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: server/package-lock.json
+
+      - name: Install dependencies
+        working-directory: server
+        run: npm ci
+
+      - name: Audit dependencies for vulnerabilities
+        working-directory: server
+        run: npm audit --audit-level=high
+
+      - name: Check for hardcoded secrets
+        working-directory: server
+        run: node scripts/secret-scanner.js --startup
+
+      - name: Block source maps and sensitive files
+        run: |
+          MAPS=$(find . -name '*.map' -not -path '*/node_modules/*' -not -path '*/.git/*' 2>/dev/null)
+          if [ -n "$MAPS" ]; then
+            echo "ERROR: Source map files found in repo (Anthropic-class leak risk):"
+            echo "$MAPS"
+            exit 1
+          fi
+          SENSITIVE=$(git ls-files | grep -iE '\.(env|key|pem)$' | grep -v '\.example')
+          if [ -n "$SENSITIVE" ]; then
+            echo "ERROR: Sensitive files tracked in git:"
+            echo "$SENSITIVE"
+            exit 1
+          fi
+
+      - name: Syntax check (all server JS)
+        working-directory: server
+        run: |
+          find . -name '*.js' -not -path './node_modules/*' | while read f; do
+            node --check "$f" || exit 1
+          done
+
+  smoke-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: server/package-lock.json
+
+      - name: Install dependencies
+        working-directory: server
+        run: npm ci
+
+      - name: Create test environment
+        working-directory: server
+        run: |
+          cp .env.example .env
+          SESSION_SECRET=$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))")
+          echo "SESSION_SECRET=$SESSION_SECRET" >> .env
+          echo "OLLAMA_MODEL=qwen2.5:3b" >> .env
+
+      - name: Create minimal config
+        working-directory: server
+        run: |
+          cat > darkhan.config.json << 'CONF'
+          {
+            "instance": { "name": "CI Test", "brandName": "Darkhan", "port": 3001 },
+            "team": {
+              "members": [
+                { "id": "user_test", "name": "Test", "type": "human", "role": "admin", "channels": ["chan_command"] }
+              ]
+            },
+            "channels": [
+              { "id": "chan_command", "name": "Command", "description": "Primary" }
+            ],
+            "sandbox": { "processIsolation": false }
+          }
+          CONF
+
+      - name: Seed database
+        working-directory: server
+        run: node db/seed.js
+        env:
+          SESSION_SECRET: ci-test-secret-not-for-production
+
+      - name: Start server and health check
+        working-directory: server
+        run: |
+          node server.js &
+          SERVER_PID=$!
+          sleep 5
+
+          # Health check — server should serve the login page
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3001/)
+          echo "HTTP status: $HTTP_CODE"
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "Server did not return 200"
+            kill $SERVER_PID 2>/dev/null
+            exit 1
+          fi
+
+          # API should require auth
+          AUTH_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:3001/api/messages)
+          echo "API auth check: $AUTH_CODE"
+
+          if [ "$AUTH_CODE" != "401" ]; then
+            echo "API did not return 401 for unauthenticated request"
+            kill $SERVER_PID 2>/dev/null
+            exit 1
+          fi
+
+          echo "Smoke test passed"
+          kill $SERVER_PID 2>/dev/null
+        env:
+          SESSION_SECRET: ci-test-secret-not-for-production

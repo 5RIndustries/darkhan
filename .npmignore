@@ -1,0 +1,53 @@
+# .npmignore — Defensive publish filter
+# Prevents accidental inclusion of sensitive/debug files in npm packages.
+# Even if Darkhan is not published to npm today, this prevents future Anthropic-class leaks.
+
+# Source maps (THE cause of the Claude Code leak — 2026-03-31)
+*.map
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+server/.env
+server/db/secrets.db
+
+# Database files
+*.db
+*.db-wal
+*.db-shm
+
+# Config with real values
+server/darkhan.config.json
+server/workers/*.worker.js
+
+# TLS / credentials
+*.key
+*.pem
+*.csr
+*.p12
+
+# Git and CI
+.git/
+.github/
+.gitignore
+
+# Dev tooling
+.vscode/
+.idea/
+nodemon.json
+*.log
+
+# Internal planning
+SPRINT.md
+BACKLOG.md
+PENTEST-GUIDE.md
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test fixtures and coverage
+coverage/
+__tests__/
+*.test.js

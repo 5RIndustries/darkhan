@@ -1,5 +1,10 @@
 # Darkhan
 
+[![License: BSL 1.1](https://img.shields.io/badge/License-BSL%201.1-orange.svg)](LICENSE)
+[![Node.js 20+](https://img.shields.io/badge/Node.js-20%2B-green.svg)](https://nodejs.org)
+[![macOS](https://img.shields.io/badge/Platform-macOS-blue.svg)](https://www.apple.com/macos/)
+[![GitHub Discussions](https://img.shields.io/github/discussions/5RIndustries/darkhan)](https://github.com/5RIndustries/darkhan/discussions)
+
 **An AI agent command center built on the principle that agents should be architecturally incapable of lying.**
 
 Darkhan coordinates AI agents and humans from a single deployable Node.js server. Every agent message is evidence-checked, every action is hash-chained into an immutable audit trail, and every credential is isolated from agent access. If your agents hallucinate, fabricate, or go rogue -- you will know, and the system will shut them down.
@@ -18,7 +23,7 @@ Most agent frameworks trust the agent. Darkhan does not.
 
 **Identity enforcement.** Agents cannot impersonate humans or each other. Attempts are silently corrected, logged, and trigger automatic lockdown.
 
-**$0/day local LLM.** Triage, classification, and routine agent work runs on Ollama (Qwen 2.5 14B by default) locally. Cloud APIs (Gemini, Anthropic) are available for heavier tasks. You control the cost.
+**$0/day local LLM.** Triage, classification, and routine agent work runs on Ollama (Qwen 2.5 3B by default — runs on 8GB Macs) locally. Cloud APIs (Gemini, Anthropic) are available for heavier tasks. You control the cost.
 
 **Federation across machines.** Run workers on multiple nodes with a single hub. Workers use the same code locally or remotely -- the runtime handles the difference transparently.
 
@@ -26,7 +31,7 @@ Most agent frameworks trust the agent. Darkhan does not.
 
 ## Quick Start
 
-**Requirements:** Node.js 18+, npm, Ollama (recommended for local LLM)
+**Requirements:** Node.js 20+, npm, Ollama (recommended for local LLM)
 
 ```bash
 # Clone the repo
@@ -46,8 +51,8 @@ cp .env.example .env
 # Initialize the database
 node db/seed.js
 
-# Enable the pre-commit secret scanner
-git config core.hooksPath .githooks
+# Install the pre-commit hook (blocks secrets, source maps, db files, large files)
+cp scripts/pre-commit-hook.sh .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
 
 # Start
 node server.js
@@ -101,9 +106,12 @@ darkhan/
     workers/               # Agent worker definitions (your agents live here)
     middleware/             # Auth, identity enforcement
     break-glass.js         # Emergency admin recovery (TTY-only)
+    scripts/               # Secret scanner, service user setup, cert generation
   client/                  # Web UI (vanilla JS, dark theme, PWA)
     terminal-popout.html   # Pop-out terminal window for multi-monitor setups
-  .githooks/               # Pre-commit secret scanner
+  scripts/                 # Pre-commit hook, install helpers
+  .github/workflows/       # CI pipeline (lint, audit, secret scan, smoke test)
+  .npmignore               # Defensive publish filter (prevents Anthropic-class leaks)
 ```
 
 **Core services:**
@@ -127,6 +135,12 @@ darkhan/
 | `tool-executor.js` | Sandboxed tool execution with injection scanning and rate limits |
 | `cost-tracker.js` | Per-agent token and cost accounting (integer millicents) |
 | `rate-limiter.js` | Two-level rate limiting (per-provider, per-agent) |
+| `secrets-crypto.js` | AES-256-GCM encryption for API keys at rest, HMAC-indexed lookups |
+| `session-store.js` | Custom SQLite session store (replaces connect-sqlite3 to eliminate transitive vulnerability chain) |
+| `maintenance.js` | Startup cleanup, orphan process detection, stale heartbeat purging, daily DB hygiene |
+| `behavioral-baseline.js` | Per-agent anomaly detection: message, LLM, shell, and channel baselines |
+| `instance-identity.js` | Ed25519 keypair per instance, message signing for federation readiness |
+| `model-verifier.js` | SHA-256 verification of local Ollama model files against manifests |
 
 ---
 
@@ -142,12 +156,13 @@ Darkhan is designed to defend against:
 2. **Cascading injection** -- a compromised or manipulated agent injecting instructions into other agents via the channel system
 3. **Encoding-based evasion** -- injection hidden in base64, Unicode control characters, zero-width text, RTL overrides, or HTML comments
 4. **Credential exfiltration** -- agents or injected content trying to read or leak API keys, passwords, or database contents
-5. **Tool abuse** -- runaway or manipulated agents exhausting resources, deleting files, or making unauthorized network connections
-6. **Frontier-model adversaries** -- agents more capable than either of our individual classifiers, crafting injection that fools a single LLM
+5. **Trust level spoofing** -- client-supplied headers attempting to escalate message trust classification
+6. **Tool abuse** -- runaway or manipulated agents exhausting resources, deleting files, or making unauthorized network connections
+7. **Frontier-model adversaries** -- agents more capable than either of our individual classifiers, crafting injection that fools a single LLM
 
 We do NOT claim to defend against:
 - A human attacker with shell access to the host machine and knowledge of the service user password
-- Supply chain attacks on our dependencies (npm packages, Ollama, Node.js itself)
+- Supply chain attacks on our dependencies (npm packages, Ollama, Node.js itself) — though we mitigate this with `npm audit` in CI, pre-commit hooks, and dependency auditing (see [RELEASE-CHECKLIST.md](RELEASE-CHECKLIST.md))
 - Side-channel attacks on the local LLM (adversarial token sequences purpose-built for the specific Ollama model in use)
 - A compromised cloud LLM provider returning manipulated classification results from both providers simultaneously
 - Social engineering of the human admin (if the admin is tricked into running malicious commands, Darkhan cannot intervene)
@@ -185,6 +200,8 @@ Message arrives
 
 Agent-to-agent messages get the full pipeline, not just external ones. This closes the cascading injection vector where a compromised agent poisons other agents through channel messages.
 
+All scanning flows through a single `sanitizeMessage()` entry point. There are no parallel or duplicate scan paths — every message hits the same pipeline with the same decision logic.
+
 ### Defense Layers
 
 **Input/Output Scanning**
@@ -199,14 +216,23 @@ Agent-to-agent messages get the full pipeline, not just external ones. This clos
 - Shell command restrictions with two modes: blocklist (default) blocks known-dangerous commands; allowlist mode (Mythos-hardened) only permits explicitly listed commands
 - Tool invocation rate limits (200 reads, 50 writes, 10 shell execs per task)
 - Network egress deny-default policy (only Ollama, Gemini API, Anthropic API allowed)
-- Environment variable whitelist (secrets never exposed to worker shell processes)
+- Environment variable whitelist for both worker shell processes and interactive terminal PTY sessions (secrets never exposed)
 - Process isolation via `fork()` with IPC-only communication
+- Worker onboarding data minimization (no hostname, platform, port, or other agents' LLM details)
 
 **Trust Verification**
 - Evidence-based reporting with SHA-256 hashes binding claims to their verification method and result
 - Ground truth registry with automatic contradiction detection
 - Claim verifier tags every agent message before storage
 - LLM model file integrity verification at startup
+- Model version tagging on every LLM call (model + digest in activity trail)
+- Message trust levels: `human_verified`, `agent_local`, `agent_federated`, `external`, `quarantined` — determined server-side from authentication method; client headers cannot influence trust assignment
+- Ed25519 instance identity with cryptographic message signing
+
+**Anomaly Detection**
+- Behavioral baseline per agent: rolling 24-hour averages of messages, LLM calls, shell execs, file writes, active channels, active hours
+- 3x deviation triggers anomaly alert
+- Baselines update daily at 0200 ET; require 3+ days of data before considered reliable
 
 **Audit and Recovery**
 - Immutable hash chain with CRISPR defense spacers marking security events
@@ -214,6 +240,12 @@ Agent-to-agent messages get the full pipeline, not just external ones. This clos
 - Automatic lockdown on impersonation, repeated injection, data leaks, or integrity violations
 - Human-only unlock with PIN (agents architecturally cannot lift lockdown)
 - Break-glass recovery tool requiring interactive TTY + PIN
+- Password recovery via admin-generated one-time tokens (no email required)
+
+**Encryption at Rest**
+- API keys AES-256-GCM encrypted in secrets.db with HMAC-indexed lookups
+- Encryption key derived from SESSION_SECRET via HKDF
+- Auto-migration encrypts existing plaintext keys on startup
 
 ### 3-Layer Credential Hardening
 
@@ -256,7 +288,7 @@ For full details, see [SECURITY.md](SECURITY.md).
 - All terminal session events logged to the immutable hash chain audit trail
 
 **LLM Support**
-- Ollama (local, $0): Qwen 2.5 14B or any Ollama model
+- Ollama (local, $0): Qwen 2.5 3B by default (runs on 8GB Macs), 14B for 16GB+ machines, or any Ollama model
 - Google Gemini: pay-per-use for agent workers
 - Anthropic Claude: pay-per-use for strategic tasks
 - Per-agent rate limits are user-configurable (set `requestsPerDay: 0` for unlimited)
@@ -282,6 +314,14 @@ For full details, see [SECURITY.md](SECURITY.md).
 - Authenticated via per-agent API keys
 - mTLS support for inter-node encryption
 - CRISPR defense spacers propagate across federated instances
+
+**Operational Hygiene**
+- Automatic startup cleanup: PID tracking, orphan process detection, stale heartbeat purging
+- Daily maintenance cycle: database VACUUM, expired session cleanup, activity log trimming, dead worker detection
+- Admin-triggered maintenance via API (`POST /api/health/maintenance`)
+- Pre-commit hook blocks secrets, source maps, database files, private keys, and large files
+- CI pipeline: `npm audit`, secret scan, source map blocker, syntax check, smoke test
+- Release checklist with continuous evaluation process (see [RELEASE-CHECKLIST.md](RELEASE-CHECKLIST.md))
 
 **Observability**
 - Agent health dashboard (green/amber/red status lights)
@@ -347,7 +387,7 @@ All endpoints require authentication via session cookie or `X-API-Key` header.
 | Auth | `POST /api/auth/login`, `/logout`, `/change-password`, `/set-lockdown-pin` |
 | Messages | `GET /api/messages`, `POST /api/messages` |
 | Tasks | `GET /api/tasks`, `POST /api/tasks`, `PATCH /api/tasks/:id` |
-| Health | `GET /api/health/status`, `POST /api/health/ping`, `GET /api/workers` |
+| Health | `GET /api/health/status`, `POST /api/health/ping`, `GET /api/workers`, `POST /api/health/maintenance` (admin), `GET /api/health/maintenance` |
 | Terminal | `GET /api/terminal` (active session status) |
 | Vault | `GET /api/vault/tree`, `GET /api/vault/file`, `PUT /api/vault/file`, `GET /api/vault/search` |
 | Security | `GET /api/security`, `POST /api/security/lockdown`, `POST /api/security/unlock` |
@@ -406,7 +446,7 @@ Darkhan is licensed under the [Business Source License 1.1](LICENSE).
 - **Production use** requires a commercial license from the licensor
 - The licensed code converts to a fully open-source license (Apache 2.0) on the change date specified in the license file
 
-**Mokume** (enterprise federation layer for connecting multiple Darkhan instances across an organization) is a separate commercial product.
+Enterprise federation for connecting multiple Darkhan instances across an organization is planned as a separate product.
 
 ---
 

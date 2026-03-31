@@ -1,6 +1,6 @@
 -- ============================================================
 -- Darkhan — Database Schema
--- Evolved from DARYL v5. Additions marked with [DARKHAN].
+-- Core schema with federation, security, and audit chain support.
 -- ============================================================
 
 -- Team members (humans + agents)
@@ -65,11 +65,10 @@ CREATE TABLE IF NOT EXISTS agent_health (
   checked_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
--- Default channels (read from config in production, these are fallback)
+-- Default channels (setup wizard creates team-specific channels from config)
 INSERT OR IGNORE INTO channels (id, name, description) VALUES
   ('chan_command', '#command', 'Primary team channel'),
-  ('chan_claude', '#claude', 'Direct to Claude'),
-  ('chan_lindsey', '#lindsey', 'Direct to Lindsey'),
+  ('chan_darkhan', '#darkhan', 'Darkhan system channel'),
   ('chan_coordination', '#coordination', 'Agent coordination'),
   ('chan_alerts', '#alerts', 'System alerts');
 

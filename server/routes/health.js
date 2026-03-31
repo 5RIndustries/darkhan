@@ -141,4 +141,48 @@ router.get('/status', (req, res) => {
   });
 });
 
+// POST /api/health/maintenance — trigger maintenance run (admin only)
+router.post('/maintenance', async (req, res) => {
+  const maintenance = req.app.locals.maintenance;
+  if (!maintenance) {
+    return res.status(503).json({ error: 'Maintenance service not initialized' });
+  }
+
+  // Only allow admin users to trigger maintenance
+  const { getCurrentUserId } = require('../middleware/auth');
+  const userId = getCurrentUserId(req);
+  const db = req.app.locals.db;
+
+  db.get('SELECT role FROM users WHERE username = ?', [userId], async (err, user) => {
+    if (err || !user || user.role !== 'admin') {
+      return res.status(403).json({ error: 'Admin access required' });
+    }
+
+    try {
+      const results = await maintenance.runDaily();
+      return res.json({ ok: true, results });
+    } catch (e) {
+      return res.status(500).json({ error: 'Maintenance failed', details: e.message });
+    }
+  });
+});
+
+// GET /api/health/maintenance — last maintenance run status
+router.get('/maintenance', (req, res) => {
+  const db = req.app.locals.db;
+  db.get(
+    `SELECT details, timestamp FROM activity_log WHERE action IN ('maintenance_daily', 'maintenance_startup') ORDER BY timestamp DESC LIMIT 1`,
+    [],
+    (err, row) => {
+      if (err || !row) {
+        return res.json({ lastRun: null });
+      }
+      return res.json({
+        lastRun: row.timestamp,
+        results: JSON.parse(row.details || '{}'),
+      });
+    }
+  );
+});
+
 module.exports = router;

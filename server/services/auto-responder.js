@@ -42,7 +42,12 @@ try {
   configHumanUsers = cfg.team?.members?.filter(m => m.type === 'human').map(m => m.id);
 } catch (e) { /* not loaded yet */ }
 const HUMAN_USERS = configHumanUsers || ['user_admin'];
-const RELAY_TRIGGERS = ['agent_lindsey', 'agent_penny'];
+let configRelayTriggers;
+try {
+  const cfg = require('../darkhan.config.json');
+  configRelayTriggers = cfg.team?.members?.filter(m => m.type === 'agent' && m.relayToClaudeOnMention).map(m => m.id);
+} catch (e) { /* not loaded yet */ }
+const RELAY_TRIGGERS = configRelayTriggers || [];
 const SYSTEM_TRIGGERS = ['system_heartbeat'];
 
 // Processing state
@@ -95,8 +100,10 @@ function saveSessions() {
     const dir = path.dirname(SESSION_FILE);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     const tmpFile = SESSION_FILE + '.tmp';
-    fs.writeFileSync(tmpFile, JSON.stringify(data, null, 2));
+    fs.writeFileSync(tmpFile, JSON.stringify(data, null, 2), { mode: 0o600 });
     fs.renameSync(tmpFile, SESSION_FILE);
+    // [P0-M2 FIX] Ensure session file is owner-only readable (contains resumable session IDs)
+    try { fs.chmodSync(SESSION_FILE, 0o600); } catch {}
     console.log(`[Relay] Sessions saved (${channelSessions.size} session(s))`);
   } catch (e) {
     console.warn('[Relay] Could not save sessions:', e.message);
@@ -645,11 +652,12 @@ async function processMessage(channelId, fromUser, messageBody, context) {
 
     // UNIFIED SESSION PATH — shared context with terminal
     const unifiedClaude = context.unifiedClaude;
-    if (unifiedClaude && unifiedClaude.sessions.has(fromUser === 'user_adrian' ? 'user_adrian' : fromUser)) {
+    const sessionUser = HUMAN_USERS.includes(fromUser) ? fromUser : fromUser;
+    if (unifiedClaude && unifiedClaude.sessions.has(sessionUser)) {
       // Active unified session exists — route through it for shared context
       console.log(`[Router] Using unified Claude session for ${fromUser}`);
       const chatMessage = `[Chat message from ${fromUser} in ${channelId}]: ${cleanBody}`;
-      trimmedResponse = await unifiedClaude.sendFromChat(fromUser === 'user_adrian' ? 'user_adrian' : fromUser, chatMessage, channelId);
+      trimmedResponse = await unifiedClaude.sendFromChat(sessionUser, chatMessage, channelId);
     } else if (RELAY_MODE === 'sdk') {
       const darylContext = await buildDarylContext(db, channelId);
       const sdkPrompt = `Recent Darkhan conversation:\n${darylContext}\n\n---\n${fromUser}: ${cleanBody}`;
@@ -778,7 +786,13 @@ function onNewMessage(message, context) {
 
   // If the message @mentions a worker agent, let the worker handle it exclusively
   // BUT @claude should still route to the Claude relay (Claude IS the auto-responder's deep path)
-  const workerMentionPattern = /@(lindsey|penny|chief)\b/i;
+  // Build worker mention pattern from config (worker agents that handle their own @mentions)
+  let workerNames;
+  try {
+    const cfg = require('../darkhan.config.json');
+    workerNames = cfg.team?.members?.filter(m => m.type === 'agent' && m.id !== 'agent_claude' && m.id !== 'agent_darkhan').map(m => m.id.replace('agent_', ''));
+  } catch (e) { /* fallback */ }
+  const workerMentionPattern = workerNames?.length ? new RegExp(`@(${workerNames.join('|')})\\b`, 'i') : /^$/;
   if (workerMentionPattern.test(body)) {
     return; // Worker listener already fired above — it handles the response
   }

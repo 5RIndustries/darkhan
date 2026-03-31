@@ -8,13 +8,13 @@
  * (SHA-256 of previous hash + current entry data) making the log tamper-evident.
  * If any entry is deleted or modified, the chain breaks and verify() detects it.
  *
- * [MOKUME FOUNDATION] Federation-ready: each entry carries an origin instance ID
+ * [FEDERATION FOUNDATION] Federation-ready: each entry carries an origin instance ID
  * and optional entry_type for CRISPR-style defense spacers that propagate across
  * federated instances. Chain heads can be exchanged for cross-instance verification.
  *
  * Entry types:
  *   'event'   — Standard activity entry (default)
- *   'spacer'  — CRISPR-style defense signature (attack pattern, propagated via Mokume)
+ *   'spacer'  — CRISPR-style defense signature (attack pattern, propagated via federation)
  *   'anchor'  — Periodic chain anchor with full chain state (for verification checkpoints)
  */
 
@@ -144,7 +144,7 @@ class ActivityLog {
   /**
    * Append a CRISPR-style defense spacer to the chain.
    * Spacers are attack signatures, security patterns, or defense rules that
-   * should propagate across federated instances via Mokume.
+   * should propagate across federated instances via federation.
    *
    * A spacer contains:
    *   - signature: hash or pattern of the detected threat
@@ -152,7 +152,7 @@ class ActivityLog {
    *   - description: human-readable description of the threat
    *   - source_entry_id: the activity log entry that triggered spacer creation (if any)
    *
-   * When Mokume propagates a spacer from another instance, it arrives with
+   * When federation propagates a spacer from another instance, it arrives with
    * origin set to the source instance ID, preserving provenance.
    */
   appendSpacer({ category, signature, description, sourceEntryId = null, origin = null }) {
@@ -201,7 +201,7 @@ class ActivityLog {
 
   /**
    * Get all spacers, optionally filtered by category or time range.
-   * Used by Mokume to propagate defense signatures to peer instances.
+   * Used by federation to propagate defense signatures to peer instances.
    */
   async getSpacers({ category = null, since = null, limit = 100 } = {}) {
     return new Promise((resolve, reject) => {
@@ -222,7 +222,7 @@ class ActivityLog {
   }
 
   /**
-   * Ingest a spacer from a federated peer instance (via Mokume).
+   * Ingest a spacer from a federated peer instance (via federation).
    * Validates the spacer has required fields and appends it with the
    * origin set to the source instance, preserving provenance chain.
    */

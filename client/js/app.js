@@ -192,16 +192,18 @@
       // Server exposes channels via config — pull from darkhan.config.json
       const configRes = await fetch('/api/vault/tree?depth=0').catch(() => null);
       // Fallback: read channels from database
-      channels = [
-        { id: 'chan_command', name: '#command' },
-        { id: 'chan_claude', name: '#claude' },
-        { id: 'chan_lindsey', name: '#lindsey' },
-        { id: 'chan_penny', name: '#penny' },
-        { id: 'chan_chief', name: '#chief' },
-        { id: 'chan_darkhan', name: '#darkhan' },
-        { id: 'chan_coordination', name: '#coordination' },
-        { id: 'chan_alerts', name: '#alerts' },
-      ];
+      // Fallback: load channels from database via API
+      const chanRes = await api('GET', '/channels').catch(() => null);
+      if (chanRes?.channels) {
+        channels = chanRes.channels;
+      } else {
+        channels = [
+          { id: 'chan_command', name: '#command' },
+          { id: 'chan_darkhan', name: '#darkhan' },
+          { id: 'chan_coordination', name: '#coordination' },
+          { id: 'chan_alerts', name: '#alerts' },
+        ];
+      }
     } catch (e) {
       channels = [{ id: 'chan_command', name: '#command' }];
     }
@@ -299,6 +301,54 @@
       alert(err.message);
     }
   });
+
+  // Password recovery toggle
+  const forgotLink = document.getElementById('forgot-password-link');
+  const backToLoginLink = document.getElementById('back-to-login-link');
+  const recoveryScreen = document.getElementById('recovery-screen');
+  const loginContainer = document.querySelector('#login-screen .login-container');
+
+  if (forgotLink) {
+    forgotLink.addEventListener('click', (e) => {
+      e.preventDefault();
+      loginContainer.classList.add('hidden');
+      recoveryScreen.classList.remove('hidden');
+    });
+  }
+  if (backToLoginLink) {
+    backToLoginLink.addEventListener('click', (e) => {
+      e.preventDefault();
+      recoveryScreen.classList.add('hidden');
+      loginContainer.classList.remove('hidden');
+    });
+  }
+
+  const recoveryForm = document.getElementById('recovery-form');
+  if (recoveryForm) {
+    recoveryForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const username = document.getElementById('recovery-username').value.trim();
+      const token = document.getElementById('recovery-token').value.trim();
+      const newPassword = document.getElementById('recovery-new-password').value;
+      try {
+        const data = await fetch('/api/auth/reset-with-token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, token, newPassword }),
+        }).then(r => r.json());
+        if (data.ok) {
+          alert('Password reset successfully. You can now log in.');
+          recoveryScreen.classList.add('hidden');
+          loginContainer.classList.remove('hidden');
+          document.getElementById('username').value = username;
+        } else {
+          alert(data.error || 'Recovery failed');
+        }
+      } catch (err) {
+        alert('Recovery failed: ' + err.message);
+      }
+    });
+  }
 
   // Admin settings nav
   document.getElementById('nav-settings')?.addEventListener('click', () => {
@@ -526,6 +576,14 @@
           <button id="reset-baseline-btn" style="padding:0.5rem 1rem;background:var(--accent);color:white;border:none;border-radius:4px;cursor:pointer;">Reset Integrity Baseline</button>
           <div id="baseline-status" style="font-size:0.9rem;margin-top:0.5rem;"></div>
 
+          <h3 style="margin-top:2rem;margin-bottom:1rem;">Password Recovery</h3>
+          <p style="font-size:0.85rem;opacity:0.7;margin-bottom:0.75rem;">Generate a one-time recovery token for a user who forgot their password. Token expires in 1 hour.</p>
+          <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.5rem;">
+            <select id="recovery-user-select" style="padding:0.5rem;background:var(--bg-secondary);border:1px solid var(--border);border-radius:4px;color:var(--text-primary);"></select>
+            <button id="generate-recovery-btn" style="padding:0.5rem 1rem;background:var(--accent);color:white;border:none;border-radius:4px;cursor:pointer;">Generate Token</button>
+          </div>
+          <div id="recovery-token-display" style="font-size:0.9rem;margin-top:0.5rem;"></div>
+
           <h3 style="margin-top:2rem;margin-bottom:1rem;">Manual Lockdown</h3>
           <p style="font-size:0.85rem;opacity:0.7;margin-bottom:0.75rem;">Immediately halt all agent operations. Only you can unlock.</p>
           <button id="manual-lockdown-btn" style="padding:0.5rem 1rem;background:#c0392b;color:white;border:none;border-radius:4px;cursor:pointer;">Trigger Lockdown</button>
@@ -585,6 +643,31 @@
           alert('Lockdown activated');
           checkLockdownStatus();
         } catch (err) { alert('Lockdown failed: ' + err.message); }
+      });
+
+      // Recovery token generation
+      // Populate user dropdown with human users
+      (async () => {
+        try {
+          const data = await api('GET', '/team');
+          const select = document.getElementById('recovery-user-select');
+          (data.members || []).filter(m => m.type === 'human').forEach(m => {
+            const opt = document.createElement('option');
+            opt.value = m.id;
+            opt.textContent = `${m.display_name || m.username} (${m.id})`;
+            select.appendChild(opt);
+          });
+        } catch (e) { console.warn('Could not load team for recovery:', e); }
+      })();
+
+      document.getElementById('generate-recovery-btn').addEventListener('click', async () => {
+        const userId = document.getElementById('recovery-user-select').value;
+        const display = document.getElementById('recovery-token-display');
+        if (!userId) { display.textContent = 'Select a user first'; display.style.color = '#e74c3c'; return; }
+        try {
+          const data = await api('POST', '/auth/generate-recovery', { userId });
+          display.innerHTML = `<strong style="color:#27ae60;">Token for ${data.username}:</strong><br><code style="font-size:1.1rem;user-select:all;background:var(--bg-primary);padding:0.3rem 0.6rem;border-radius:4px;">${data.token}</code><br><span style="font-size:0.8rem;opacity:0.7;">Expires: ${new Date(data.expiresAt).toLocaleString()}</span>`;
+        } catch (err) { display.textContent = err.message; display.style.color = '#e74c3c'; }
       });
     }
 
@@ -800,10 +883,8 @@
 
       // Build labels dynamically from team data (same source as sidebar)
       const agentLabels = {};
-      const roleLabels = {
-        'agent_claude': 'CoS/CTO', 'agent_lindsey': 'COO', 'agent_penny': 'CFO/CMO',
-        'agent_chief': 'Executive Assistant', 'agent_darkhan': 'Security',
-      };
+      // Role labels populated from team config — no hardcoded roles
+      const roleLabels = {};
       if (teamData?.members) {
         teamData.members.forEach(m => {
           agentLabels[m.id] = `${m.name} (${roleLabels[m.id] || m.role})`;

@@ -852,11 +852,28 @@ footer {
         </p>
       </div>
       <div class="security-item">
-        <h3>Injection Detection</h3>
+        <h3>Two-LLM Consensus</h3>
         <p>
-          Multi-layer scanning for prompt injection in messages, tool outputs,
-          and external content. Pattern matching, entropy analysis, and tool
-          output sandboxing block injection vectors before they reach agents.
+          Every external and agent message is classified by both a local model
+          and a cloud model independently. Both must agree it is safe before it
+          reaches your agents. Disagreements go to a quarantine queue for human review.
+        </p>
+      </div>
+      <div class="security-item">
+        <h3>Injection Defense</h3>
+        <p>
+          Multi-layer scanning: pattern matching, content normalization (strips
+          Unicode tricks, zero-width chars, RTL overrides, encoded payloads),
+          agent-to-agent scanning, and tool output sandboxing. Built to defend
+          against frontier AI threats.
+        </p>
+      </div>
+      <div class="security-item">
+        <h3>Encryption at Rest</h3>
+        <p>
+          API keys are AES-256-GCM encrypted in the database with HMAC-indexed
+          lookups. Passwords are bcrypt hashed. Even if someone copies the database
+          file, credentials are unreadable without the server's encryption key.
         </p>
       </div>
       <div class="security-item">
@@ -929,21 +946,12 @@ footer {
       Clone, configure, run.
     </p>
     <div class="get-started-code">
-      <pre><span class="comment"># Clone the repository</span>
+      <pre><span class="comment"># One-line setup (interactive wizard handles everything)</span>
 <span class="cmd">git clone https://github.com/5RIndustries/darkhan.git</span>
-<span class="cmd">cd darkhan/server</span>
-
-<span class="comment"># Configure your environment</span>
-<span class="cmd">cp .env.example .env</span>
-<span class="accent"># Edit .env with your secrets</span>
-
-<span class="comment"># Install and seed</span>
-<span class="cmd">npm install</span>
-<span class="cmd">node db/seed.js</span>
-
-<span class="comment"># Start the forge</span>
-<span class="cmd">node server.js</span>
-<span class="accent"># Open http://localhost:3001</span></pre>
+<span class="cmd">cd darkhan && node setup.js</span>
+<span class="accent"># The wizard checks prerequisites, configures your instance,</span>
+<span class="accent"># pulls the local LLM, seeds the database, and starts the server.</span>
+<span class="accent"># Open http://localhost:3001 when it's ready.</span></pre>
     </div>
     <p style="font-size: 15px; color: var(--text-secondary);">
       Full setup guide, worker configuration, and federation instructions
@@ -955,13 +963,12 @@ footer {
     <div class="signup-block">
       <h3>Stay in the loop</h3>
       <p>
-        Get notified when Darkhan goes fully public and when Mokume
-        (enterprise federation) launches.
+        Get notified when new features and updates ship.
       </p>
-      <form class="signup-form" action="mailto:info@darkhan.ai" method="post" enctype="text/plain">
-        <input type="email" name="email" placeholder="you@company.com" required>
-        <button type="submit" class="btn btn-primary">Notify Me</button>
-      </form>
+      <div style="display:flex;gap:16px;justify-content:center;flex-wrap:wrap;">
+        <a href="https://github.com/5RIndustries/darkhan" class="btn btn-primary">Star on GitHub</a>
+        <a href="mailto:info@darkhan.ai" class="btn btn-secondary">Contact Us</a>
+      </div>
     </div>
   </div>
 </section>
@@ -996,10 +1003,17 @@ footer {
           </ul>
         </div>
         <div class="footer-col">
-          <h4>Enterprise</h4>
+          <h4>Contact</h4>
           <ul>
-            <li><a href="https://mokume.ai">Mokume (Federation)</a></li>
-            <li><a href="mailto:info@darkhan.ai">Contact</a></li>
+            <li><a href="mailto:info@darkhan.ai">info@darkhan.ai</a></li>
+          </ul>
+        </div>
+        <div class="footer-col">
+          <h4>Legal</h4>
+          <ul>
+            <li><a href="/terms.md">Terms of Service</a></li>
+            <li><a href="/privacy.md">Privacy Policy</a></li>
+            <li><a href="https://github.com/5RIndustries/darkhan/blob/main/CLA.md">CLA</a></li>
           </ul>
         </div>
       </div>

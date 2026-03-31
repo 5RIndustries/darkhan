@@ -26,6 +26,9 @@ const { ModelVerifier } = require('./services/model-verifier');
 const { TerminalRelay } = require('./services/terminal-relay');
 const { UnifiedClaudeSession } = require('./services/unified-claude');
 const { InstanceIdentity } = require('./services/instance-identity');
+const { BehavioralBaseline } = require('./services/behavioral-baseline');
+const { MaintenanceService } = require('./services/maintenance');
+const SecretsCrypto = require('./services/secrets-crypto');
 
 // Load config
 const CONFIG_PATH = path.join(__dirname, 'darkhan.config.json');
@@ -90,10 +93,13 @@ app.use(helmet({
   crossOriginEmbedderPolicy: false, // Allow loading from same origin
 }));
 
-app.use(cors({
-  origin: process.env.CORS_ORIGIN || `http://localhost:${PORT}`,
-  credentials: true
-}));
+// [M-5 FIX] Reject wildcard CORS origin when credentials are enabled
+const corsOrigin = process.env.CORS_ORIGIN || `http://localhost:${PORT}`;
+if (corsOrigin === '*') {
+  console.error('[Darkhan] FATAL: CORS_ORIGIN=* is not allowed with credentials. Set a specific origin.');
+  process.exit(1);
+}
+app.use(cors({ origin: corsOrigin, credentials: true }));
 
 // [C-3 FIX] HTTP rate limiting — prevents DoS and brute-force on all endpoints
 const apiLimiter = rateLimit({
@@ -116,7 +122,7 @@ app.use('/api/messages', messageLimiter);
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 // Persistent session store — survives server restarts
-const SQLiteStore = require('connect-sqlite3')(session);
+const SQLiteStore = require('./services/session-store')(session);
 app.use(session({
   store: new SQLiteStore({
     db: 'sessions.db',
@@ -226,6 +232,39 @@ secretsDb.serialize(() => {
   } catch (e) {
     console.warn('[Darkhan] Could not set secrets.db permissions:', e.message);
   }
+
+  // Migrate unencrypted API keys to encrypted-at-rest (runs after schema applied)
+  // Use a dummy SELECT inside serialize to ensure all prior statements have completed
+  secretsDb.get('SELECT 1', [], () => {
+    try {
+      const sc = new SecretsCrypto(process.env.SESSION_SECRET);
+      secretsDb.all('SELECT user_id, api_key, api_key_hmac FROM credentials', [], (err, rows) => {
+        if (err) { console.error('[Darkhan] Cannot read credentials for encryption migration:', err.message); return; }
+        let migrated = 0;
+        for (const row of rows || []) {
+          if (row.api_key && !sc.isEncrypted(row.api_key)) {
+            const encrypted = sc.encrypt(row.api_key);
+            const hmac = sc.hmac(row.api_key);
+            secretsDb.run('UPDATE credentials SET api_key = ?, api_key_hmac = ? WHERE user_id = ?',
+              [encrypted, hmac, row.user_id]);
+            migrated++;
+          } else if (row.api_key && !row.api_key_hmac) {
+            const plainKey = sc.decrypt(row.api_key);
+            const hmac = sc.hmac(plainKey);
+            secretsDb.run('UPDATE credentials SET api_key_hmac = ? WHERE user_id = ?', [hmac, row.user_id]);
+            migrated++;
+          }
+        }
+        if (migrated > 0) {
+          console.log(`[Darkhan] Encrypted ${migrated} API key(s) at rest.`);
+        } else {
+          console.log('[Darkhan] All API keys already encrypted at rest.');
+        }
+      });
+    } catch (e) {
+      console.error('[Darkhan] Encryption migration error:', e.message);
+    }
+  });
 });
 
 // Initialize Darkhan services (tables guaranteed to exist after serialize)
@@ -238,10 +277,33 @@ const integrityService = new IntegrityService({ db, activityLog, securityService
 const vaultPath = (config.vault?.path || '~/darkhan-vault').replace('~', process.env.HOME);
 const claimVerifier = new ClaimVerifierService({ vaultPath, db, activityLog });
 const groundTruth = new GroundTruthRegistry({ db, activityLog });
+const behavioralBaseline = new BehavioralBaseline({ db, activityLog, io });
+
+// Schedule daily baseline update at 0200 ET
+setInterval(() => {
+  const hour = new Date().toLocaleString('en-US', { timeZone: config.instance?.timezone || 'America/New_York', hour: 'numeric', hour12: false });
+  if (parseInt(hour) === 2) {
+    behavioralBaseline.updateAllBaselines().then(result => {
+      if (result && result.updated > 0) {
+        console.log(`[BehavioralBaseline] Updated ${result.updated} agent baseline(s)`);
+      }
+    }).catch(e => console.error('[BehavioralBaseline] Update error:', e.message));
+  }
+}, 60 * 60 * 1000); // Check hourly, run at 2 AM
+
+// Run initial baseline update on startup (non-blocking)
+behavioralBaseline.updateAllBaselines().catch(() => {});
+
+// Initialize secrets encryption (derives key from SESSION_SECRET via HKDF)
+const secretsCrypto = new SecretsCrypto(process.env.SESSION_SECRET);
+console.log('[Darkhan] Secrets encryption initialized (AES-256-GCM).');
+
+// NOTE: API key encryption migration runs inside secretsDb.serialize() above
 
 // Make services available to routes
 app.locals.db = db;
 app.locals.secretsDb = secretsDb;  // Credential-isolated DB — NOT passed to workers
+app.locals.secretsCrypto = secretsCrypto;
 app.locals.io = io;
 app.locals.config = config;
 app.locals.activityLog = activityLog;
@@ -250,6 +312,7 @@ app.locals.rateLimiter = rateLimiter;
 app.locals.llmService = llmService;
 app.locals.securityService = securityService;
 app.locals.integrityService = integrityService;
+app.locals.behavioralBaseline = behavioralBaseline;
 app.locals.claimVerifier = claimVerifier;
 app.locals.groundTruth = groundTruth;
 
@@ -325,7 +388,7 @@ app.get('/api/activity/verify', secReqAuth, async (req, res) => {
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Chain head — lightweight endpoint for cross-instance verification (Mokume)
+// Chain head — lightweight endpoint for cross-instance verification (federation)
 app.get('/api/activity/chain-head', secReqAuth, async (req, res) => {
   try { res.json(await activityLog.getChainHead()); }
   catch (e) { res.status(500).json({ error: e.message }); }
@@ -337,7 +400,7 @@ app.get('/api/activity/stats', secReqAuth, async (req, res) => {
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Defense spacers — list CRISPR-style entries for Mokume propagation
+// Defense spacers — list CRISPR-style entries for federation propagation
 app.get('/api/activity/spacers', secReqAuth, async (req, res) => {
   try {
     const { category, since, limit } = req.query;
@@ -348,8 +411,16 @@ app.get('/api/activity/spacers', secReqAuth, async (req, res) => {
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// Ingest remote spacer from federated peer (Mokume endpoint)
+// [H-4 FIX] Ingest remote spacer from federated peer (federation endpoint)
+// Restricted to admin or federation-authenticated requests only
 app.post('/api/activity/spacers/ingest', secReqAuth, (req, res) => {
+  // [C-1 FIX] Only admins can inject spacers. Federation ingestion will require
+  // mTLS peer cert verification when federation ships — never a spoofable header.
+  const isAdmin = req.session?.role === 'admin';
+  if (!isAdmin) {
+    activityLog.append({ actor: 'darkhan_security', action: 'spacer_injection_blocked', target: req.authenticatedId, details: 'Non-admin attempted spacer ingestion' });
+    return res.status(403).json({ error: 'Only admins or federation peers can ingest spacers' });
+  }
   const { category, signature, description, sourceInstanceId, sourceEntryId } = req.body;
   if (!category || !signature || !sourceInstanceId) {
     return res.status(400).json({ error: 'category, signature, and sourceInstanceId required' });
@@ -453,6 +524,19 @@ app.get('/api/workers', secReqAuth, (req, res) => {
   }
 });
 
+// Behavioral baselines API
+app.get('/api/baselines', secReqAuth, async (req, res) => {
+  if (!app.locals.behavioralBaseline) return res.json({ baselines: [] });
+  const baselines = await app.locals.behavioralBaseline.getAllBaselines();
+  res.json({ baselines });
+});
+
+app.post('/api/baselines/check/:agentId', secReqAuth, async (req, res) => {
+  if (!app.locals.behavioralBaseline) return res.json({ anomalies: [] });
+  const result = await app.locals.behavioralBaseline.checkAgent(req.params.agentId);
+  res.json(result);
+});
+
 // [ASI08] Per-agent enable/disable toggle (admin only)
 app.post('/api/workers/:id/disable', secReqAuth, (req, res) => {
   if (!req.session?.userId || req.session.role !== 'admin') {
@@ -498,7 +582,7 @@ app.get('/api/security', secReqAuth, async (req, res) => {
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
-// [MYTHOS] Security Event Stream (SSE) — real-time security events for Mokume hub
+// [MYTHOS] Security Event Stream (SSE) — real-time security events for federation hub
 // Streams security-related activity log entries as Server-Sent Events.
 // Federation peers and monitoring dashboards connect to this endpoint.
 app.get('/api/security/events/stream', secReqAuth, (req, res) => {
@@ -674,17 +758,35 @@ function socketAuthMiddleware(socket, next) {
   const sessionCookie = socket.handshake.headers?.cookie;
 
   if (apiKey) {
-    // SECURITY: API keys are stored ONLY in secrets.db — no fallback to darkhan.db
-    secretsDb.get('SELECT user_id FROM credentials WHERE api_key = ?', [apiKey], (err, cred) => {
-      if (err || !cred) {
-        return next(new Error('Invalid API key'));
-      }
-      db.get('SELECT id, username, role FROM users WHERE id = ?', [cred.user_id], (err2, user) => {
+    // [C-2 FIX] Socket.IO auth must use same HMAC-indexed lookup as HTTP middleware.
+    // After encryption migration, api_key column contains ciphertext — plaintext lookup fails.
+    const secretsCrypto = app.locals.secretsCrypto;
+    const resolveSocketUser = (userId) => {
+      db.get('SELECT id, username, role FROM users WHERE id = ?', [userId], (err2, user) => {
         if (err2 || !user) return next(new Error('Invalid API key — user not found'));
         socket.user = user;
         return next();
       });
-    });
+    };
+    if (secretsCrypto) {
+      const hmac = secretsCrypto.hmac(apiKey);
+      secretsDb.get('SELECT user_id FROM credentials WHERE api_key_hmac = ?', [hmac], (err, cred) => {
+        if (err || !cred) {
+          // Fall back to plaintext for legacy unencrypted keys
+          secretsDb.get('SELECT user_id FROM credentials WHERE api_key = ?', [apiKey], (err2, cred2) => {
+            if (err2 || !cred2) return next(new Error('Invalid API key'));
+            resolveSocketUser(cred2.user_id);
+          });
+          return;
+        }
+        resolveSocketUser(cred.user_id);
+      });
+    } else {
+      secretsDb.get('SELECT user_id FROM credentials WHERE api_key = ?', [apiKey], (err, cred) => {
+        if (err || !cred) return next(new Error('Invalid API key'));
+        resolveSocketUser(cred.user_id);
+      });
+    }
   } else if (sessionCookie) {
     // Parse session ID from the connect.sid cookie
     const cookieParser = require('cookie');
@@ -839,6 +941,16 @@ server.listen(PORT, BIND_HOST, () => {
       console.error('[Darkhan] Worker runtime error:', err.message);
     }
 
+    // MAINTENANCE: Startup cleanup + daily schedule
+    const maintenance = new MaintenanceService({ db, activityLog, workerRuntime });
+    app.locals.maintenance = maintenance;
+    try {
+      await maintenance.startup();
+      maintenance.startSchedule();
+    } catch (err) {
+      console.error('[Darkhan] Maintenance startup error:', err.message);
+    }
+
     // INTEGRITY: Periodic verification every 5 minutes
     setInterval(async () => {
       try {
@@ -870,6 +982,7 @@ const shutdown = async (signal) => {
   if (app.locals.terminalRelay) await app.locals.terminalRelay.shutdown();
   if (app.locals.unifiedClaude) await app.locals.unifiedClaude.shutdown();
   if (app.locals.workerRuntime) await app.locals.workerRuntime.shutdown();
+  if (app.locals.maintenance) app.locals.maintenance.shutdown();
   server.close();
   db.close();
   secretsDb.close();

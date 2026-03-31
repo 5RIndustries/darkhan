@@ -24,6 +24,20 @@
         <input type="password" id="password" placeholder="Password" required autocomplete="current-password">
         <button type="submit">Authenticate</button>
       </form>
+      <a href="#" id="forgot-password-link" class="forgot-link">Forgot password?</a>
+    </div>
+    <!-- Password Recovery Form (hidden by default) -->
+    <div class="login-container hidden" id="recovery-screen">
+      <h1>Darkhan</h1>
+      <p>Password Recovery</p>
+      <form id="recovery-form">
+        <input type="text" id="recovery-username" placeholder="Username" required autocomplete="username">
+        <input type="text" id="recovery-token" placeholder="Recovery token from admin" required autocomplete="off">
+        <input type="password" id="recovery-new-password" placeholder="New password (8+ chars)" required minlength="8" autocomplete="new-password">
+        <button type="submit">Reset Password</button>
+      </form>
+      <a href="#" id="back-to-login-link" class="forgot-link">Back to login</a>
+      <p class="recovery-help">Ask your admin to generate a recovery token from Settings.</p>
     </div>
   </div>
 

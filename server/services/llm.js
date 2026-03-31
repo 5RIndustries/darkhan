@@ -67,6 +67,13 @@ class LLMService {
       requestType,
     });
 
+    // Model version tag — includes digest for local models (traceability)
+    const modelTag = {
+      provider,
+      model,
+      digest: result.modelDigest || null,
+    };
+
     // Activity log
     this.activityLog.append({
       actor: agentId,
@@ -78,12 +85,14 @@ class LLMService {
         costMillicents,
         elapsedMs: elapsed,
         requestType,
+        modelDigest: result.modelDigest || null,
       }),
     });
 
     return {
       response: result.response,
       usage: { ...result.usage, costMillicents },
+      modelTag,
     };
   }
 
@@ -153,6 +162,7 @@ Respond with ONLY the category name, nothing else.`;
                 inputTokens: parsed.prompt_eval_count || 0,
                 outputTokens: parsed.eval_count || 0,
               },
+              modelDigest: parsed.model || model,
             });
           } catch (e) {
             reject(new Error(`Ollama parse error: ${e.message}`));

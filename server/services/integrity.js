@@ -67,8 +67,8 @@ class IntegrityService {
 
     // Development mode: skip integrity baseline checks during active development.
     // All other security remains active (injection detection, identity enforcement, etc).
-    // Enabled via NODE_ENV=development or config.
-    this.devMode = process.env.NODE_ENV === 'development' || config.integrity?.devMode === true;
+    // [M-1 FIX] Enabled via explicit DARKHAN_DEV_MODE=true or config — not NODE_ENV.
+    this.devMode = process.env.DARKHAN_DEV_MODE === 'true' || config.integrity?.devMode === true;
     if (this.devMode) {
       console.log('[Integrity] *** DEVELOPMENT MODE — integrity baseline checks DISABLED ***');
       console.log('[Integrity] File tampering will not trigger lockdown. All other security is active.');

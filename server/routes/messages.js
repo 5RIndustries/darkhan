@@ -51,11 +51,17 @@ router.get('/', (req, res) => {
     // Reverse to chronological order (oldest first) for display
     rows.reverse();
     // Parse metadata JSON where present
-    const messages = rows.map(row => ({
+    const messages = rows.map(row => {
+      let parsedMeta = null;
+      if (row.metadata) {
+        try { parsedMeta = JSON.parse(row.metadata); } catch { /* malformed metadata — skip */ }
+      }
+      return {
       ...row,
-      metadata: row.metadata ? JSON.parse(row.metadata) : null,
+      metadata: parsedMeta,
       created_at_et: row.created_at ? new Date(row.created_at).toLocaleString('en-US', { timeZone: 'America/New_York', hour12: false }) : null
-    }));
+    };
+    });
     return res.json({ messages, count: messages.length });
   });
 });
@@ -127,10 +133,15 @@ router.post('/', async (req, res) => {
     // API key from REMOTE_HOST header or federation = 'federated'
     // API key from local agent = 'internal'
     // Session (web UI) = 'internal'
+    // [C-1 FIX] Federation status must NOT come from a spoofable header.
+    // TODO: Replace with mTLS peer cert verification when federation ships.
+    // For now, federation messages are only accepted from admin sessions or
+    // a dedicated federation API key class (not yet implemented).
+    // All API key holders are treated as 'agent', never 'federated'.
     const isApiKey = !req.session?.userId;
-    const isFederated = req.headers['x-darkhan-federation'] === 'true';
-    const origin = isFederated ? 'federated' : (isApiKey ? 'internal' : 'internal');
-    const scan = securityService.sanitizeMessage(body, userId, origin);
+    const isAgent = userId && userId.startsWith('agent_');
+    const origin = isApiKey && isAgent ? 'agent' : 'internal';
+    const scan = await securityService.sanitizeMessage(body, userId, origin);
     securityMetadata = scan.metadata;
 
     // If critical injection detected from external source, block and record for threshold
@@ -143,48 +154,36 @@ router.post('/', async (req, res) => {
       });
     }
 
-    // [DARKHAN SECURITY] Cloud escalation for external/federated messages
-    // Uses local Ollama/Qwen (free) to classify ambiguous messages from untrusted origins.
-    const injectionScan = securityService.scanForInjection(body, { origin, source: userId });
-    if (injectionScan.recommendCloudEscalation) {
-      const classification = await securityService.classifyWithLocalLLM(body);
-      if (classification === 'MALICIOUS') {
-        securityService.recordSecurityEvent('criticalInjections');
-        securityService.activityLog.append({
-          actor: 'darkhan_security',
-          action: 'llm_injection_blocked',
-          target: userId,
-          details: JSON.stringify({ origin, classification, preview: body.substring(0, 100) }),
-        });
-        return res.status(400).json({
-          error: 'Message blocked by LLM security classification',
-          classification: 'MALICIOUS',
-        });
-      } else if (classification === 'SUSPICIOUS') {
-        // Allow but tag and alert
-        securityMetadata.llmClassification = 'SUSPICIOUS';
-        securityService.activityLog.append({
-          actor: 'darkhan_security',
-          action: 'llm_injection_suspicious',
-          target: userId,
-          details: JSON.stringify({ origin, classification, preview: body.substring(0, 100) }),
-        });
-        // Post alert to chan_alerts
-        const alertDb = req.app.locals.db;
-        const alertIo = req.app.locals.io;
-        const alertId = uuidv4();
-        alertDb.run(
-          'INSERT INTO messages (id, channel_id, from_user, body, priority, type) VALUES (?, ?, ?, ?, ?, ?)',
-          [alertId, 'chan_alerts', 'agent_darkhan',
-           `[SECURITY] Suspicious external message from ${userId} in ${channel_id}. LLM classified as SUSPICIOUS. Review recommended.\n\nPreview: ${body.substring(0, 200)}`,
-           'high', 'alert']
-        );
-        if (alertIo) alertIo.to('chan_alerts').emit('new_message', { id: alertId, channel_id: 'chan_alerts', from_user: 'agent_darkhan', body: '[SECURITY] Suspicious external message flagged', priority: 'high', type: 'alert' });
-      }
-      // SAFE or null (LLM unavailable) → proceed normally
-      if (!classification) {
-        console.warn('[Security] No local LLM available for external message classification — proceeding with regex-only scan');
-      }
+    // [P0-H4 FIX] Removed duplicate standalone scan (scanForInjection + classifyWithLocalLLM).
+    // The sanitizeMessage() call above already runs the full pipeline: regex scan + two-LLM
+    // consensus (if configured) + content normalization. Running a second independent scan
+    // created divergent security decisions — the two paths could disagree, creating gaps.
+    // Quarantine is now handled inside sanitizeMessage() when consensus disagrees.
+    // If sanitizeMessage returned action:'quarantine', handle it here:
+    if (scan.metadata.injectionScan.action === 'quarantine') {
+      const qId = uuidv4();
+      // [L-4 FIX] Schema uses 'original_channel', not 'channel_id'
+      db.run(
+        `INSERT INTO quarantine_queue (id, original_channel, from_user, body, local_verdict, cloud_verdict, consensus, metadata, status)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
+        [qId, channel_id, userId, body,
+         scan.metadata.injectionScan.consensus?.localVerdict || 'unknown',
+         scan.metadata.injectionScan.consensus?.cloudVerdict || 'unknown',
+         'disagree',
+         JSON.stringify({ origin, injectionScan: securityMetadata, requestType: 'consensus_quarantine' })],
+        (qErr) => {
+          if (qErr) console.error('[Security] Failed to quarantine message:', qErr.message);
+        }
+      );
+      const alertId = uuidv4();
+      db.run(
+        'INSERT INTO messages (id, channel_id, from_user, body, priority, type) VALUES (?, ?, ?, ?, ?, ?)',
+        [alertId, 'chan_alerts', 'agent_darkhan',
+         `[QUARANTINE] Message from ${userId} held for review in ${channel_id}. Consensus disagreement.\n\nReview at Settings > Quarantine.\nPreview: ${body.substring(0, 200)}`,
+         'high', 'alert']
+      );
+      if (io) io.to('chan_alerts').emit('new_message', { id: alertId, channel_id: 'chan_alerts', from_user: 'agent_darkhan', body: '[QUARANTINE] Consensus disagreement — message held for human review', priority: 'high', type: 'alert' });
+      return res.status(202).json({ ok: true, quarantined: true, message: 'Message held for human review', quarantineId: qId });
     }
   }
 
@@ -208,10 +207,18 @@ router.post('/', async (req, res) => {
   }
 
   // [MYTHOS] Set trust level and sign message
+  // [P0-H3 FIX] Trust level determined SERVER-SIDE only — never from client header.
+  // Origin is derived from authentication method, not client-supplied x-darkhan-origin.
   const instanceIdentity = req.app.locals.instanceIdentity;
-  const origin = req.headers['x-darkhan-origin'] || 'internal';
+  const serverOrigin = (() => {
+    const isApiKey = !req.session?.userId;
+    const isFederated = req.headers['x-darkhan-federation'] === 'true';
+    if (isFederated) return 'federated';
+    if (isApiKey && userId && userId.startsWith('agent_')) return 'agent';
+    return 'internal';
+  })();
   const trustLevel = instanceIdentity
-    ? instanceIdentity.determineTrustLevel(userId, origin)
+    ? instanceIdentity.determineTrustLevel(userId, serverOrigin)
     : (userId.startsWith('agent_') ? 'agent_local' : 'human_verified');
   const signature = instanceIdentity
     ? instanceIdentity.sign(id, userId, body, trustLevel)

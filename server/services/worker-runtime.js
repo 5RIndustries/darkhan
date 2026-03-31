@@ -68,8 +68,9 @@ class WorkerRuntime {
     const files = fs.readdirSync(workersDir).filter(f => f.endsWith('.worker.js'));
     console.log(`[WorkerRuntime] Found ${files.length} worker(s): ${files.join(', ')}`);
 
+    // [M-1 FIX] Use explicit DARKHAN_DEV_MODE, not NODE_ENV
     const useForked = this.config.sandbox?.processIsolation === true
-      && process.env.NODE_ENV !== 'development';
+      && process.env.DARKHAN_DEV_MODE !== 'true';
 
     if (useForked) {
       console.log('[WorkerRuntime] Process isolation ENABLED — workers will run as forked child processes');
@@ -117,7 +118,8 @@ class WorkerRuntime {
             details: JSON.stringify({ expected: manifest[fileName], actual: workerHash }),
           });
           // In production, block the load. In dev mode, warn and continue.
-          if (!this.sandbox.devMode && process.env.NODE_ENV !== 'development') {
+          // [M-1 FIX] Use explicit DARKHAN_DEV_MODE, not NODE_ENV
+          if (!this.sandbox.devMode && process.env.DARKHAN_DEV_MODE !== 'true') {
             throw new Error(`SUPPLY CHAIN: ${msg}`);
           }
           console.warn(`[WorkerRuntime] DEV MODE: Loading worker despite hash mismatch`);

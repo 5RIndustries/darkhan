@@ -181,6 +181,25 @@ class TerminalRelay {
       label = 'Shell';
     }
 
+    // [P0-H1 FIX] Shell PTY gets a filtered environment — no secrets.
+    // Same whitelist as worker shell processes. Prevents API key and SESSION_SECRET
+    // exposure if a web session is compromised.
+    const safeEnv = {
+      HOME: process.env.HOME,
+      PATH: process.env.PATH,
+      LANG: process.env.LANG || 'en_US.UTF-8',
+      USER: process.env.USER,
+      TERM: 'xterm-256color',
+      SHELL: process.env.SHELL || '/bin/zsh',
+      TMPDIR: process.env.TMPDIR,
+      XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR,
+    };
+    // Claude Code mode needs Anthropic auth to function
+    if (mode === 'claude') {
+      if (process.env.ANTHROPIC_API_KEY) safeEnv.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
+      // Claude Code needs HOME for ~/.claude config
+    }
+
     let ptyProcess;
     try {
       ptyProcess = pty.spawn(command, args, {
@@ -188,7 +207,7 @@ class TerminalRelay {
         cols,
         rows,
         cwd,
-        env: { ...process.env, TERM: 'xterm-256color' },
+        env: safeEnv,
       });
     } catch (err) {
       console.error(`[Terminal] Failed to spawn ${label} for ${userId}:`, err.message);

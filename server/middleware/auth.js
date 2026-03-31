@@ -45,16 +45,37 @@ function requireAuth(req, res, next) {
       return res.status(500).json({ error: 'Credential store unavailable' });
     }
 
-    secretsDb.get('SELECT user_id FROM credentials WHERE api_key = ?', [apiKey], (err, cred) => {
-      if (err) {
-        console.error('Auth middleware secrets.db error:', err.message);
-        return res.status(500).json({ error: 'Internal server error' });
-      }
-      if (!cred) {
-        return res.status(401).json({ error: 'Invalid API key' });
-      }
-      resolveUser(cred.user_id);
-    });
+    // Try HMAC lookup first (encrypted-at-rest path), fall back to plaintext match (legacy)
+    const secretsCrypto = req.app.locals.secretsCrypto;
+    if (secretsCrypto) {
+      const hmac = secretsCrypto.hmac(apiKey);
+      secretsDb.get('SELECT user_id FROM credentials WHERE api_key_hmac = ?', [hmac], (err, cred) => {
+        if (err) {
+          console.error('Auth middleware secrets.db error:', err.message);
+          return res.status(500).json({ error: 'Internal server error' });
+        }
+        if (cred) return resolveUser(cred.user_id);
+        // Fall back to plaintext match for unencrypted legacy keys
+        secretsDb.get('SELECT user_id FROM credentials WHERE api_key = ?', [apiKey], (err2, cred2) => {
+          if (err2) {
+            console.error('Auth middleware secrets.db fallback error:', err2.message);
+            return res.status(500).json({ error: 'Internal server error' });
+          }
+          if (!cred2) return res.status(401).json({ error: 'Invalid API key' });
+          resolveUser(cred2.user_id);
+        });
+      });
+    } else {
+      // No crypto service — use plaintext lookup
+      secretsDb.get('SELECT user_id FROM credentials WHERE api_key = ?', [apiKey], (err, cred) => {
+        if (err) {
+          console.error('Auth middleware secrets.db error:', err.message);
+          return res.status(500).json({ error: 'Internal server error' });
+        }
+        if (!cred) return res.status(401).json({ error: 'Invalid API key' });
+        resolveUser(cred.user_id);
+      });
+    }
     return;
   }
 
@@ -69,6 +90,23 @@ function requireAdmin(req, res, next) {
     return next();
   }
   return res.status(403).json({ error: 'Admin access required' });
+}
+
+// [M-6 FIX] Middleware: require human admin (session-based, not API key)
+// Use this for sensitive operations that must be performed by a human in the web UI.
+function requireHumanAdmin(req, res, next) {
+  if (!req.session?.userId) {
+    return res.status(403).json({ error: 'This action requires a human admin session (not an API key)' });
+  }
+  // [M-6 FIX] Require BOTH human AND admin — was incorrectly using AND (only rejected
+  // if BOTH non-human AND non-admin). Now checks each condition independently.
+  if (req.session.userType !== 'human') {
+    return res.status(403).json({ error: 'This action requires a human session (not an agent)' });
+  }
+  if (req.session.role !== 'admin') {
+    return res.status(403).json({ error: 'Admin access required' });
+  }
+  return next();
 }
 
 /**
@@ -158,4 +196,4 @@ function validateIdentity(req, requestedFromUser) {
   return { valid: true, enforcedId: authenticatedId };
 }
 
-module.exports = { requireAuth, requireAdmin, getCurrentUserId, validateIdentity };
+module.exports = { requireAuth, requireAdmin, requireHumanAdmin, getCurrentUserId, validateIdentity };

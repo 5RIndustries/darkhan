@@ -1,20 +1,21 @@
 #!/usr/bin/env node
 /**
- * Darkhan — Remote Worker Runner (Node 1)
+ * Darkhan — Remote Worker Runner
  *
  * Entry point for running federated workers on a remote node.
  * Workers execute locally (LLM calls, file ops) but post results
- * back to the main Darkhan server on Node 2 via HTTP API.
+ * back to the main Darkhan server via HTTP API.
  *
  * Usage: node remote-runner.js
  *
  * Required .env (same directory):
  *   REMOTE_HOST=http://<darkhan-hub-ip>:3001
- *   CHIEF_API_KEY=dk_agent_xxx
- *   LINDSEY_API_KEY=dk_agent_xxx
- *   GOOGLE_API_KEY=<your-key>
+ *   GOOGLE_API_KEY=<your-key>          (if using Gemini agents)
  *   OLLAMA_HOST=localhost
  *   OLLAMA_PORT=11434
+ *
+ * Agent API keys: set <AGENT_ID>_API_KEY for each worker (e.g., AGENT_ASSISTANT_API_KEY=dk_agent_xxx).
+ * Keys are loaded dynamically from config team members that have a `worker` field.
  */
 
 require('dotenv').config({ path: require('path').join(__dirname, '.env') });
@@ -63,9 +64,16 @@ if (REMOTE_HOST.startsWith('http://')) {
   }
 }
 
+// Build API keys dynamically from config — for each worker agent, look for <AGENT_ID>_API_KEY env var
+// e.g., agent_assistant → AGENT_ASSISTANT_API_KEY, agent_chief → AGENT_CHIEF_API_KEY
 const apiKeys = {};
-if (process.env.CHIEF_API_KEY) apiKeys['agent_chief'] = process.env.CHIEF_API_KEY;
-if (process.env.LINDSEY_API_KEY) apiKeys['agent_lindsey'] = process.env.LINDSEY_API_KEY;
+const workerMembers = (config.team?.members || []).filter(m => m.worker);
+for (const member of workerMembers) {
+  const envKey = `${member.id.toUpperCase().replace(/-/g, '_')}_API_KEY`;
+  if (process.env[envKey]) {
+    apiKeys[member.id] = process.env[envKey];
+  }
+}
 
 // --- Stubs for services that aren't needed locally or are lightweight ---
 
@@ -99,9 +107,10 @@ const costTracker = {
       const firstKey = Object.values(apiKeys)[0];
       if (!firstKey) return;
 
+      const instanceId = config.federation?.instanceId || 'remote';
       const payload = JSON.stringify({
         channel_id: 'chan_alerts',
-        body: `[CostTracker:Node1] ${agent} ${provider}/${model} — ${tokensIn}+${tokensOut} tokens (${costMillicents}mc) [${requestType}]`,
+        body: `[CostTracker:${instanceId}] ${agent} ${provider}/${model} — ${tokensIn}+${tokensOut} tokens (${costMillicents}mc) [${requestType}]`,
       });
 
       const url = new URL(REMOTE_HOST);
@@ -166,7 +175,7 @@ if (process.env.GOOGLE_API_KEY) {
 }
 
 // --- Filter config to only workers ---
-// Only load team members that have a `worker` field (Chief and Lindsey)
+// Only load team members that have a `worker` field
 config.team.members = config.team.members.filter(m => m.worker);
 
 console.log(`[RemoteRunner] Remote host: ${REMOTE_HOST}`);
@@ -195,7 +204,7 @@ const runtime = new FederatedWorkerRuntime({
 
 async function main() {
   console.log('[RemoteRunner] =============================================');
-  console.log('[RemoteRunner] Darkhan Federated Worker Runner — Node 1');
+  console.log('[RemoteRunner] Darkhan Federated Worker Runner');
   console.log('[RemoteRunner] =============================================');
   console.log(`[RemoteRunner] Started at ${new Date().toISOString()}`);
   console.log(`[RemoteRunner] Timezone: ${config.instance?.timezone || 'America/New_York'}`);
@@ -204,7 +213,7 @@ async function main() {
     // Load worker modules and schedule cron tasks
     await runtime.loadAll();
 
-    // Start polling Node 2 for messages (listener-driven tasks)
+    // Start polling the hub for messages (listener-driven tasks)
     runtime.startListenerPolling(5000);
 
     const status = runtime.getStatus();

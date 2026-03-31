@@ -14,7 +14,10 @@ server/workers/*.worker.js
 !server/workers/examples/*.worker.js
 server/workers/_node1/
 
-# Database (generated, contains user data)
+# Database (generated, contains user data — NEVER commit)
+server/*.db
+server/*.db-wal
+server/*.db-shm
 server/db/*.db
 server/db/*.db-wal
 server/db/*.db-shm
@@ -22,6 +25,10 @@ server/db/backups/
 
 # Secrets database (credential-isolated — NEVER commit)
 server/db/secrets.db
+
+# Source maps (Anthropic-class leak prevention — NEVER publish)
+*.map
+!node_modules/**/*.map
 
 # TLS certificates (private keys — NEVER commit)
 *.key
@@ -41,3 +48,8 @@ Thumbs.db
 
 # Session files
 *.tmp
+
+# Internal planning (team-specific — NEVER commit)
+SPRINT.md
+BACKLOG.md
+server/workers/manifest.json

@@ -1,20 +1,58 @@
 /**
- * DARYL — Auth Routes
- * POST /api/auth/login    — session login (web UI)
- * POST /api/auth/logout   — session logout
- * GET  /api/auth/me       — current user info
+ * Darkhan — Auth Routes
+ * POST /api/auth/login             — session login (web UI)
+ * POST /api/auth/logout            — session logout
+ * GET  /api/auth/me                — current user info
+ * POST /api/auth/change-password   — change password (requires current pw)
+ * POST /api/auth/generate-recovery — admin: generate a recovery token for a user
+ * POST /api/auth/reset-with-token  — reset password using recovery token (no login required)
  */
 
 const express = require('express');
 const bcrypt = require('bcrypt');
+const crypto = require('crypto');
 const router = express.Router();
 const { requireAuth, getCurrentUserId } = require('../middleware/auth');
 
 // === BRUTE-FORCE PROTECTION ===
-// Track failed login attempts per IP+username. Exponential backoff.
-// Does not persist across restarts (attacker would need to crash server to reset, which triggers lockdown).
+// [H-1 FIX] Track failed login attempts per IP+username. Exponential backoff.
+// In-memory Map backed by SQLite for persistence across restarts.
 const loginAttempts = new Map(); // key: "ip:username" -> { count, firstAttempt, lastAttempt }
 const ATTEMPT_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
+let _bruteForceDb = null;
+
+function _initBruteForceDb(db) {
+  if (_bruteForceDb) return;
+  _bruteForceDb = db;
+  db.run(`CREATE TABLE IF NOT EXISTS login_attempts (
+    key TEXT PRIMARY KEY, count INTEGER, first_attempt INTEGER, last_attempt INTEGER
+  )`);
+  // Load persisted attempts into memory
+  db.all('SELECT * FROM login_attempts', [], (err, rows) => {
+    if (err) return;
+    const now = Date.now();
+    for (const row of rows || []) {
+      if (now - row.first_attempt < ATTEMPT_WINDOW_MS) {
+        loginAttempts.set(row.key, { count: row.count, firstAttempt: row.first_attempt, lastAttempt: row.last_attempt });
+      } else {
+        db.run('DELETE FROM login_attempts WHERE key = ?', [row.key]);
+      }
+    }
+  });
+}
+
+function _persistAttempt(key, record) {
+  if (!_bruteForceDb) return;
+  _bruteForceDb.run(
+    'INSERT OR REPLACE INTO login_attempts (key, count, first_attempt, last_attempt) VALUES (?, ?, ?, ?)',
+    [key, record.count, record.firstAttempt, record.lastAttempt]
+  );
+}
+
+function _clearAttempt(key) {
+  loginAttempts.delete(key);
+  if (_bruteForceDb) _bruteForceDb.run('DELETE FROM login_attempts WHERE key = ?', [key]);
+}
 
 function _getLockoutMinutes(failCount) {
   if (failCount >= 15) return 15;
@@ -57,20 +95,25 @@ function _recordFailedLogin(ip, username) {
   const record = loginAttempts.get(key);
 
   if (!record || (now - record.firstAttempt > ATTEMPT_WINDOW_MS)) {
-    loginAttempts.set(key, { count: 1, firstAttempt: now, lastAttempt: now });
+    const newRecord = { count: 1, firstAttempt: now, lastAttempt: now };
+    loginAttempts.set(key, newRecord);
+    _persistAttempt(key, newRecord);
   } else {
     record.count++;
     record.lastAttempt = now;
+    _persistAttempt(key, record);
   }
 }
 
 function _clearLoginAttempts(ip, username) {
-  const key = `${ip}:${username}`;
-  loginAttempts.delete(key);
+  _clearAttempt(`${ip}:${username}`);
 }
 
 // POST /api/auth/login
 router.post('/login', (req, res) => {
+  // [H-1 FIX] Initialize brute-force persistence on first login attempt
+  _initBruteForceDb(req.app.locals.db);
+
   const { username, password } = req.body;
   if (!username || !password) {
     return res.status(400).json({ error: 'Username and password required' });
@@ -230,8 +273,13 @@ router.post('/change-password', requireAuth, async (req, res) => {
   if (!currentPassword || !newPassword) {
     return res.status(400).json({ error: 'Current password and new password required' });
   }
+  // [M-4 FIX] Password complexity: min 8 chars + at least 3 of 4 categories
   if (newPassword.length < 8) {
     return res.status(400).json({ error: 'New password must be at least 8 characters' });
+  }
+  const categories = [/[a-z]/, /[A-Z]/, /[0-9]/, /[^a-zA-Z0-9]/].filter(r => r.test(newPassword)).length;
+  if (categories < 3) {
+    return res.status(400).json({ error: 'Password must contain at least 3 of: lowercase, uppercase, number, special character' });
   }
 
   const db = req.app.locals.db;
@@ -377,6 +425,142 @@ router.post('/set-lockdown-pin', requireAuth, async (req, res) => {
       return res.json({ ok: true, message: 'Lockdown PIN set successfully' });
     }
   );
+});
+
+// === PASSWORD RECOVERY ===
+// Two-step: admin generates a token, user resets with token. No email required.
+// Tokens are stored in secrets.db, expire in 1 hour, single-use.
+
+// POST /api/auth/generate-recovery — admin generates a recovery token for a user
+router.post('/generate-recovery', requireAuth, async (req, res) => {
+  if (!req.session?.userId || req.session.role !== 'admin') {
+    return res.status(403).json({ error: 'Only admins can generate recovery tokens' });
+  }
+
+  const { userId } = req.body;
+  if (!userId) return res.status(400).json({ error: 'userId required' });
+
+  const db = req.app.locals.db;
+  const secretsDb = req.app.locals.secretsDb;
+  const activityLog = req.app.locals.activityLog;
+  if (!secretsDb) return res.status(500).json({ error: 'Credential store unavailable' });
+
+  // Verify user exists
+  const user = await new Promise((resolve, reject) =>
+    db.get('SELECT id, username, type FROM users WHERE id = ?', [userId], (err, row) => {
+      if (err) reject(err); else resolve(row);
+    }));
+  if (!user) return res.status(404).json({ error: 'User not found' });
+  if (user.type !== 'human') return res.status(400).json({ error: 'Recovery tokens are for human users only' });
+
+  // Generate token (readable format: 6 groups of 4 chars)
+  const rawToken = crypto.randomBytes(18).toString('base64url');
+  const token = rawToken.match(/.{1,4}/g).join('-');
+  const tokenHash = await bcrypt.hash(token, 10);
+  const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString(); // 1 hour
+
+  // Store in secrets.db (upsert: one active token per user)
+  await new Promise((resolve, reject) =>
+    secretsDb.run(
+      `INSERT INTO secret_settings (key, value, updated_at) VALUES (?, ?, CURRENT_TIMESTAMP)
+       ON CONFLICT(key) DO UPDATE SET value = ?, updated_at = CURRENT_TIMESTAMP`,
+      [`recovery:${userId}`, JSON.stringify({ tokenHash, expiresAt, used: false }),
+       JSON.stringify({ tokenHash, expiresAt, used: false })],
+      (err) => { if (err) reject(err); else resolve(); }
+    ));
+
+  if (activityLog) {
+    activityLog.append({
+      actor: req.session.userId,
+      action: 'recovery_token_generated',
+      target: userId,
+      details: JSON.stringify({ expiresAt }),
+    });
+  }
+
+  console.log(`[Auth] Recovery token generated for ${userId} by ${req.session.userId}, expires ${expiresAt}`);
+  res.json({ ok: true, token, expiresAt, userId: user.id, username: user.username });
+});
+
+// POST /api/auth/reset-with-token — reset password using recovery token (no login required)
+router.post('/reset-with-token', async (req, res) => {
+  const { username, token, newPassword } = req.body;
+  if (!username || !token || !newPassword) {
+    return res.status(400).json({ error: 'username, token, and newPassword required' });
+  }
+  if (newPassword.length < 8) {
+    return res.status(400).json({ error: 'Password must be at least 8 characters' });
+  }
+
+  const db = req.app.locals.db;
+  const secretsDb = req.app.locals.secretsDb;
+  const activityLog = req.app.locals.activityLog;
+  if (!secretsDb) return res.status(500).json({ error: 'Credential store unavailable' });
+
+  // Look up user by username
+  const user = await new Promise((resolve, reject) =>
+    db.get('SELECT id FROM users WHERE username = ? AND type = ?', [username, 'human'], (err, row) => {
+      if (err) reject(err); else resolve(row);
+    }));
+  if (!user) return res.status(400).json({ error: 'Invalid recovery attempt' });
+
+  // Look up recovery token
+  const recoveryRow = await new Promise((resolve, reject) =>
+    secretsDb.get('SELECT value FROM secret_settings WHERE key = ?', [`recovery:${user.id}`], (err, row) => {
+      if (err) reject(err); else resolve(row);
+    }));
+  if (!recoveryRow) return res.status(400).json({ error: 'No recovery token found. Ask an admin to generate one.' });
+
+  let recovery;
+  try { recovery = JSON.parse(recoveryRow.value); } catch { return res.status(400).json({ error: 'Invalid recovery data' }); }
+
+  // Check expiry
+  if (new Date(recovery.expiresAt) < new Date()) {
+    return res.status(400).json({ error: 'Recovery token expired. Ask an admin to generate a new one.' });
+  }
+
+  // Check if already used
+  if (recovery.used) {
+    return res.status(400).json({ error: 'Recovery token already used. Ask an admin to generate a new one.' });
+  }
+
+  // Verify token
+  const valid = await bcrypt.compare(token, recovery.tokenHash);
+  if (!valid) {
+    if (activityLog) {
+      activityLog.append({
+        actor: 'anonymous',
+        action: 'recovery_token_failed',
+        target: user.id,
+        details: JSON.stringify({ reason: 'invalid_token' }),
+      });
+    }
+    return res.status(400).json({ error: 'Invalid recovery token' });
+  }
+
+  // Token valid — reset password
+  const newHash = await bcrypt.hash(newPassword, 12);
+  await new Promise((resolve, reject) =>
+    secretsDb.run('UPDATE credentials SET password_hash = ?, must_change_password = 0, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?',
+      [newHash, user.id], (err) => { if (err) reject(err); else resolve(); }));
+
+  // Mark token as used
+  recovery.used = true;
+  await new Promise((resolve, reject) =>
+    secretsDb.run('UPDATE secret_settings SET value = ?, updated_at = CURRENT_TIMESTAMP WHERE key = ?',
+      [JSON.stringify(recovery), `recovery:${user.id}`], (err) => { if (err) reject(err); else resolve(); }));
+
+  if (activityLog) {
+    activityLog.append({
+      actor: user.id,
+      action: 'password_reset_via_token',
+      target: user.id,
+      details: JSON.stringify({ method: 'recovery_token' }),
+    });
+  }
+
+  console.log(`[Auth] Password reset via recovery token for ${user.id}`);
+  res.json({ ok: true, message: 'Password reset successfully. You can now log in.' });
 });
 
 module.exports = router;

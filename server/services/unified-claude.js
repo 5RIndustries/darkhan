@@ -52,7 +52,7 @@ class UnifiedClaudeSession {
     const systemPromptAppend =
       `DARKHAN UNIFIED SESSION: You are running inside the Darkhan web UI. ` +
       `Messages may come from the terminal view (interactive) or the chat view (@claude). ` +
-      `Other agents (Lindsey, Penny, Chief) communicate via Darkhan channels. ` +
+      `Other agents communicate via Darkhan channels. ` +
       (channelContext ? `Recent #command messages:\n${channelContext}\n\n` : '') +
       `Respond naturally to whatever input you receive. Your full tool set is available.`;
 

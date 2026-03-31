@@ -18,9 +18,10 @@
 7. [Backup and Restore](#backup-and-restore)
 8. [Certificate Management](#certificate-management)
 9. [Process Isolation](#process-isolation)
-10. [Secret Scanner](#secret-scanner)
-11. [Model Verification](#model-verification)
-12. [Common Issues](#common-issues)
+10. [Maintenance](#maintenance)
+11. [Pre-Commit Hook and Secret Scanner](#pre-commit-hook-and-secret-scanner)
+12. [Model Verification](#model-verification)
+13. [Common Issues](#common-issues)
 
 ---
 
@@ -179,6 +180,8 @@ cd ~/darkhan/server && sudo -u _darkhan node break-glass.js status
 | Integrity violation (code changed) | Normal during development. Reset baseline. |
 | Injection detected | Review the flagged message in chan_alerts. May be a false positive. |
 | Brute-force login attempt | Wait for cooldown or restart server. |
+| Quarantine overflow | Review quarantine queue in Settings. Approve safe messages, reject threats. |
+| Behavioral anomaly | Check baselines: `curl http://localhost:3001/api/baselines -H "X-API-Key: KEY"` |
 | Unknown/stuck | Lift lockdown via break-glass. |
 
 ### Step 3: Unlock
@@ -233,7 +236,7 @@ sudo -u _darkhan /opt/homebrew/bin/node $DARKHAN_PATH/server/server.js &
 
 ## Connecting a Second Instance (Federation)
 
-### Before Mokume (current — manual federation)
+### Current Setup (manual federation)
 
 Two Darkhan instances connect via the FederatedWorkerRuntime. One is the **hub** (runs the database and web UI), the other runs **remote workers** that post back to the hub via HTTP API.
 
@@ -264,15 +267,13 @@ bash server/scripts/generate-certs.sh ~/.darkhan-certs remote-node
 
 4. Switch `REMOTE_HOST` to `https://`
 
-### After Mokume (future — enterprise federation)
+### Future: Peer-to-Peer Federation
 
-Mokume connects independent Darkhan instances as peers (not hub/spoke). Each instance has its own database, users, and agents. Mokume adds:
+A future release will connect independent Darkhan instances as peers (not hub/spoke). Each instance keeps its own database, users, and agents. Planned additions:
 - Ed25519 signed message envelopes
 - Cross-instance CRISPR spacer propagation
 - Channel-level encryption
 - Federated verification (compare chain heads)
-
-This is scheduled for the week of April 12.
 
 ---
 
@@ -390,12 +391,65 @@ Admin API key required. Disabled workers stop running cron tasks but remain load
 
 ---
 
-## Secret Scanner
+## Maintenance
+
+### Automatic (runs on every server start)
+
+Darkhan runs a maintenance pass on every startup:
+
+1. **PID file check** -- detects if the previous instance crashed without graceful shutdown
+2. **Orphan process scan** -- finds and kills worker child processes orphaned by a crash (PPID=1)
+3. **Stale heartbeat purge** -- marks agents not seen in 24+ hours as `down`
+4. **Expired session cleanup** -- deletes sessions older than 7 days
+
+### Daily (automatic schedule)
+
+A daily maintenance cycle runs automatically (plus 1 hour after startup):
+
+- All startup checks above
+- **Activity log trim** -- deletes entries older than 30 days
+- **Database VACUUM** -- reclaims disk space from deleted rows
+- **Dead worker detection** -- logs any workers in `dead` state
+- **Temp file cleanup** -- removes stale sandbox files from `/tmp/darkhan-sandbox/`
+
+### Manual trigger
+
+Admins can trigger maintenance on demand:
+
+```bash
+# Trigger maintenance
+curl -X POST http://localhost:3001/api/health/maintenance -H "X-API-Key: ADMIN_KEY"
+
+# Check last maintenance run
+curl -s http://localhost:3001/api/health/maintenance -H "X-API-Key: YOUR_KEY"
+```
+
+### After a crash or freeze
+
+If Darkhan or an external tool (like Claude Code) freezes or crashes:
+
+1. Kill the stuck process: `kill $(pgrep -f "node server/server.js")`
+2. Restart Darkhan -- the startup maintenance pass will clean up orphan processes automatically
+3. Check for stale background processes: `ps aux | grep darkhan | grep -v grep`
+
+---
+
+## Pre-Commit Hook and Secret Scanner
 
 ### How it works
 
-The pre-commit hook at `.githooks/pre-commit` runs `server/secret-scanner.js` on every `git commit`. It scans the staged diff (not the full file) for patterns matching:
+Two layers of commit-time protection:
 
+**Layer 1: Pre-commit hook** (`scripts/pre-commit-hook.sh`) blocks:
+- Source map files (`.map`) -- prevents source code leaks
+- Database files (`.db`, `.db-wal`, `.db-shm`)
+- Environment files (`.env`, excluding `.env.example`)
+- Private keys and certificates (`.key`, `.pem`, `.csr`, `.p12`)
+- Hardcoded API key patterns in staged code
+- Large files (>5MB) -- build artifact warning
+- Live worker files (team-specific configs)
+
+**Layer 2: Secret scanner** (`server/scripts/secret-scanner.js`) catches:
 - API keys (AWS, Google, Anthropic, OpenAI, Azure, GitHub, Slack, Telegram, Darkhan)
 - Private keys (RSA, EC, Ed25519 PEM blocks)
 - JWTs (`eyJ...`)
@@ -404,13 +458,11 @@ The pre-commit hook at `.githooks/pre-commit` runs `server/secret-scanner.js` on
 
 ### Setup
 
-The hook is installed during initial setup:
+Install the pre-commit hook:
 
 ```bash
-git config core.hooksPath .githooks
+cp scripts/pre-commit-hook.sh .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
 ```
-
-If you cloned the repo without running this, run it now. It is idempotent.
 
 ### Bypassing (emergency only)
 
@@ -474,3 +526,7 @@ This runs the same check outside of the server startup sequence.
 | Can't push to GitHub | `git` can't read `server/db/` (owned by `_darkhan`). This is expected — db files are in `.gitignore`. |
 | Node path wrong in launchd | Verify with `which node` — Apple Silicon uses `/opt/homebrew/bin/node`. |
 | Remote workers can't connect | Check Tailscale connectivity. Verify API keys match. Check REMOTE_HOST URL. |
+| Orphan processes after crash | Restart Darkhan — the maintenance service detects and cleans orphan workers automatically. Or manually: `ps aux \| grep worker-process \| grep -v grep` to find them. |
+| Stale heartbeats showing green | Maintenance purges agents not seen in 24h. Trigger manually: `curl -X POST http://localhost:3001/api/health/maintenance -H "X-API-Key: ADMIN_KEY"` |
+| npm audit fails in CI | Run `npm audit` locally, fix or document the vulnerability. `npm audit fix` resolves most issues. For transitive deps, consider replacing the parent package. |
+| Pre-commit hook blocks commit | Review the blocked files. If false positive: `git commit --no-verify`. If real: fix the issue before committing. |

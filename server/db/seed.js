@@ -10,6 +10,7 @@ const bcrypt = require('bcrypt');
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const SecretsCrypto = require('../services/secrets-crypto');
 
 const DB_PATH = path.join(__dirname, 'darkhan.db');
 const SECRETS_DB_PATH = path.join(__dirname, 'secrets.db');
@@ -140,6 +141,31 @@ async function seed() {
     );
 
     newKeys[member.id] = apiKey;
+  }
+
+  // Encrypt API keys at rest if SESSION_SECRET is available
+  const sessionSecret = process.env.SESSION_SECRET;
+  if (sessionSecret) {
+    const secretsCrypto = new SecretsCrypto(sessionSecret);
+    console.log('\n✓ Encrypting API keys at rest...');
+    const allCreds = await new Promise((resolve, reject) =>
+      secretsDb.all('SELECT user_id, api_key FROM credentials', [], (err, rows) => {
+        if (err) reject(err); else resolve(rows);
+      }));
+    for (const cred of allCreds) {
+      if (cred.api_key && !secretsCrypto.isEncrypted(cred.api_key)) {
+        const encrypted = secretsCrypto.encrypt(cred.api_key);
+        const hmac = secretsCrypto.hmac(cred.api_key);
+        await secretsRun(
+          'UPDATE credentials SET api_key = ?, api_key_hmac = ? WHERE user_id = ?',
+          [encrypted, hmac, cred.user_id]
+        );
+      }
+    }
+    console.log(`✓ ${allCreds.length} API key(s) encrypted.`);
+  } else {
+    console.log('\n⚠ SESSION_SECRET not set — API keys stored unencrypted.');
+    console.log('  Set SESSION_SECRET in .env and re-run seed to encrypt.');
   }
 
   if (Object.keys(newKeys).length > 0) {

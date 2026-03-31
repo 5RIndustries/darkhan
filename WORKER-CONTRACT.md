@@ -188,6 +188,12 @@ darkhan.flagThreat({ category, severity, description, evidence })
 
 **Identity enforcement:** The `darkhan.post()` method always posts as the authenticated agent. A worker cannot impersonate another agent or a human. The system will override any attempt and log it.
 
+**Trust level tagging:** Every message is automatically tagged with a trust level based on origin. Local agent messages are tagged `agent_local`. Federated agent messages are tagged `agent_federated`. This happens server-side — workers do not need to set trust levels. Messages from consensus disagreements are tagged `quarantined` and held for human review.
+
+**Ed25519 signing:** Every message is cryptographically signed with the instance's Ed25519 keypair. This proves message origin and integrity for federation. Workers do not need to interact with signing — it is automatic.
+
+**Model version tagging:** Every LLM call made through `llm.complete()` or `llm.classify()` automatically logs the model identifier and digest to the activity trail. This enables traceability of which model version produced each output. Workers do not need to add model tags — it is automatic.
+
 **Claim verification:** Every agent message posted via `darkhan.post()` is automatically scanned by the Claim Verifier before being saved. The verifier checks:
 - File references ("saved to Intel/report.md") against the filesystem
 - Status claims ("Lindsey is operational") against the heartbeat table
@@ -333,6 +339,14 @@ When `NODE_ENV=development`, workers always run in-process regardless of this se
 - Save any state needed in `onLoad()` cleanup (if implemented)
 - Log clean shutdown
 
+### Crash Recovery
+
+If the server or a worker crashes without graceful shutdown:
+- The maintenance service detects orphan worker processes on next startup (via PID file + process table scan)
+- Orphan child processes (PPID=1, matching `worker-process.js`) are automatically killed with SIGTERM
+- Stale heartbeat entries are purged so the dashboard shows accurate status
+- Workers do not need to implement their own crash recovery — the runtime handles it
+
 ---
 
 ## Agent Permissions
@@ -419,8 +433,12 @@ Workers should handle `{ allowed: false }` results from shell commands gracefull
 - `LANG` -- locale (defaults to `en_US.UTF-8`)
 - `USER` -- current user
 - `TERM` -- terminal type (defaults to `xterm-256color`)
+- `SHELL` -- user's shell
+- `TMPDIR` -- temporary directory
 
 All other environment variables (including `SESSION_SECRET`, `GOOGLE_API_KEY`, `ANTHROPIC_API_KEY`, and any other secrets in `.env`) are **not** passed to worker shell processes. This prevents a worker from reading secrets via `printenv`, `env`, or `echo $VAR`.
+
+The same environment filtering applies to interactive terminal PTY sessions in the web UI. Claude Code terminal mode additionally receives `ANTHROPIC_API_KEY` (required for Claude Code to function), but no other secrets.
 
 ---
 
@@ -460,14 +478,18 @@ try {
 At startup, the Onboarding Service generates a verified brief for each agent containing:
 - Agent identity (name, role, chain of command)
 - Operating rules (honesty mandates, permission boundaries, anti-hallucination directives)
-- Current system state (derived from live configuration, not cached)
+- Agent's own LLM configuration and permissions
+- Agent's assigned channels
+- Names of other agents on the team (names only -- no infrastructure details)
+
+The brief explicitly excludes infrastructure details that could aid lateral movement if a worker is compromised: hostname, OS platform, server port, process uptime, and other agents' LLM providers/models are all stripped. A compromised worker cannot use its onboarding brief to map the deployment.
 
 This brief is:
 1. Available as context during `onLoad()`
 2. Prepended as a system message to every `llm.complete()` call
 3. Impossible for the agent to modify or override
 
-The onboarding system ensures that agents start every session with accurate ground truth about who they are and what they can do.
+The onboarding system ensures that agents start every session with accurate ground truth about who they are and what they can do, without exposing more than they need to know.
 
 ---
 

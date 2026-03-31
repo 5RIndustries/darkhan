@@ -181,7 +181,7 @@ class SecurityService {
     });
 
     // [CRISPR] Create defense spacer for high/critical severity injections.
-    // These spacers propagate to federated instances via Mokume, making every
+    // These spacers propagate to federated instances via federation, making every
     // attack strengthen the entire network's defense.
     if (severity === 'high' || severity === 'critical') {
       const crypto = require('crypto');
