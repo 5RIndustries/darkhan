@@ -23,6 +23,9 @@ const { ClaimVerifierService } = require('./services/claim-verifier');
 const { GroundTruthRegistry } = require('./services/ground-truth');
 const { KeychainService } = require('./services/keychain');
 const { ModelVerifier } = require('./services/model-verifier');
+const { TerminalRelay } = require('./services/terminal-relay');
+const { UnifiedClaudeSession } = require('./services/unified-claude');
+const { InstanceIdentity } = require('./services/instance-identity');
 
 // Load config
 const CONFIG_PATH = path.join(__dirname, 'darkhan.config.json');
@@ -270,6 +273,7 @@ const taskRoutes = require('./routes/tasks');
 const healthRoutes = require('./routes/health');
 const claudeRoutes = require('./routes/claude');
 const approvalsRoutes = require('./routes/approvals');
+const quarantineRoutes = require('./routes/quarantine');
 
 // Auth middleware for inline route protection
 const { requireAuth: secReqAuth } = require('./middleware/auth');
@@ -280,6 +284,7 @@ app.use('/api/tasks', taskRoutes);
 app.use('/api/health', healthRoutes);
 app.use('/api/claude', claudeRoutes);
 app.use('/api/approvals', approvalsRoutes);
+app.use('/api/quarantine', quarantineRoutes);
 
 // Vault (Knowledge Base)
 const vaultRoutes = require('./routes/vault');
@@ -421,6 +426,24 @@ app.post('/api/ground-truth/check', secReqAuth, (req, res) => {
   res.json({ results, count: results.length });
 });
 
+// Instance identity (public key for federation trust)
+app.get('/api/identity', secReqAuth, (req, res) => {
+  if (app.locals.instanceIdentity) {
+    res.json(app.locals.instanceIdentity.getInfo());
+  } else {
+    res.json({ error: 'Identity not initialized' });
+  }
+});
+
+// Terminal sessions status
+app.get('/api/terminal', secReqAuth, (req, res) => {
+  if (app.locals.terminalRelay) {
+    res.json(app.locals.terminalRelay.getStatus());
+  } else {
+    res.json({ activeSessions: 0, sessions: [] });
+  }
+});
+
 // Worker runtime status
 app.get('/api/workers', secReqAuth, (req, res) => {
   if (app.locals.workerRuntime) {
@@ -473,6 +496,49 @@ app.get('/api/sandbox', secReqAuth, (req, res) => {
 app.get('/api/security', secReqAuth, async (req, res) => {
   try { res.json(await securityService.getSecuritySummary()); }
   catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// [MYTHOS] Security Event Stream (SSE) — real-time security events for Mokume hub
+// Streams security-related activity log entries as Server-Sent Events.
+// Federation peers and monitoring dashboards connect to this endpoint.
+app.get('/api/security/events/stream', secReqAuth, (req, res) => {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  });
+  res.write('data: {"type":"connected","instance":"' + (config.federation?.instanceId || 'standalone') + '"}\n\n');
+
+  // Poll activity log for security events every 5 seconds
+  const securityActions = new Set([
+    'injection_detected', 'two_llm_consensus', 'message_quarantined',
+    'quarantine_approved', 'quarantine_rejected', 'lockdown_activated',
+    'lockdown_lifted', 'dangerous_command_blocked', 'command_not_in_allowlist',
+    'data_leakage_blocked', 'shell_blocked', 'tool_output_injection_detected',
+    'security_escalation', 'consensus_disagreement', 'keypair_generated',
+  ]);
+
+  let lastEventId = 0;
+  const interval = setInterval(() => {
+    db.all(
+      `SELECT id, actor, action, target, details, created_at FROM activity_log
+       WHERE id > ? AND action IN (${Array.from(securityActions).map(() => '?').join(',')})
+       ORDER BY id ASC LIMIT 20`,
+      [lastEventId, ...securityActions],
+      (err, rows) => {
+        if (err || !rows || rows.length === 0) return;
+        for (const row of rows) {
+          lastEventId = Math.max(lastEventId, row.id);
+          res.write(`id: ${row.id}\ndata: ${JSON.stringify(row)}\n\n`);
+        }
+      }
+    );
+  }, 5000);
+
+  req.on('close', () => {
+    clearInterval(interval);
+  });
 });
 
 // LOCKDOWN: Manual trigger (admin only) — requires browser session auth, NOT API key.
@@ -602,8 +668,8 @@ app.get('/api/team', secReqAuth, (req, res) => {
   res.json({ members, instance: config.instance });
 });
 
-// Socket.io auth
-io.use((socket, next) => {
+// Socket.io auth — shared middleware for both / and /terminal namespaces
+function socketAuthMiddleware(socket, next) {
   const apiKey = socket.handshake.auth?.apiKey || socket.handshake.query?.apiKey;
   const sessionCookie = socket.handshake.headers?.cookie;
 
@@ -662,7 +728,27 @@ io.use((socket, next) => {
   } else {
     return next(new Error('Authentication required'));
   }
+}
+
+io.use(socketAuthMiddleware);
+
+// Instance Identity — Ed25519 keypair for message signing and federation trust
+const instanceIdentity = new InstanceIdentity({ db, config, activityLog });
+instanceIdentity.initialize().then(() => {
+  console.log(`[Darkhan] Instance identity ready (fingerprint: ${instanceIdentity.getFingerprint()})`);
+}).catch(err => {
+  console.error('[Darkhan] Instance identity failed:', err.message);
 });
+app.locals.instanceIdentity = instanceIdentity;
+
+// Unified Claude Session — one Claude process, two interfaces (terminal + chat)
+const unifiedClaude = new UnifiedClaudeSession({ db, io, config, activityLog });
+app.locals.unifiedClaude = unifiedClaude;
+
+// Terminal relay — Claude Code + shell sessions inside the Darkhan UI
+const terminalRelay = new TerminalRelay({ io, db, config, activityLog, unifiedClaude });
+io.of('/terminal').use(socketAuthMiddleware);
+app.locals.terminalRelay = terminalRelay;
 
 io.on('connection', (socket) => {
   console.log('[Darkhan] Client connected:', socket.id);
@@ -781,6 +867,8 @@ server.listen(PORT, BIND_HOST, () => {
 // Graceful shutdown
 const shutdown = async (signal) => {
   console.log(`[Darkhan] ${signal} received, shutting down...`);
+  if (app.locals.terminalRelay) await app.locals.terminalRelay.shutdown();
+  if (app.locals.unifiedClaude) await app.locals.unifiedClaude.shutdown();
   if (app.locals.workerRuntime) await app.locals.workerRuntime.shutdown();
   server.close();
   db.close();

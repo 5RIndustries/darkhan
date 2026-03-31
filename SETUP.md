@@ -14,10 +14,11 @@
 5. [Step 4: Initialize the Database](#step-4-initialize-the-database)
 6. [Step 5: Start Darkhan](#step-5-start-darkhan)
 7. [Step 6: First Login & Security Setup](#step-6-first-login--security-setup)
-8. [Step 6.5: Security Hardening (Recommended)](#step-65-security-hardening-recommended)
-9. [Step 7: Auto-Start with launchd](#step-7-auto-start-with-launchd)
-10. [Step 8: Write Your First Worker](#step-8-write-your-first-worker)
-11. [Step 9: Federated Setup (Multi-Node)](#step-9-federated-setup-multi-node)
+8. [Step 7: Using the Integrated Terminal](#step-7-using-the-integrated-terminal)
+9. [Step 8: Security Hardening (Recommended)](#step-8-security-hardening-recommended)
+10. [Step 9: Auto-Start with launchd](#step-9-auto-start-with-launchd)
+11. [Step 10: Write Your First Worker](#step-10-write-your-first-worker)
+12. [Step 11: Federated Setup (Multi-Node)](#step-11-federated-setup-multi-node)
 12. [Verification Checklist](#verification-checklist)
 13. [Troubleshooting](#troubleshooting)
 
@@ -32,8 +33,9 @@
 - **Git** -- for cloning the repo
 
 **Optional (recommended for full capability):**
+- **Claude Code CLI** -- for integrated Claude terminal sessions. `npm install -g @anthropic-ai/claude-code`. Requires an Anthropic API key or a Claude Pro/Max/Team plan.
 - **Google API key** -- for Gemini-powered agents. Get one at [aistudio.google.com](https://aistudio.google.com)
-- **Anthropic API key** -- for security escalation to Claude. Get one at [console.anthropic.com](https://console.anthropic.com)
+- **Anthropic API key** -- for security escalation to Claude and terminal sessions. Get one at [console.anthropic.com](https://console.anthropic.com)
 - **Tailscale** -- for multi-node federation. Get it at [tailscale.com](https://tailscale.com)
 
 **Hardware guidance:**
@@ -47,7 +49,7 @@
 
 ```bash
 # Clone the repo
-git clone <repo-url> darkhan
+git clone https://github.com/5RIndustries/darkhan.git
 cd darkhan
 
 # Install the secret scanner pre-commit hook (blocks accidental credential commits).
@@ -237,9 +239,97 @@ You should see output confirming:
 
 ---
 
-## Step 6.5: Security Hardening (Recommended)
+## Step 7: Using the Integrated Terminal
+
+Darkhan includes a built-in terminal directly in the web UI. Click **Terminal** in the sidebar to access it.
+
+### Two Modes
+
+| Mode | What It Does | Requirements |
+|------|-------------|-------------|
+| **Claude Code** | Interactive Claude Code session with full tool access | Claude Code CLI installed (`npm install -g @anthropic-ai/claude-code`) + Anthropic API key or Claude plan |
+| **Shell** | General-purpose bash/zsh terminal for system commands, SSH, git, etc. | None (uses your system shell) |
+
+Select the mode from the dropdown, then click **Start**.
+
+### Unified Claude Session (Shared Context)
+
+When you start a Claude Code terminal session, Darkhan creates a **unified session** that is shared with the `@claude` chat relay. This means:
+
+- Work you do in the Claude terminal is visible when you message `@claude` in the chat
+- `@claude` chat messages are processed by the same Claude instance as the terminal
+- Claude's responses are automatically bridged to the `#claude` channel so your team can see them
+
+This eliminates the context gap between terminal work and team communication.
+
+### Pop-Out Window
+
+Click the **arrow button** (&#8599;) in the terminal toolbar to open the terminal in a separate window. This is useful for multi-monitor setups:
+
+- **Main screen:** Darkhan UI (channels, agents, dashboard)
+- **Second screen:** Pop-out terminal (Claude Code or Shell, full height)
+
+The pop-out window maintains its own connection and session. It auto-starts with your selected mode.
+
+### Terminal Configuration
+
+You can customize the default allowed tools for Claude terminal sessions in `darkhan.config.json`:
+
+```json
+{
+  "terminal": {
+    "allowedTools": "Read,Write,Edit,Glob,Grep,Bash,WebSearch,WebFetch,Agent"
+  }
+}
+```
+
+---
+
+## Step 8: Security Hardening (Recommended)
 
 These steps are optional for development but **strongly recommended for production deployments**.
+
+### Mythos-Class Defenses (Two-LLM Consensus + Shell Allowlist)
+
+If you are deploying Darkhan in an environment where agents process external input, federated messages, or where agents communicate with each other, enable the Mythos-class defenses.
+
+**Two-LLM Consensus:** Requires a cloud LLM provider for the second classifier. Add to `.env`:
+
+```
+# Enable cloud-side security classification (second opinion on every external/agent message)
+SECURITY_ESCALATION_PROVIDER=gemini
+# or: SECURITY_ESCALATION_PROVIDER=anthropic
+
+# Model for the cloud classifier (default: claude-haiku-4-5)
+SECURITY_ESCALATION_MODEL=gemini-2.0-flash
+```
+
+With this configured, every external-origin and agent-origin message is classified by both the local Ollama model and the cloud provider. Both must agree the message is SAFE. If they disagree, the message is quarantined for human review in the alerts channel.
+
+Without this configured, Darkhan falls back to single-model classification (local Ollama only). Single-model results are tagged as `safe_single` or `threat_single` so you know the reduced confidence level.
+
+**Shell Allowlist Mode:** Instead of blocking known-dangerous commands (which is vulnerable to commands the blocklist does not anticipate), allowlist mode only permits explicitly listed commands. Add to `darkhan.config.json`:
+
+```json
+{
+  "security": {
+    "shellMode": "allowlist"
+  }
+}
+```
+
+The default allowlist permits: `ls`, `cat`, `head`, `tail`, `wc`, `date`, `echo`, `grep`, `find`, `sort`, `uniq`, `diff`, `pwd`, `whoami`, `uname`, `df`, `du`, `git`, `npm`, `ollama`, `pgrep`. To customize per-agent, add `shellAllowedCommands` to the agent's permissions:
+
+```json
+{
+  "permissions": {
+    "shell": "restricted",
+    "shellAllowedCommands": ["ls", "cat", "head", "git", "npm"]
+  }
+}
+```
+
+**Agent-to-agent scanning** is always on and requires no configuration. All messages from agents (`from_user` starting with `agent_`) automatically go through the full scan pipeline including content normalization and two-LLM consensus (if configured).
 
 ### Layer 2: Service User Privilege Separation
 
@@ -291,18 +381,18 @@ security find-generic-password -s com.darkhan.server 2>&1 | head -5
 
 ---
 
-## Step 7: Auto-Start with launchd
+## Step 9: Auto-Start with launchd
 
 For production use, configure launchd so Darkhan starts automatically on boot and restarts on crash.
 
-**If you completed Step 6.5 (service user),** use the provided plist template that runs as `_darkhan`:
+**If you completed Step 8 (service user),** use the provided plist template that runs as `_darkhan`:
 
 ```bash
 sudo cp server/scripts/com.darkhan.server.plist /Library/LaunchDaemons/
 sudo launchctl load /Library/LaunchDaemons/com.darkhan.server.plist
 ```
 
-**If you skipped Step 6.5,** create a user-level plist:
+**If you skipped Step 8,** create a user-level plist:
 
 Create the plist file:
 
@@ -362,7 +452,7 @@ launchctl list | grep darkhan
 
 ---
 
-## Step 8: Write Your First Worker
+## Step 10: Write Your First Worker
 
 Create a worker file at `server/workers/myagent.worker.js`:
 
@@ -415,7 +505,7 @@ For the complete worker specification, see [WORKER-CONTRACT.md](WORKER-CONTRACT.
 
 ---
 
-## Step 9: Federated Setup (Multi-Node)
+## Step 11: Federated Setup (Multi-Node)
 
 If you want to run workers on a second machine that reports back to your main Darkhan instance:
 
@@ -482,7 +572,13 @@ After setup, verify everything works:
 - [ ] Ground truth brief: `curl -s http://localhost:3001/api/ground-truth/brief/text -H "X-API-Key: YOUR_KEY"` returns readable text
 - [ ] Hash chain active: `curl -s http://localhost:3001/api/activity/chain-head -H "X-API-Key: YOUR_KEY"` returns a hash
 
-### Security Hardening (if completed Step 6.5)
+### Mythos Defenses (if configured in Step 8)
+- [ ] Two-LLM consensus active: check server startup logs for `SECURITY_ESCALATION_PROVIDER` confirmation
+- [ ] Consensus works: post a test message from an agent and check the activity log for `two_llm_consensus` entries: `curl -s "http://localhost:3001/api/activity?action=two_llm_consensus&limit=5" -H "X-API-Key: YOUR_KEY"`
+- [ ] Shell allowlist mode (if enabled): verify a blocked command is rejected: have an agent attempt `curl https://example.com` and confirm it is blocked with "not in allowlist"
+- [ ] Agent-to-agent scanning: verify agent messages show `origin: "agent"` in their security metadata
+
+### Security Hardening (if completed Step 8)
 - [ ] Service user exists: `id _darkhan` succeeds
 - [ ] Database owned by service user: `ls -la server/db/darkhan.db` shows `_darkhan`
 - [ ] Keychain provisioned: `security find-generic-password -s com.darkhan.server` succeeds

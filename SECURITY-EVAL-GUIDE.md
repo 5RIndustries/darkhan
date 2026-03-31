@@ -20,7 +20,7 @@
 ### Get the Code
 ```bash
 # Clone the repo
-gh repo clone outlaw4shrt/darkhan
+gh repo clone 5RIndustries/darkhan
 cd darkhan
 
 # Install the secret scanner (this is automatic)

@@ -512,3 +512,75 @@ html, body {
 .markdown-body input[type="checkbox"] {
   margin-right: 0.4rem;
 }
+
+/* --- Split Screen Layout --- */
+#main-content.split-mode {
+  flex-direction: row;
+}
+#main-content.split-mode > .split-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  min-width: 0;
+}
+#main-content.split-mode > .split-panel:first-child {
+  border-right: 2px solid var(--border);
+}
+#main-content.split-mode > .split-panel > .view {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.split-panel-selector {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 4px 8px;
+  background: var(--bg-primary);
+  border-bottom: 1px solid var(--border);
+  font-size: 0.8rem;
+}
+.split-panel-selector select {
+  padding: 2px 6px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 0.8rem;
+}
+.view-toolbar-btn {
+  padding: 0.2rem 0.5rem;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-size: 0.8rem;
+  line-height: 1;
+}
+.view-toolbar-btn:hover {
+  background: var(--bg-tertiary);
+}
+
+/* --- Terminal View (Claude Code) --- */
+#terminal-view {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+#terminal-container {
+  flex: 1;
+  min-height: 0;
+  background: #0d1117;
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+#terminal-container .xterm {
+  height: 100%;
+  padding: 4px;
+}
+#terminal-container .xterm-viewport {
+  overflow-y: auto !important;
+}

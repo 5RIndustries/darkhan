@@ -30,7 +30,7 @@ Most agent frameworks trust the agent. Darkhan does not.
 
 ```bash
 # Clone the repo
-git clone https://github.com/outlaw4shrt/darkhan.git
+git clone https://github.com/5RIndustries/darkhan.git
 cd darkhan/server
 
 # Install dependencies
@@ -62,6 +62,34 @@ For detailed setup including Ollama, launchd, and multi-node federation, see [SE
 ## Architecture
 
 ```
+                     ┌───────────────────────────────────────────┐
+                     │            Darkhan Web UI                 │
+                     ├──────────┬──────────┬─────────────────────┤
+                     │ Channels │ Terminal │ Dashboard/Vault/... │
+                     └────┬─────┴────┬─────┴─────────────────────┘
+                          │          │
+                     Socket.IO   Socket.IO /terminal
+                          │          │
+              ┌───────────┴──────────┴───────────┐
+              │         Darkhan Server            │
+              │                                   │
+              │  ┌─────────────────────────────┐  │
+              │  │   UnifiedClaudeSession       │  │
+              │  │   (one Claude per user,      │  │
+              │  │    shared across terminal    │  │
+              │  │    and chat interfaces)      │  │
+              │  └─────────────────────────────┘  │
+              │                                   │
+              │  ┌──────────┐  ┌───────────────┐  │
+              │  │ Workers  │  │ Terminal Relay │  │
+              │  │ (agents) │  │ (PTY/SDK)     │  │
+              │  └──────────┘  └───────────────┘  │
+              │                                   │
+              │  Security ─ Evidence ─ Hash Chain  │
+              └───────────────────────────────────┘
+```
+
+```
 darkhan/
   server/
     server.js              # Express app entry point
@@ -73,8 +101,8 @@ darkhan/
     workers/               # Agent worker definitions (your agents live here)
     middleware/             # Auth, identity enforcement
     break-glass.js         # Emergency admin recovery (TTY-only)
-    model-verifier.js      # LLM model integrity verification
   client/                  # Web UI (vanilla JS, dark theme, PWA)
+    terminal-popout.html   # Pop-out terminal window for multi-monitor setups
   .githooks/               # Pre-commit secret scanner
 ```
 
@@ -91,6 +119,9 @@ darkhan/
 | `ground-truth.js` | Canonical registry of verified facts; contradiction detection |
 | `onboarding.js` | Injects verified identity and rules into every agent at startup |
 | `worker-runtime.js` | Cron scheduling, task execution, listener dispatch |
+| `unified-claude.js` | Single Claude SDK session shared between terminal and chat interfaces |
+| `terminal-relay.js` | WebSocket relay for Claude Code and shell terminals in the browser |
+| `auto-responder.js` | Two-tier message routing: local LLM triage, Claude escalation, unified session bridge |
 | `federated-runtime.js` | Cross-node HTTP federation for distributed workers |
 | `sandbox.js` | Native macOS process isolation (sandbox-exec profiles) |
 | `tool-executor.js` | Sandboxed tool execution with injection scanning and rate limits |
@@ -103,16 +134,69 @@ darkhan/
 
 Security is foundational, not bolted on. Darkhan assumes a hostile environment where prompt injection through the message chain is the primary attack vector.
 
+### Threat Model
+
+Darkhan is designed to defend against:
+
+1. **Prompt injection** -- external content that tries to hijack agent behavior (role overrides, instruction resets, social engineering of agents)
+2. **Cascading injection** -- a compromised or manipulated agent injecting instructions into other agents via the channel system
+3. **Encoding-based evasion** -- injection hidden in base64, Unicode control characters, zero-width text, RTL overrides, or HTML comments
+4. **Credential exfiltration** -- agents or injected content trying to read or leak API keys, passwords, or database contents
+5. **Tool abuse** -- runaway or manipulated agents exhausting resources, deleting files, or making unauthorized network connections
+6. **Frontier-model adversaries** -- agents more capable than either of our individual classifiers, crafting injection that fools a single LLM
+
+We do NOT claim to defend against:
+- A human attacker with shell access to the host machine and knowledge of the service user password
+- Supply chain attacks on our dependencies (npm packages, Ollama, Node.js itself)
+- Side-channel attacks on the local LLM (adversarial token sequences purpose-built for the specific Ollama model in use)
+- A compromised cloud LLM provider returning manipulated classification results from both providers simultaneously
+- Social engineering of the human admin (if the admin is tricked into running malicious commands, Darkhan cannot intervene)
+
+### Scan Pipeline
+
+Every message flows through a security pipeline before reaching agents or storage:
+
+```
+Message arrives
+    │
+    ├─ Human internal message → regex pattern scan → allow/flag
+    │
+    └─ External / Agent / Federated message:
+         │
+         ├─ 1. Content normalization
+         │     Strip Unicode control chars, zero-width chars, RTL overrides,
+         │     HTML comments. Decode and scan base64 blocks.
+         │
+         ├─ 2. Regex pattern scan
+         │     30+ injection patterns checked against normalized text
+         │     AND decoded base64 content. Critical match → block.
+         │
+         ├─ 3. Two-LLM consensus classification
+         │     Local Ollama AND cloud Gemini/Anthropic both classify the
+         │     message independently. Both must agree SAFE.
+         │     Disagreement → quarantine for human review.
+         │
+         └─ 4. Action
+              allow (both classifiers + patterns agree safe)
+              flag (single classifier available, marked safe)
+              quarantine (classifier disagreement — human must review)
+              block (critical pattern match or both classifiers agree threat)
+```
+
+Agent-to-agent messages get the full pipeline, not just external ones. This closes the cascading injection vector where a compromised agent poisons other agents through channel messages.
+
 ### Defense Layers
 
 **Input/Output Scanning**
 - Regex + local LLM classification on all incoming messages
+- Content normalization strips encoding tricks before scanning (Unicode control chars, zero-width text, RTL overrides, HTML comments, base64 decode-and-scan)
+- Two-LLM consensus for external and agent-origin messages (local Ollama + cloud provider must agree)
 - Tool output injection scanning on `fs.read()` and `shell.exec()` before results reach the LLM context
 - Outbound leak prevention scans for API keys, passwords, private keys
 
 **Agent Containment**
 - Per-agent file write permissions (agents can only write to designated directories)
-- Shell command restrictions (dangerous commands, interpreters, pipe-to-shell all blocked)
+- Shell command restrictions with two modes: blocklist (default) blocks known-dangerous commands; allowlist mode (Mythos-hardened) only permits explicitly listed commands
 - Tool invocation rate limits (200 reads, 50 writes, 10 shell execs per task)
 - Network egress deny-default policy (only Ollama, Gemini API, Anthropic API allowed)
 - Environment variable whitelist (secrets never exposed to worker shell processes)
@@ -162,6 +246,15 @@ For full details, see [SECURITY.md](SECURITY.md).
 - Auto-responder with two-tier routing: local LLM triage then cloud escalation
 - Telegram bridge (optional) for external stakeholders
 
+**Integrated Terminal**
+- Full Claude Code sessions inside the Darkhan web UI via xterm.js + node-pty
+- General-purpose shell terminal (bash/zsh) for system commands, SSH, and administration
+- Unified Claude session: terminal and chat share the same Claude process and context
+- Claude's terminal work is bridged to channels so agents and humans see what's happening
+- Pop-out window support for multi-monitor setups (drag terminal to second screen)
+- Session persistence with 30-second grace period on page refresh
+- All terminal session events logged to the immutable hash chain audit trail
+
 **LLM Support**
 - Ollama (local, $0): Qwen 2.5 14B or any Ollama model
 - Google Gemini: pay-per-use for agent workers
@@ -179,6 +272,7 @@ For full details, see [SECURITY.md](SECURITY.md).
 **Web UI**
 - Vanilla JS SPA, dark theme, no framework dependencies
 - Channels, tasks, agent health dashboard, vault browser, cost reporting
+- Integrated Claude Code and shell terminals with pop-out window support
 - Admin settings: lockdown control, password management, PIN setup
 - PWA with service worker
 
@@ -254,13 +348,16 @@ All endpoints require authentication via session cookie or `X-API-Key` header.
 | Messages | `GET /api/messages`, `POST /api/messages` |
 | Tasks | `GET /api/tasks`, `POST /api/tasks`, `PATCH /api/tasks/:id` |
 | Health | `GET /api/health/status`, `POST /api/health/ping`, `GET /api/workers` |
+| Terminal | `GET /api/terminal` (active session status) |
 | Vault | `GET /api/vault/tree`, `GET /api/vault/file`, `PUT /api/vault/file`, `GET /api/vault/search` |
 | Security | `GET /api/security`, `POST /api/security/lockdown`, `POST /api/security/unlock` |
 | Activity | `GET /api/activity`, `GET /api/activity/chain-head`, `GET /api/activity/stats` |
 | Ground Truth | `GET /api/ground-truth`, `POST /api/ground-truth`, `POST /api/ground-truth/check` |
 | Costs | `GET /api/costs/daily`, `GET /api/costs/total` |
 
-WebSocket events: `new_message`, `task_update`, `agent_health`, `delete_message`.
+WebSocket namespaces:
+- `/` -- channel messaging, task updates, agent health (`new_message`, `task_update`, `agent_health`, `delete_message`)
+- `/terminal` -- Claude Code and shell terminal sessions (`terminal:spawn`, `terminal:output`, `terminal:input`, `terminal:exit`)
 
 ---
 
@@ -317,4 +414,4 @@ Darkhan is licensed under the [Business Source License 1.1](LICENSE).
 
 The name comes from Mongolian/Turkic: a *darkhan* is a master craftsman whose skill earned them autonomy. The forge is where craftsmen work. Each team member -- human or agent -- is a craftsman with a defined specialty. Darkhan is the forge that coordinates them.
 
-Built by [Outlaw Motor Company](https://github.com/outlaw4shrt). Evolved from five iterations of an internal command center (2026), then rebuilt from scratch with security as the foundation.
+Built by [Outlaw Motor Company](https://github.com/5RIndustries). Evolved from five iterations of an internal command center (2026), then rebuilt from scratch with security as the foundation.

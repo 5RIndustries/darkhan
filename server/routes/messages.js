@@ -207,12 +207,23 @@ router.post('/', async (req, res) => {
     }
   }
 
+  // [MYTHOS] Set trust level and sign message
+  const instanceIdentity = req.app.locals.instanceIdentity;
+  const origin = req.headers['x-darkhan-origin'] || 'internal';
+  const trustLevel = instanceIdentity
+    ? instanceIdentity.determineTrustLevel(userId, origin)
+    : (userId.startsWith('agent_') ? 'agent_local' : 'human_verified');
+  const signature = instanceIdentity
+    ? instanceIdentity.sign(id, userId, body, trustLevel)
+    : null;
+
+  combinedMetadata.trustLevel = trustLevel;
   const metadataStr = JSON.stringify(combinedMetadata);
 
   db.run(
-    `INSERT INTO messages (id, channel_id, from_user, body, priority, type, reply_to, metadata)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    [id, channel_id, userId, body, priority, type, reply_to, metadataStr],
+    `INSERT INTO messages (id, channel_id, from_user, body, priority, type, trust_level, reply_to, metadata, signature)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [id, channel_id, userId, body, priority, type, trustLevel, reply_to, metadataStr, signature],
     function (err) {
       if (err) {
         console.error('Message POST error:', err.message);
@@ -251,6 +262,7 @@ router.post('/', async (req, res) => {
         db,
         io: req.app.locals.io,
         workerRuntime: req.app.locals.workerRuntime,
+        unifiedClaude: req.app.locals.unifiedClaude,
       });
 
       return res.status(201).json({ ok: true, message });

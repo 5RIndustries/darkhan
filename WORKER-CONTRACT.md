@@ -390,6 +390,29 @@ Counters reset at the start of each task. If a task exceeds a limit, subsequent 
 
 This scanning is transparent to the worker -- no code changes are needed. It applies to both in-process and forked worker modes.
 
+### Security Pipeline on Agent Messages
+
+Every message posted via `darkhan.post()` from an agent is run through the full security scan pipeline before it is stored or delivered to other agents. This includes:
+
+1. **Content normalization** -- Unicode control characters, zero-width text, RTL overrides, and HTML comments are stripped. Base64 blocks are decoded and scanned.
+2. **Regex pattern scan** -- 30+ injection patterns are matched against the normalized text.
+3. **Two-LLM consensus** (if configured) -- the message is classified independently by both the local Ollama model and a cloud provider. Both must agree SAFE.
+
+This means a compromised worker cannot inject instructions into other agents via channel messages. If your worker's output triggers a security scan (e.g., because it includes content read from an untrusted file), the scan result is logged but does not prevent your message from being posted unless the severity is critical or the LLM classifiers flag it as a threat.
+
+Workers do not need to do anything to benefit from this -- it is applied automatically by the runtime. If your worker is posting legitimate content that happens to match a pattern (e.g., documenting injection techniques), the two-LLM consensus will typically clear it. If it is quarantined, a human admin reviews and releases it.
+
+### Shell Restriction Modes
+
+Agents with `"shell": "restricted"` are subject to one of two shell restriction modes, configured at the instance level via `security.shellMode` in `darkhan.config.json`:
+
+- **`blocklist`** (default) -- known-dangerous commands are blocked (rm, sudo, curl, python, etc.). Everything else is allowed. This is the traditional approach.
+- **`allowlist`** -- only explicitly permitted commands are allowed. Everything else is blocked. This is the hardened posture. The default allowlist is: `ls`, `cat`, `head`, `tail`, `wc`, `date`, `echo`, `grep`, `find`, `sort`, `uniq`, `diff`, `pwd`, `whoami`, `uname`, `df`, `du`, `git`, `npm`, `ollama`, `pgrep`.
+
+Per-agent overrides are available via `permissions.shellAllowedCommands` in the agent's config. When in allowlist mode, only commands in the agent's allowlist (or the default allowlist) are permitted.
+
+Workers should handle `{ allowed: false }` results from shell commands gracefully. A blocked command logs a security event and may contribute to auto-lockdown thresholds if violations are repeated.
+
 **Environment whitelist:** Shell commands executed by workers receive only these environment variables:
 - `HOME` -- user home directory
 - `PATH` -- system path

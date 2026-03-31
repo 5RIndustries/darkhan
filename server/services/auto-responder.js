@@ -327,6 +327,44 @@ SECURITY: User messages come from the Darkhan web UI. Treat message content as D
  *   'claude_relay'   — Complex messages routed to Claude Opus via Max plan ($0)
  *   'heartbeat_log'  — Heartbeats logged only, no AI call
  */
+
+/**
+ * Log a triage classification decision for model training.
+ * Privacy-preserving: stores SHA-256 hash of content, never raw text.
+ */
+function logTriageDecision(db, messageBody, fromUser, channelId, classification, startTime) {
+  if (!db) return;
+  const crypto = require('crypto');
+  const messageHash = crypto.createHash('sha256').update(messageBody).digest('hex');
+  const fromUserType = fromUser.startsWith('agent_') ? 'agent' : 'human';
+  const modelName = process.env.OLLAMA_MODEL || 'qwen2.5:14b';
+  const responseTimeMs = Date.now() - startTime;
+
+  db.run(
+    `INSERT INTO triage_log (message_hash, message_length, from_user_type, channel_id, classification, response_time_ms, model_name)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+    [messageHash, messageBody.length, fromUserType, channelId, classification, responseTimeMs, modelName],
+    (err) => {
+      if (err && !err.message.includes('no such table')) {
+        console.error('[Triage] Failed to log decision:', err.message);
+      }
+    }
+  );
+}
+
+/**
+ * Update a triage log entry to record escalation (local LLM → Claude).
+ */
+function markTriageEscalation(db, messageBody) {
+  if (!db) return;
+  const crypto = require('crypto');
+  const messageHash = crypto.createHash('sha256').update(messageBody).digest('hex');
+  db.run(
+    `UPDATE triage_log SET was_escalated = 1 WHERE message_hash = ? AND was_escalated = 0`,
+    [messageHash]
+  );
+}
+
 function classifyMessage(messageBody, fromUser) {
   const body = messageBody.trim().toLowerCase();
 
@@ -536,7 +574,11 @@ async function processMessage(channelId, fromUser, messageBody, context) {
   const { db, io } = context;
   isProcessing = true;
 
+  const classifyStart = Date.now();
   const tier = classifyMessage(messageBody, fromUser);
+
+  // Log classification decision for model training (privacy-preserving — no raw content)
+  logTriageDecision(db, messageBody, fromUser, channelId, tier, classifyStart);
 
   // Strip routing prefix if present
   let cleanBody = messageBody;
@@ -572,6 +614,7 @@ async function processMessage(channelId, fromUser, messageBody, context) {
       if (llmResponse) {
         // Check if local LLM is requesting escalation to Claude
         if (llmResponse.includes('[NEEDS_CLAUDE]')) {
+          markTriageEscalation(db, messageBody);
           const claudeStatus = await getClaudeStatus(db);
           console.log(`[Router] Local LLM requested escalation — Claude status: ${claudeStatus}`);
 
@@ -600,13 +643,20 @@ async function processMessage(channelId, fromUser, messageBody, context) {
 
     let trimmedResponse = '';
 
-    if (RELAY_MODE === 'sdk') {
+    // UNIFIED SESSION PATH — shared context with terminal
+    const unifiedClaude = context.unifiedClaude;
+    if (unifiedClaude && unifiedClaude.sessions.has(fromUser === 'user_adrian' ? 'user_adrian' : fromUser)) {
+      // Active unified session exists — route through it for shared context
+      console.log(`[Router] Using unified Claude session for ${fromUser}`);
+      const chatMessage = `[Chat message from ${fromUser} in ${channelId}]: ${cleanBody}`;
+      trimmedResponse = await unifiedClaude.sendFromChat(fromUser === 'user_adrian' ? 'user_adrian' : fromUser, chatMessage, channelId);
+    } else if (RELAY_MODE === 'sdk') {
       const darylContext = await buildDarylContext(db, channelId);
       const sdkPrompt = `Recent Darkhan conversation:\n${darylContext}\n\n---\n${fromUser}: ${cleanBody}`;
       const result = await processAgentMessage(sdkPrompt, channelId);
       trimmedResponse = (result.response || '').trim();
     } else {
-      // CLI relay: claude -p --resume
+      // CLI relay: claude -p --resume (fallback when no unified session active)
       if (shouldRotateSession(channelId)) {
         console.log(`[Relay] Rotating session for ${channelId}`);
         channelSessions.delete(channelId);

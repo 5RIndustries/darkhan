@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Darkhan Terminal</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5/css/xterm.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5/lib/xterm.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0/lib/addon-fit.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-web-links@0/lib/addon-web-links.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #0d1117;
+      color: #e6edf3;
+      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    #toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 6px 12px;
+      background: #161b22;
+      border-bottom: 1px solid #30363d;
+      font-size: 0.85rem;
+      -webkit-app-region: drag;
+    }
+    #toolbar button, #toolbar select {
+      -webkit-app-region: no-drag;
+      padding: 3px 10px;
+      background: #21262d;
+      color: #e6edf3;
+      border: 1px solid #30363d;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 0.8rem;
+    }
+    #toolbar button:hover { background: #30363d; }
+    #toolbar .start-btn { background: #238636; border-color: #238636; }
+    #toolbar .start-btn:hover { background: #2ea043; }
+    #toolbar .end-btn { background: #da3633; border-color: #da3633; display: none; }
+    #toolbar .end-btn:hover { background: #f85149; }
+    #status { opacity: 0.6; }
+    #terminal-container {
+      flex: 1;
+      min-height: 0;
+      padding: 4px;
+    }
+    #terminal-container .xterm { height: 100%; }
+    #terminal-container .xterm-viewport { overflow-y: auto !important; }
+  </style>
+</head>
+<body>
+  <div id="toolbar">
+    <span><strong>Darkhan</strong> Terminal</span>
+    <div style="display:flex;gap:6px;align-items:center;">
+      <span id="status">Disconnected</span>
+      <select id="mode-select">
+        <option value="claude">Claude Code</option>
+        <option value="shell">Shell</option>
+      </select>
+      <button class="start-btn" id="start-btn">Start</button>
+      <button class="end-btn" id="end-btn">End</button>
+    </div>
+  </div>
+  <div id="terminal-container"></div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+  (function() {
+    const params = new URLSearchParams(window.location.search);
+    const initialMode = params.get('mode') || 'claude';
+    document.getElementById('mode-select').value = initialMode;
+
+    let termSocket = null;
+    let terminal = null;
+    let fitAddon = null;
+    let ready = false;
+    let sessionKey = null;
+
+    // Init terminal
+    terminal = new Terminal({
+      cursorBlink: true,
+      fontSize: 14,
+      fontFamily: "'SF Mono', 'Fira Code', Menlo, monospace",
+      theme: {
+        background: '#0d1117', foreground: '#e6edf3', cursor: '#e94560',
+        selectionBackground: '#264f78',
+        black: '#0d1117', red: '#ff7b72', green: '#7ee787',
+        yellow: '#d29922', blue: '#79c0ff', magenta: '#d2a8ff',
+        cyan: '#a5d6ff', white: '#e6edf3',
+      },
+      allowProposedApi: true,
+    });
+    fitAddon = new FitAddon.FitAddon();
+    terminal.loadAddon(fitAddon);
+    terminal.loadAddon(new WebLinksAddon.WebLinksAddon());
+    terminal.open(document.getElementById('terminal-container'));
+    fitAddon.fit();
+
+    terminal.onData((data) => {
+      if (termSocket && ready) termSocket.emit('terminal:input', { key: sessionKey, data });
+    });
+
+    new ResizeObserver(() => {
+      if (fitAddon) {
+        fitAddon.fit();
+        if (termSocket && ready) termSocket.emit('terminal:resize', { key: sessionKey, cols: terminal.cols, rows: terminal.rows });
+      }
+    }).observe(document.getElementById('terminal-container'));
+
+    terminal.writeln('\x1b[1;36mDarkhan Terminal\x1b[0m (pop-out window)');
+    terminal.writeln('Select mode and click Start.\r\n');
+
+    const statusEl = document.getElementById('status');
+    const startBtn = document.getElementById('start-btn');
+    const endBtn = document.getElementById('end-btn');
+    const modeSelect = document.getElementById('mode-select');
+
+    function setStatus(text, color) {
+      statusEl.textContent = text;
+      statusEl.style.color = color || '#8b949e';
+    }
+
+    startBtn.addEventListener('click', () => {
+      const mode = modeSelect.value;
+      if (!termSocket || termSocket.disconnected) {
+        termSocket = io('/terminal', { withCredentials: true });
+
+        termSocket.on('connect', () => {
+          setStatus('Connected', '#7ee787');
+          termSocket.emit('terminal:spawn', { mode, cols: terminal.cols, rows: terminal.rows });
+        });
+        termSocket.on('terminal:ready', ({ key, mode: m }) => {
+          ready = true; sessionKey = key;
+          setStatus((m === 'claude' ? 'Claude' : 'Shell') + ' Active', '#7ee787');
+          startBtn.style.display = 'none'; endBtn.style.display = 'inline-block';
+          modeSelect.disabled = true;
+          terminal.focus();
+          document.title = 'Darkhan — ' + (m === 'claude' ? 'Claude Code' : 'Shell');
+        });
+        termSocket.on('terminal:restored', ({ key, mode: m }) => {
+          ready = true; sessionKey = key;
+          setStatus((m === 'claude' ? 'Claude' : 'Shell') + ' Restored', '#7ee787');
+          startBtn.style.display = 'none'; endBtn.style.display = 'inline-block';
+          modeSelect.disabled = true; terminal.focus();
+        });
+        termSocket.on('terminal:output', ({ data }) => { if (terminal) terminal.write(data); });
+        termSocket.on('terminal:exit', ({ exitCode }) => {
+          ready = false; sessionKey = null;
+          setStatus('Exited', '#d29922');
+          startBtn.style.display = 'inline-block'; endBtn.style.display = 'none';
+          modeSelect.disabled = false;
+          terminal.writeln('\r\n\x1b[33m[Session ended]\x1b[0m');
+        });
+        termSocket.on('terminal:error', ({ message }) => {
+          terminal.writeln('\r\n\x1b[31m[Error: ' + message + ']\x1b[0m');
+        });
+        termSocket.on('connect_error', (err) => {
+          setStatus('Auth failed', '#f85149');
+          terminal.writeln('\r\n\x1b[31m[Connection error: ' + err.message + ']\x1b[0m');
+        });
+        termSocket.on('disconnect', () => { ready = false; setStatus('Disconnected'); });
+      } else {
+        termSocket.emit('terminal:spawn', { mode, cols: terminal.cols, rows: terminal.rows });
+      }
+    });
+
+    endBtn.addEventListener('click', () => {
+      if (termSocket) termSocket.emit('terminal:kill', { key: sessionKey });
+      ready = false; sessionKey = null;
+      setStatus('Stopped');
+      startBtn.style.display = 'inline-block'; endBtn.style.display = 'none';
+      modeSelect.disabled = false;
+    });
+
+    // Auto-start if mode was passed
+    if (initialMode) setTimeout(() => startBtn.click(), 500);
+  })();
+  </script>
+</body>
+</html>

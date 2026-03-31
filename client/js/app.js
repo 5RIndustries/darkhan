@@ -9,10 +9,21 @@
   // --- State ---
   let currentUser = null;
   let currentChannel = 'chan_command';
-  let currentView = 'chat'; // 'chat' | 'dashboard' | 'tasks' | 'approvals' | 'workers' | 'costs'
+  let currentView = 'chat'; // 'chat' | 'dashboard' | 'tasks' | 'approvals' | 'workers' | 'costs' | 'terminal'
   let teamData = null; // loaded from /api/team
   let socket = null;
   let userTimezone = 'America/New_York'; // Updated on login from user profile
+
+  // Split screen state
+  let splitMode = false;
+  let splitRightView = null; // what the right panel is showing
+
+  // Terminal state
+  let terminalSocket = null;
+  let terminal = null;
+  let fitAddon = null;
+  let terminalReady = false;
+  let terminalSessionKey = null;
 
   // --- DOM refs ---
   const loginScreen = document.getElementById('login-screen');
@@ -577,8 +588,37 @@
       });
     }
 
+    // Terminal view (Claude Code)
+    let termView = document.getElementById('terminal-view');
+    if (!termView) {
+      termView = document.createElement('div');
+      termView.id = 'terminal-view';
+      termView.className = 'view hidden';
+      termView.innerHTML = `
+        <header class="channel-header" style="display:flex;align-items:center;justify-content:space-between;">
+          <h2>Terminal</h2>
+          <div style="display:flex;gap:0.5rem;align-items:center;">
+            <span id="terminal-status" style="font-size:0.8rem;color:var(--text-muted);">Disconnected</span>
+            <select id="terminal-mode" style="padding:0.3rem 0.5rem;background:var(--bg-secondary);color:var(--text-primary);border:1px solid var(--border);border-radius:var(--radius);font-size:0.85rem;">
+              <option value="claude">Claude Code</option>
+              <option value="shell">Shell</option>
+            </select>
+            <button id="terminal-spawn-btn" style="padding:0.3rem 0.8rem;background:var(--accent);color:#fff;border:none;border-radius:var(--radius);cursor:pointer;font-size:0.85rem;">Start</button>
+            <button id="terminal-kill-btn" style="padding:0.3rem 0.8rem;background:var(--danger, #c0392b);color:#fff;border:none;border-radius:var(--radius);cursor:pointer;font-size:0.85rem;display:none;">End</button>
+            <button id="terminal-popout-btn" style="padding:0.3rem 0.8rem;background:var(--bg-secondary);color:var(--text-primary);border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;font-size:0.85rem;" title="Pop out to separate window">&#8599;</button>
+          </div>
+        </header>
+        <div id="terminal-container" style="flex:1;background:#0d1117;padding:4px;overflow:hidden;"></div>
+      `;
+      document.getElementById('main-content').appendChild(termView);
+      document.getElementById('terminal-spawn-btn').addEventListener('click', spawnTerminal);
+      document.getElementById('terminal-kill-btn').addEventListener('click', killTerminal);
+      document.getElementById('terminal-popout-btn').addEventListener('click', popoutTerminal);
+    }
+
     // Check lockdown status when settings view is shown
     if (view === 'settings') checkLockdownStatus();
+    if (view === 'terminal') initTerminal();
 
     chatView.classList.toggle('hidden', view !== 'chat');
     dashView.classList.toggle('hidden', view !== 'dashboard');
@@ -588,9 +628,12 @@
     costView.classList.toggle('hidden', view !== 'costs');
     if (settingsView) settingsView.classList.toggle('hidden', view !== 'settings');
     if (docsView) docsView.classList.toggle('hidden', view !== 'docs');
-    // Override display for docs (needs flex, not block)
+    if (termView) termView.classList.toggle('hidden', view !== 'terminal');
+    // Override display for docs and terminal (need flex, not block)
     if (view === 'docs' && docsView) docsView.style.display = 'flex';
     else if (docsView) docsView.style.display = 'none';
+    if (view === 'terminal' && termView) termView.style.display = 'flex';
+    else if (termView) termView.style.display = 'none';
   }
 
   // Check and display lockdown status
@@ -1262,6 +1305,444 @@
     } catch (err) {
       treeContainer.innerHTML = `<p class="error">Search failed: ${err.message}</p>`;
     }
+  }
+
+  // --- Split Screen & Popout ---
+
+  // Available views for the split panel selector
+  const SPLIT_VIEW_OPTIONS = [
+    { value: 'chat', label: 'Chat' },
+    { value: 'terminal', label: 'Terminal' },
+    { value: 'docs', label: 'Docs' },
+    { value: 'dashboard', label: 'Dashboard' },
+    { value: 'tasks', label: 'Tasks' },
+    { value: 'workers', label: 'Workers' },
+    { value: 'costs', label: 'Costs' },
+    { value: 'approvals', label: 'Approvals' },
+  ];
+
+  function addViewToolbarButtons() {
+    // Add split + popout buttons to all channel headers after they're created
+    document.querySelectorAll('.channel-header').forEach(header => {
+      if (header.querySelector('.view-toolbar-btn')) return; // already added
+      const btnGroup = document.createElement('div');
+      btnGroup.style.cssText = 'display:flex;gap:4px;margin-left:auto;';
+      btnGroup.innerHTML = `
+        <button class="view-toolbar-btn" onclick="window._toggleSplit()" title="Split screen">&#9707;</button>
+        <button class="view-toolbar-btn" onclick="window._popoutCurrentView()" title="Pop out">&#8599;</button>
+      `;
+      header.style.display = 'flex';
+      header.style.alignItems = 'center';
+      header.appendChild(btnGroup);
+    });
+  }
+
+  window._toggleSplit = function() {
+    const main = document.getElementById('main-content');
+    if (splitMode) {
+      // Exit split mode
+      splitMode = false;
+      main.classList.remove('split-mode');
+      const rightPanel = document.getElementById('split-right-panel');
+      if (rightPanel) rightPanel.remove();
+      return;
+    }
+
+    // Enter split mode
+    splitMode = true;
+    main.classList.add('split-mode');
+
+    // Wrap existing views in left panel
+    let leftPanel = document.getElementById('split-left-panel');
+    if (!leftPanel) {
+      leftPanel = document.createElement('div');
+      leftPanel.id = 'split-left-panel';
+      leftPanel.className = 'split-panel';
+      // Move all existing views into the left panel
+      const views = Array.from(main.querySelectorAll('.view'));
+      views.forEach(v => leftPanel.appendChild(v));
+      main.insertBefore(leftPanel, main.firstChild);
+    }
+
+    // Create right panel
+    let rightPanel = document.getElementById('split-right-panel');
+    if (!rightPanel) {
+      rightPanel = document.createElement('div');
+      rightPanel.id = 'split-right-panel';
+      rightPanel.className = 'split-panel';
+
+      // Panel selector
+      const selector = document.createElement('div');
+      selector.className = 'split-panel-selector';
+      selector.innerHTML = `
+        <span style="opacity:0.6;">Right panel:</span>
+        <select id="split-right-select">
+          ${SPLIT_VIEW_OPTIONS.map(o => `<option value="${o.value}">${o.label}</option>`).join('')}
+        </select>
+        <button class="view-toolbar-btn" onclick="window._popoutSplitRight()" title="Pop out right panel">&#8599;</button>
+        <button class="view-toolbar-btn" onclick="window._toggleSplit()" title="Close split">&#10005;</button>
+      `;
+      rightPanel.appendChild(selector);
+
+      // Content area for right panel
+      const content = document.createElement('div');
+      content.id = 'split-right-content';
+      content.style.cssText = 'flex:1;display:flex;flex-direction:column;overflow:hidden;';
+      rightPanel.appendChild(content);
+
+      main.appendChild(rightPanel);
+
+      // Default to terminal if current view is chat, or chat if current is terminal
+      const defaultRight = currentView === 'chat' ? 'terminal' : 'chat';
+      document.getElementById('split-right-select').value = defaultRight;
+      loadSplitRightView(defaultRight);
+
+      document.getElementById('split-right-select').addEventListener('change', (e) => {
+        loadSplitRightView(e.target.value);
+      });
+    }
+  };
+
+  function loadSplitRightView(viewName) {
+    splitRightView = viewName;
+    const container = document.getElementById('split-right-content');
+    if (!container) return;
+    container.innerHTML = '';
+
+    if (viewName === 'chat') {
+      // Clone a simple chat view for the right panel
+      const chatDiv = document.createElement('div');
+      chatDiv.className = 'view';
+      chatDiv.style.cssText = 'flex:1;display:flex;flex-direction:column;';
+      chatDiv.innerHTML = `
+        <header class="channel-header">
+          <h2 id="split-channel-name">#command</h2>
+        </header>
+        <div id="split-message-container" class="message-feed" style="flex:1;overflow-y:auto;padding:1rem;"></div>
+        <footer class="message-input-area" style="padding:0.5rem;">
+          <form id="split-message-form" style="display:flex;gap:0.5rem;">
+            <input type="text" id="split-message-input" placeholder="Message..." autocomplete="off" style="flex:1;padding:0.5rem;background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius);color:var(--text-primary);">
+            <button type="submit" style="padding:0.5rem 1rem;background:var(--accent);color:#fff;border:none;border-radius:var(--radius);cursor:pointer;">Send</button>
+          </form>
+        </footer>
+      `;
+      container.appendChild(chatDiv);
+      // Load messages for the current channel
+      loadSplitChat(currentChannel);
+      document.getElementById('split-message-form').addEventListener('submit', (e) => {
+        e.preventDefault();
+        const input = document.getElementById('split-message-input');
+        if (input.value.trim()) {
+          sendMessage(currentChannel, input.value.trim());
+          input.value = '';
+        }
+      });
+    } else if (viewName === 'terminal') {
+      const termDiv = document.createElement('div');
+      termDiv.className = 'view';
+      termDiv.style.cssText = 'flex:1;display:flex;flex-direction:column;';
+      termDiv.innerHTML = `
+        <header class="channel-header" style="display:flex;align-items:center;justify-content:space-between;">
+          <h2>Terminal</h2>
+          <div style="display:flex;gap:0.5rem;align-items:center;">
+            <span id="split-terminal-status" style="font-size:0.8rem;color:var(--text-muted);">Use main terminal</span>
+          </div>
+        </header>
+        <div id="split-terminal-container" style="flex:1;background:#0d1117;padding:4px;overflow:hidden;">
+          <p style="color:#8b949e;padding:1rem;">Terminal is available in the main panel or via pop-out window. Use the &#8599; button to open it in a separate window.</p>
+        </div>
+      `;
+      container.appendChild(termDiv);
+    } else {
+      // Generic view — fetch data via API and render directly
+      const div = document.createElement('div');
+      div.className = 'view';
+      div.style.cssText = 'flex:1;display:flex;flex-direction:column;overflow:auto;';
+      const label = viewName.charAt(0).toUpperCase() + viewName.slice(1);
+      div.innerHTML = `
+        <header class="channel-header"><h2>${label}</h2></header>
+        <div id="split-generic-content" class="content-area" style="flex:1;overflow-y:auto;padding:1rem;"><p>Loading...</p></div>
+      `;
+      container.appendChild(div);
+      loadSplitGenericView(viewName);
+    }
+  }
+
+  async function loadSplitGenericView(viewName) {
+    const el = document.getElementById('split-generic-content');
+    if (!el) return;
+
+    const endpoints = {
+      dashboard: '/health/status',
+      tasks: '/tasks',
+      workers: '/workers',
+      costs: '/costs/daily',
+      approvals: '/tasks?type=approval',
+      docs: '/vault/tree',
+    };
+
+    const endpoint = endpoints[viewName];
+    if (!endpoint) { el.innerHTML = '<p>View not available in split mode.</p>'; return; }
+
+    try {
+      const data = await api('GET', endpoint);
+
+      if (viewName === 'dashboard') {
+        const s = data;
+        el.innerHTML = `
+          <div style="display:grid;gap:1rem;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));">
+            <div style="background:var(--bg-secondary);padding:1rem;border-radius:var(--radius);border:1px solid var(--border);">
+              <div style="font-size:0.75rem;opacity:0.6;text-transform:uppercase;">Status</div>
+              <div style="font-size:1.5rem;font-weight:bold;color:${s.lockdown ? 'var(--danger)' : 'var(--success)'};">${s.lockdown ? 'LOCKDOWN' : 'Operational'}</div>
+            </div>
+            <div style="background:var(--bg-secondary);padding:1rem;border-radius:var(--radius);border:1px solid var(--border);">
+              <div style="font-size:0.75rem;opacity:0.6;text-transform:uppercase;">Uptime</div>
+              <div style="font-size:1.5rem;font-weight:bold;">${s.uptime ? Math.floor(s.uptime/3600) + 'h' : 'N/A'}</div>
+            </div>
+            <div style="background:var(--bg-secondary);padding:1rem;border-radius:var(--radius);border:1px solid var(--border);">
+              <div style="font-size:0.75rem;opacity:0.6;text-transform:uppercase;">Workers</div>
+              <div style="font-size:1.5rem;font-weight:bold;">${s.workers || 'N/A'}</div>
+            </div>
+          </div>`;
+      } else if (viewName === 'tasks') {
+        const tasks = data.tasks || [];
+        if (tasks.length === 0) { el.innerHTML = '<p style="opacity:0.5;">No tasks.</p>'; return; }
+        el.innerHTML = tasks.map(t =>
+          '<div style="background:var(--bg-secondary);padding:0.75rem;border-radius:var(--radius);border:1px solid var(--border);margin-bottom:0.5rem;">' +
+          '<div style="display:flex;justify-content:space-between;"><strong>' + escapeHtml(t.title || 'Untitled') + '</strong>' +
+          '<span style="font-size:0.75rem;opacity:0.6;">' + (t.status || '') + '</span></div>' +
+          (t.description ? '<div style="font-size:0.85rem;opacity:0.7;margin-top:4px;">' + escapeHtml(t.description) + '</div>' : '') +
+          '</div>'
+        ).join('');
+      } else if (viewName === 'workers') {
+        const workers = data.workers || [];
+        el.innerHTML = workers.map(w =>
+          '<div style="background:var(--bg-secondary);padding:0.75rem;border-radius:var(--radius);border:1px solid var(--border);margin-bottom:0.5rem;display:flex;align-items:center;gap:0.75rem;">' +
+          '<div style="width:10px;height:10px;border-radius:50%;background:' + (w.status === 'healthy' ? 'var(--success)' : w.status === 'busy' ? 'var(--warning)' : 'var(--danger)') + ';"></div>' +
+          '<div><strong>' + escapeHtml(w.name || w.id) + '</strong>' +
+          '<div style="font-size:0.8rem;opacity:0.6;">' + (w.taskCount || 0) + ' tasks, ' + (w.listenerCount || 0) + ' listeners</div></div>' +
+          '</div>'
+        ).join('');
+      } else if (viewName === 'costs') {
+        el.innerHTML = '<pre style="white-space:pre-wrap;font-size:0.85rem;">' + escapeHtml(JSON.stringify(data, null, 2)) + '</pre>';
+      } else if (viewName === 'docs') {
+        const files = (data.tree || []).filter(f => f.type === 'file').slice(0, 50);
+        el.innerHTML = files.map(f =>
+          '<div style="padding:4px 8px;cursor:pointer;border-radius:3px;margin-bottom:2px;" ' +
+          'onclick="window._splitLoadDoc(\'' + f.path.replace(/'/g, "\\'") + '\')">' +
+          escapeHtml(f.name) + '</div>'
+        ).join('');
+      } else {
+        el.innerHTML = '<pre style="white-space:pre-wrap;font-size:0.85rem;">' + escapeHtml(JSON.stringify(data, null, 2)) + '</pre>';
+      }
+    } catch (err) {
+      el.innerHTML = '<p style="color:var(--danger);">Failed to load: ' + escapeHtml(err.message) + '</p>';
+    }
+  }
+
+  window._splitLoadDoc = async function(path) {
+    const el = document.getElementById('split-generic-content');
+    if (!el) return;
+    try {
+      const data = await api('GET', '/vault/file?path=' + encodeURIComponent(path));
+      el.innerHTML = '<div style="margin-bottom:0.5rem;"><button class="view-toolbar-btn" onclick="loadSplitRightView(\'docs\')">Back</button> <span style="font-size:0.8rem;opacity:0.6;">' + escapeHtml(path) + '</span></div>' +
+        '<div class="markdown-body" style="line-height:1.6;">' +
+        (typeof marked !== 'undefined' ? marked.parse(data.content || '') : '<pre>' + escapeHtml(data.content || '') + '</pre>') + '</div>';
+    } catch (err) {
+      el.innerHTML = '<p style="color:var(--danger);">Failed to load file</p>';
+    }
+  };
+
+  async function loadSplitChat(channelId) {
+    const container = document.getElementById('split-message-container');
+    if (!container) return;
+    try {
+      const data = await api('GET', `/messages?channel=${channelId}&limit=50`);
+      container.innerHTML = (data.messages || []).map(m =>
+        `<div class="message" style="margin-bottom:0.75rem;">
+          <div style="font-size:0.75rem;opacity:0.5;margin-bottom:2px;">
+            <strong>${escapeHtml(m.from_user)}</strong>
+            <span style="margin-left:0.5rem;">${new Date(m.created_at).toLocaleTimeString()}</span>
+          </div>
+          <div class="markdown-body">${typeof marked !== 'undefined' ? marked.parse(m.body || '') : escapeHtml(m.body || '')}</div>
+        </div>`
+      ).join('');
+      container.scrollTop = container.scrollHeight;
+    } catch (err) {
+      container.innerHTML = `<p style="color:var(--danger);">Failed to load messages</p>`;
+    }
+  }
+
+  async function sendMessage(channelId, body) {
+    try {
+      await api('POST', '/messages', { channel_id: channelId, body });
+    } catch (err) {
+      console.error('Send failed:', err);
+    }
+  }
+
+  window._popoutCurrentView = function() {
+    const view = currentView;
+    const channel = currentChannel;
+    window.open(`/view-popout.html?view=${view}&channel=${channel}`,
+      `darkhan-${view}`, 'width=800,height=600,menubar=no,toolbar=no');
+  };
+
+  window._popoutSplitRight = function() {
+    const view = splitRightView || 'chat';
+    window.open(`/view-popout.html?view=${view}&channel=${currentChannel}`,
+      `darkhan-${view}`, 'width=800,height=600,menubar=no,toolbar=no');
+  };
+
+  // Add toolbar buttons after views load
+  setTimeout(addViewToolbarButtons, 1000);
+  // Re-add after view switches
+  const origShowView = showView;
+
+  // --- Claude Code Terminal ---
+  function initTerminal() {
+    if (terminal) {
+      setTimeout(() => { if (fitAddon) fitAddon.fit(); }, 100);
+      return;
+    }
+    const container = document.getElementById('terminal-container');
+    if (!container) return;
+
+    terminal = new window.Terminal({
+      cursorBlink: true,
+      fontSize: 13,
+      fontFamily: "'SF Mono', 'Fira Code', 'Cascadia Code', Menlo, monospace",
+      theme: {
+        background: '#0d1117',
+        foreground: '#e6edf3',
+        cursor: '#e94560',
+        selectionBackground: '#264f78',
+        black: '#0d1117',
+        red: '#ff7b72',
+        green: '#7ee787',
+        yellow: '#d29922',
+        blue: '#79c0ff',
+        magenta: '#d2a8ff',
+        cyan: '#a5d6ff',
+        white: '#e6edf3',
+      },
+      allowProposedApi: true,
+    });
+
+    fitAddon = new window.FitAddon.FitAddon();
+    terminal.loadAddon(fitAddon);
+    terminal.loadAddon(new window.WebLinksAddon.WebLinksAddon());
+    terminal.open(container);
+    fitAddon.fit();
+
+    terminal.onData((data) => {
+      if (terminalSocket && terminalReady) {
+        terminalSocket.emit('terminal:input', { key: terminalSessionKey, data });
+      }
+    });
+
+    const resizeObserver = new ResizeObserver(() => {
+      if (fitAddon) {
+        fitAddon.fit();
+        if (terminalSocket && terminalReady) {
+          terminalSocket.emit('terminal:resize', { key: terminalSessionKey, cols: terminal.cols, rows: terminal.rows });
+        }
+      }
+    });
+    resizeObserver.observe(container);
+
+    terminal.writeln('\x1b[1;36mDarkhan Terminal\x1b[0m \u2014 Claude Code session');
+    terminal.writeln('Click "Start Session" to spawn a Claude Code instance.\r\n');
+  }
+
+  function spawnTerminal() {
+    if (!terminal) initTerminal();
+
+    const mode = document.getElementById('terminal-mode').value || 'claude';
+    const modeLabel = mode === 'claude' ? 'Claude Code' : 'Shell';
+
+    if (!terminalSocket || terminalSocket.disconnected) {
+      terminalSocket = io('/terminal', { withCredentials: true });
+
+      terminalSocket.on('connect', () => {
+        updateTerminalStatus('Connected', 'var(--success, #27ae60)');
+        terminalSocket.emit('terminal:spawn', { mode, cols: terminal.cols, rows: terminal.rows });
+      });
+
+      terminalSocket.on('terminal:ready', ({ key, mode: m }) => {
+        terminalReady = true;
+        terminalSessionKey = key;
+        const label = m === 'claude' ? 'Claude Code' : 'Shell';
+        updateTerminalStatus(label + ' Active', 'var(--success, #27ae60)');
+        document.getElementById('terminal-spawn-btn').style.display = 'none';
+        document.getElementById('terminal-kill-btn').style.display = 'inline-block';
+        document.getElementById('terminal-mode').disabled = true;
+        terminal.focus();
+      });
+
+      terminalSocket.on('terminal:restored', ({ key, mode: m }) => {
+        terminalReady = true;
+        terminalSessionKey = key;
+        const label = m === 'claude' ? 'Claude Code' : 'Shell';
+        updateTerminalStatus(label + ' Restored', 'var(--success, #27ae60)');
+        document.getElementById('terminal-spawn-btn').style.display = 'none';
+        document.getElementById('terminal-kill-btn').style.display = 'inline-block';
+        document.getElementById('terminal-mode').disabled = true;
+        terminal.focus();
+      });
+
+      terminalSocket.on('terminal:output', ({ data }) => {
+        if (terminal) terminal.write(data);
+      });
+
+      terminalSocket.on('terminal:exit', ({ exitCode }) => {
+        terminalReady = false;
+        terminalSessionKey = null;
+        updateTerminalStatus('Exited', 'var(--warning, #f39c12)');
+        document.getElementById('terminal-spawn-btn').style.display = 'inline-block';
+        document.getElementById('terminal-kill-btn').style.display = 'none';
+        document.getElementById('terminal-mode').disabled = false;
+        if (terminal) terminal.writeln(`\r\n\x1b[33m[Session ended \u2014 exit code ${exitCode}]\x1b[0m`);
+      });
+
+      terminalSocket.on('terminal:error', ({ message }) => {
+        if (terminal) terminal.writeln(`\r\n\x1b[31m[Error: ${message}]\x1b[0m`);
+      });
+
+      terminalSocket.on('connect_error', (err) => {
+        updateTerminalStatus('Auth failed', 'var(--danger, #c0392b)');
+        if (terminal) terminal.writeln(`\r\n\x1b[31m[Connection error: ${err.message}]\x1b[0m`);
+      });
+
+      terminalSocket.on('disconnect', () => {
+        terminalReady = false;
+        updateTerminalStatus('Disconnected', 'var(--text-muted)');
+      });
+    } else {
+      terminalSocket.emit('terminal:spawn', { mode, cols: terminal.cols, rows: terminal.rows });
+    }
+  }
+
+  function killTerminal() {
+    if (terminalSocket) terminalSocket.emit('terminal:kill', { key: terminalSessionKey });
+    terminalReady = false;
+    terminalSessionKey = null;
+    updateTerminalStatus('Stopped', 'var(--text-muted)');
+    document.getElementById('terminal-spawn-btn').style.display = 'inline-block';
+    document.getElementById('terminal-kill-btn').style.display = 'none';
+    document.getElementById('terminal-mode').disabled = false;
+  }
+
+  function popoutTerminal() {
+    const mode = document.getElementById('terminal-mode').value || 'claude';
+    const w = window.open('/terminal-popout.html?mode=' + mode, 'darkhan-terminal',
+      'width=900,height=700,menubar=no,toolbar=no,location=no,status=no');
+    if (!w) alert('Pop-up blocked — please allow pop-ups for Darkhan.');
+  }
+
+  function updateTerminalStatus(text, color) {
+    const el = document.getElementById('terminal-status');
+    if (el) { el.textContent = text; el.style.color = color; }
   }
 
   // --- Init ---

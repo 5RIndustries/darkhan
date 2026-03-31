@@ -7,6 +7,11 @@
   <link rel="stylesheet" href="/css/style.css">
   <link rel="manifest" href="/manifest.json">
   <meta name="theme-color" content="#1e1e1e">
+  <!-- xterm.js for Claude terminal -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5/css/xterm.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5/lib/xterm.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0/lib/addon-fit.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-web-links@0/lib/addon-web-links.min.js"></script>
 </head>
 <body>
   <!-- Login Screen -->
@@ -53,6 +58,7 @@
           <li data-view="costs">Costs</li>
           <li data-view="docs">Docs</li>
           <li data-view="approvals">Approvals</li>
+          <li data-view="terminal">Terminal</li>
         </ul>
       </div>
 
@@ -73,8 +79,12 @@
     <main id="main-content">
       <!-- Chat View -->
       <div id="chat-view" class="view">
-        <header class="channel-header">
+        <header class="channel-header" style="display:flex;align-items:center;">
           <h2 id="current-channel-name">#command</h2>
+          <div style="display:flex;gap:4px;margin-left:auto;">
+            <button class="view-toolbar-btn" onclick="window._toggleSplit()" title="Split screen">&#9707;</button>
+            <button class="view-toolbar-btn" onclick="window._popoutCurrentView()" title="Pop out">&#8599;</button>
+          </div>
         </header>
         <div id="message-container" class="message-feed"></div>
         <footer class="message-input-area">

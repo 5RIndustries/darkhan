@@ -33,9 +33,11 @@ CREATE TABLE IF NOT EXISTS messages (
   body TEXT NOT NULL,
   priority TEXT DEFAULT 'normal',
   type TEXT DEFAULT 'message',          -- 'message', 'alert', 'task_update', 'system'
+  trust_level TEXT DEFAULT 'human_verified', -- [MYTHOS] human_verified | agent_local | agent_federated | external | quarantined
   reply_to TEXT,
   metadata TEXT,                        -- JSON blob for attachments, etc.
   origin TEXT,                          -- [DARKHAN] Federation: source instance ID
+  signature TEXT,                       -- [MYTHOS] Ed25519 signature of (id + from_user + body + trust_level)
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (channel_id) REFERENCES channels(id)
 );
@@ -168,3 +170,66 @@ CREATE TABLE IF NOT EXISTS ground_truths (
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_gt_category ON ground_truths (category, deprecated);
+
+-- [DARKHAN] Classification Decision Log — structured triage data for model training
+-- Stores classification decisions WITHOUT raw message content (privacy-preserving).
+-- This is the training dataset for fine-tuning the Darkhan triage LLM.
+CREATE TABLE IF NOT EXISTS triage_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  message_hash TEXT NOT NULL,             -- SHA-256 of message content (never store raw text)
+  message_length INTEGER NOT NULL,
+  from_user_type TEXT NOT NULL,           -- 'human' or 'agent'
+  channel_id TEXT NOT NULL,
+  classification TEXT NOT NULL,           -- 'local_llm', 'claude_relay', 'heartbeat_log'
+  was_escalated INTEGER DEFAULT 0,        -- 1 if local LLM escalated to Claude
+  response_time_ms INTEGER,
+  model_name TEXT,                        -- e.g. 'qwen2.5:3b'
+  model_version TEXT,                     -- model hash for version tracking
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_triage_classification ON triage_log (classification, created_at);
+
+-- [MYTHOS] Quarantine Queue — messages flagged by two-LLM consensus disagreement
+-- Held for human review. Approve releases to channel; reject discards.
+-- Both decisions become training data for the classification model.
+CREATE TABLE IF NOT EXISTS quarantine_queue (
+  id TEXT PRIMARY KEY,
+  original_channel TEXT NOT NULL,
+  from_user TEXT NOT NULL,
+  body TEXT NOT NULL,
+  priority TEXT DEFAULT 'normal',
+  type TEXT DEFAULT 'message',
+  local_verdict TEXT,                     -- local LLM classification
+  cloud_verdict TEXT,                     -- cloud LLM classification
+  consensus TEXT,                         -- 'disagreement', 'threat_consensus', etc.
+  metadata TEXT,                          -- JSON blob with full scan results
+  status TEXT DEFAULT 'pending',          -- 'pending', 'approved', 'rejected'
+  reviewed_by TEXT,                       -- admin who reviewed
+  reviewed_at DATETIME,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_quarantine_status ON quarantine_queue (status, created_at);
+
+-- [MYTHOS] Agent Behavioral Baseline — tracks normal activity patterns per agent
+-- Updated daily from the activity log. Deviations trigger alerts.
+CREATE TABLE IF NOT EXISTS agent_baselines (
+  agent_id TEXT PRIMARY KEY,
+  avg_messages_per_day REAL DEFAULT 0,
+  avg_llm_calls_per_day REAL DEFAULT 0,
+  avg_shell_execs_per_day REAL DEFAULT 0,
+  avg_file_writes_per_day REAL DEFAULT 0,
+  typical_channels TEXT,                  -- JSON array of channels the agent normally posts to
+  typical_active_hours TEXT,              -- JSON array of hours (0-23) the agent is normally active
+  sample_days INTEGER DEFAULT 0,          -- how many days of data in the baseline
+  last_updated DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- [MYTHOS] Instance Identity — Ed25519 keypair for message signing and federation trust
+-- Generated at first startup. Public key shared with federation peers.
+-- Private key never leaves this database.
+CREATE TABLE IF NOT EXISTS instance_identity (
+  key TEXT PRIMARY KEY,                   -- 'ed25519_public' or 'ed25519_private'
+  value TEXT NOT NULL,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_triage_model ON triage_log (model_name, created_at);

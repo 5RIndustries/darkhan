@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Darkhan</title>
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5/css/xterm.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5/lib/xterm.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0/lib/addon-fit.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-web-links@0/lib/addon-web-links.min.js"></script>
+  <style>
+    body { height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+    #toolbar {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 6px 12px; background: var(--bg-secondary); border-bottom: 1px solid var(--border);
+      font-size: 0.85rem; -webkit-app-region: drag;
+    }
+    #toolbar select, #toolbar button { -webkit-app-region: no-drag; }
+    #content { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+    .message { margin-bottom: 0.75rem; }
+    .message .meta { font-size: 0.75rem; opacity: 0.5; margin-bottom: 2px; }
+    .message-feed { flex: 1; overflow-y: auto; padding: 1rem; }
+    .msg-form { display: flex; gap: 0.5rem; padding: 0.5rem; border-top: 1px solid var(--border); }
+    .msg-form input { flex: 1; padding: 0.5rem; background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius); color: var(--text-primary); }
+    .msg-form button { padding: 0.5rem 1rem; background: var(--accent); color: #fff; border: none; border-radius: var(--radius); cursor: pointer; }
+    .content-area { flex: 1; overflow-y: auto; padding: 1rem; }
+  </style>
+</head>
+<body>
+  <div id="toolbar">
+    <span><strong>Darkhan</strong></span>
+    <select id="view-select">
+      <option value="chat">Chat</option>
+      <option value="terminal-claude">Terminal (Claude)</option>
+      <option value="terminal-shell">Terminal (Shell)</option>
+      <option value="dashboard">Dashboard</option>
+      <option value="tasks">Tasks</option>
+      <option value="workers">Workers</option>
+      <option value="costs">Costs</option>
+      <option value="docs">Docs</option>
+    </select>
+  </div>
+  <div id="content"></div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script>
+  (function() {
+    const params = new URLSearchParams(window.location.search);
+    let view = params.get('view') || 'chat';
+    const channel = params.get('channel') || 'chan_command';
+    const content = document.getElementById('content');
+    const viewSelect = document.getElementById('view-select');
+
+    // Map terminal to the right option
+    if (view === 'terminal') view = 'terminal-claude';
+    viewSelect.value = view;
+
+    viewSelect.addEventListener('change', (e) => {
+      loadView(e.target.value);
+    });
+
+    async function api(method, path, body) {
+      const opts = { method, headers: { 'Content-Type': 'application/json', 'X-Darkhan-Client': 'true' }, credentials: 'include' };
+      if (body) opts.body = JSON.stringify(body);
+      const res = await fetch('/api' + path, opts);
+      if (!res.ok) throw new Error((await res.json()).error || res.statusText);
+      return res.json();
+    }
+
+    function escapeHtml(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+    function loadView(v) {
+      view = v;
+      document.title = 'Darkhan — ' + v.charAt(0).toUpperCase() + v.slice(1);
+
+      if (v === 'chat') loadChat();
+      else if (v.startsWith('terminal-')) loadTerminal(v === 'terminal-shell' ? 'shell' : 'claude');
+      else if (v === 'dashboard') loadGeneric('dashboard', '/health/status');
+      else if (v === 'tasks') loadGeneric('tasks', '/tasks');
+      else if (v === 'workers') loadGeneric('workers', '/workers');
+      else if (v === 'costs') loadGeneric('costs', '/costs/daily');
+      else if (v === 'docs') loadDocs();
+      else content.innerHTML = '<p style="padding:1rem;">View not available in pop-out.</p>';
+    }
+
+    async function loadChat() {
+      content.innerHTML = `
+        <div class="message-feed" id="po-messages"></div>
+        <form class="msg-form" id="po-msg-form">
+          <input type="text" id="po-msg-input" placeholder="Message #${channel.replace('chan_','')}" autocomplete="off">
+          <button type="submit">Send</button>
+        </form>
+      `;
+      try {
+        const data = await api('GET', '/messages?channel=' + channel + '&limit=50');
+        const container = document.getElementById('po-messages');
+        container.innerHTML = (data.messages || []).map(m =>
+          '<div class="message"><div class="meta"><strong>' + escapeHtml(m.from_user) + '</strong> <span>' +
+          new Date(m.created_at).toLocaleTimeString() + '</span></div><div class="markdown-body">' +
+          (typeof marked !== 'undefined' ? marked.parse(m.body || '') : escapeHtml(m.body || '')) + '</div></div>'
+        ).join('');
+        container.scrollTop = container.scrollHeight;
+      } catch (err) {
+        document.getElementById('po-messages').innerHTML = '<p style="color:var(--danger);">Failed to load</p>';
+      }
+
+      document.getElementById('po-msg-form').addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const input = document.getElementById('po-msg-input');
+        if (!input.value.trim()) return;
+        try { await api('POST', '/messages', { channel_id: channel, body: input.value.trim() }); input.value = ''; loadChat(); } catch {}
+      });
+
+      // Real-time updates
+      const sock = io('/', { withCredentials: true });
+      sock.on('connect', () => sock.emit('join_channel', channel));
+      sock.on('new_message', (msg) => {
+        if (msg.channel_id !== channel) return;
+        const container = document.getElementById('po-messages');
+        if (!container) return;
+        container.innerHTML += '<div class="message"><div class="meta"><strong>' + escapeHtml(msg.from_user) +
+          '</strong> <span>' + new Date(msg.created_at).toLocaleTimeString() + '</span></div><div class="markdown-body">' +
+          (typeof marked !== 'undefined' ? marked.parse(msg.body || '') : escapeHtml(msg.body || '')) + '</div></div>';
+        container.scrollTop = container.scrollHeight;
+      });
+    }
+
+    function loadTerminal(mode) {
+      content.innerHTML = '<div id="po-term" style="flex:1;background:#0d1117;padding:4px;"></div>';
+      const term = new Terminal({
+        cursorBlink: true, fontSize: 14,
+        fontFamily: "'SF Mono', 'Fira Code', Menlo, monospace",
+        theme: { background:'#0d1117', foreground:'#e6edf3', cursor:'#e94560', selectionBackground:'#264f78',
+                 black:'#0d1117', red:'#ff7b72', green:'#7ee787', yellow:'#d29922',
+                 blue:'#79c0ff', magenta:'#d2a8ff', cyan:'#a5d6ff', white:'#e6edf3' },
+        allowProposedApi: true,
+      });
+      const fit = new FitAddon.FitAddon();
+      term.loadAddon(fit);
+      term.loadAddon(new WebLinksAddon.WebLinksAddon());
+      term.open(document.getElementById('po-term'));
+      fit.fit();
+      new ResizeObserver(() => fit.fit()).observe(document.getElementById('po-term'));
+
+      let ready = false, key = null;
+      const sock = io('/terminal', { withCredentials: true });
+      term.onData((data) => { if (ready) sock.emit('terminal:input', { key, data }); });
+
+      sock.on('connect', () => sock.emit('terminal:spawn', { mode, cols: term.cols, rows: term.rows }));
+      sock.on('terminal:ready', (d) => { ready = true; key = d.key; term.focus(); });
+      sock.on('terminal:restored', (d) => { ready = true; key = d.key; term.focus(); });
+      sock.on('terminal:output', (d) => term.write(d.data));
+      sock.on('terminal:exit', (d) => { ready = false; term.writeln('\r\n\x1b[33m[Session ended]\x1b[0m'); });
+      sock.on('terminal:error', (d) => term.writeln('\r\n\x1b[31m[' + d.message + ']\x1b[0m'));
+    }
+
+    async function loadGeneric(name, endpoint) {
+      content.innerHTML = '<div class="content-area" id="po-generic"><p>Loading...</p></div>';
+      try {
+        const data = await api('GET', endpoint);
+        const el = document.getElementById('po-generic');
+        el.innerHTML = '<pre style="white-space:pre-wrap;font-size:0.85rem;">' + escapeHtml(JSON.stringify(data, null, 2)) + '</pre>';
+      } catch (err) {
+        document.getElementById('po-generic').innerHTML = '<p style="color:var(--danger);">Failed: ' + err.message + '</p>';
+      }
+    }
+
+    async function loadDocs() {
+      content.innerHTML = '<div class="content-area" id="po-docs"><p>Loading...</p></div>';
+      try {
+        const data = await api('GET', '/vault/tree');
+        const el = document.getElementById('po-docs');
+        const files = (data.tree || []).filter(f => f.type === 'file').slice(0, 50);
+        el.innerHTML = files.map(f =>
+          '<div style="padding:4px 8px;cursor:pointer;border-radius:3px;margin-bottom:2px;" onclick="window._loadDoc(\'' +
+          f.path.replace(/'/g, "\\'") + '\')">' + escapeHtml(f.name) + '</div>'
+        ).join('');
+      } catch (err) {
+        document.getElementById('po-docs').innerHTML = '<p style="color:var(--danger);">Failed</p>';
+      }
+    }
+
+    window._loadDoc = async function(path) {
+      try {
+        const data = await api('GET', '/vault/file?path=' + encodeURIComponent(path));
+        content.innerHTML = '<div class="content-area"><div class="markdown-body" style="line-height:1.6;">' +
+          (typeof marked !== 'undefined' ? marked.parse(data.content || '') : '<pre>' + escapeHtml(data.content || '') + '</pre>') +
+          '</div></div>';
+      } catch (err) {
+        content.innerHTML = '<p style="padding:1rem;color:var(--danger);">Failed to load file</p>';
+      }
+    };
+
+    loadView(view);
+  })();
+  </script>
+</body>
+</html>

@@ -20,7 +20,7 @@
         "name": "Assistant",
         "type": "agent",
         "role": "agent",
-        "model": { "provider": "ollama", "model": "qwen2.5:14b", "mode": "worker" },
+        "model": { "provider": "ollama", "model": "qwen2.5:3b", "mode": "worker" },
         "worker": "assistant.worker.js",
         "rateLimits": { "requestsPerDay": 0, "requestsPerMinute": 0 },
         "channels": ["chan_command", "chan_alerts"],
@@ -31,7 +31,7 @@
         "name": "Security",
         "type": "agent",
         "role": "system",
-        "model": { "provider": "ollama", "model": "qwen2.5:14b", "mode": "triage" },
+        "model": { "provider": "ollama", "model": "qwen2.5:3b", "mode": "triage" },
         "worker": "security.worker.js",
         "rateLimits": { "requestsPerDay": 50, "requestsPerMinute": 3 },
         "channels": ["chan_command", "chan_alerts"],
@@ -42,7 +42,7 @@
   "llm": {
     "triage": {
       "provider": "ollama",
-      "model": "qwen2.5:14b"
+      "model": "qwen2.5:3b"
     },
     "providers": {
       "ollama": { "host": "localhost", "port": 11434 },
@@ -86,6 +86,15 @@
     ],
     "allowedChatIds": ["-100123456789"],
     "pollingIntervalMs": 2000
+  },
+  "terminal": {
+    "allowedTools": "Read,Write,Edit,Glob,Grep,Bash,WebSearch,WebFetch,Agent"
+  },
+  "telemetry": {
+    "enabled": false,
+    "anonymizedClassifications": false,
+    "federatedLearning": false,
+    "endpoint": null
   },
   "federation": {
     "enabled": false,

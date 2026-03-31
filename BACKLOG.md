@@ -49,6 +49,14 @@
 - [x] ~~Hash chain federation foundation~~ — CRISPR spacers, chain anchors, origin tracking, 6 Mokume-ready endpoints. **COMPLETE (2026-03-29)**
 - [x] ~~Break-glass recovery tool~~ — Interactive TTY + PIN auth, 4 commands (status, reset-password, lift-lockdown, reset-baseline). **COMPLETE (2026-03-29)**
 - [x] ~~3-layer security hardening~~ — TTY enforcement, _darkhan service user, macOS Keychain integration. **COMPLETE (2026-03-29)**
+- [x] ~~Integrated Claude Code terminal~~ — xterm.js + node-pty in web UI, Claude Code and shell modes, Socket.IO /terminal namespace, session lifecycle audited to hash chain. **COMPLETE (2026-03-30)**
+- [x] ~~Unified Claude session~~ — Single Claude SDK process shared between terminal and chat interfaces. Chat @claude and terminal share context. Responses bridged to #claude channel. **COMPLETE (2026-03-30)**
+- [x] ~~Shell terminal~~ — General-purpose bash/zsh terminal in web UI for system commands, SSH, administration. **COMPLETE (2026-03-30)**
+- [x] ~~Terminal pop-out window~~ — Standalone terminal window for multi-monitor setups. Auto-starts with selected mode. **COMPLETE (2026-03-30)**
+- [x] ~~Channel-terminal bridge~~ — Terminal events posted to channels, Claude terminal gets recent channel context, agents see terminal activity. **COMPLETE (2026-03-30)**
+- [x] ~~Corey audit context update~~ — Corey system prompt updated with full Darkhan architecture so audits focus on real gaps, not sandbox enforcement. Rate limits treated as user configuration. **COMPLETE (2026-03-30)**
+- [x] ~~BSL 1.1 LICENSE~~ — Business Source License with 4-year change to Apache 2.0. **COMPLETE (2026-03-30)**
+- [x] ~~Landing page~~ — docs/index.html for darkhan.ai. **COMPLETE (2026-03-30)**
 - [ ] Gmail integration (gws CLI) — **PREPPED**, needs interactive OAuth
 - [ ] Secrets.db encryption at rest — **NEW (2026-03-29)**, documented security gap from password reset audit
 
@@ -67,6 +75,20 @@
 - [x] ~~Per-user timezone support~~ — User profile timezone, IANA validation, UI uses preference. **COMPLETE (2026-03-29)**
 - [x] ~~Forge terminology~~ — "Darkhan — The Forge" throughout UI, README, manifest. **COMPLETE (2026-03-29)**
 - [x] ~~Threat flag capability for all workers~~ — darkhan.flagThreat() + CRISPR spacer. **COMPLETE (2026-03-29)**
+
+---
+
+## Priority 2.5 — Federated Learning Foundation (Darkhan-side)
+
+These items lay the groundwork in Darkhan for federated model training via Mokume.
+
+- [ ] Classification decision log — structured triage_log table (message_hash, classification, escalation, timing, model_version). No raw content. Training data source.
+- [ ] Model version tagging — every LLM call tagged with model name + hash for accuracy comparison across versions
+- [ ] Telemetry config skeleton — `telemetry` block in darkhan.config.json (enabled: false, anonymizedClassifications: false, federatedLearning: false)
+- [ ] Model update channel — federation protocol support for hub-pushed model updates (Mokume sends, Darkhan pulls)
+- [ ] Custom Darkhan triage model — fine-tune 1.5-3B model on classification decision log data using LoRA. Ship as `darkhan/triage:v1` via Ollama.
+- [ ] Federated learning pipeline (Mokume) — Flower/TFF integration. Local training on-device, gradient aggregation at hub, privacy-preserving. Enterprise feature.
+- [ ] Privacy policy and consent flow — opt-in telemetry consent in first-run setup. Required before any data collection.
 
 ---
 
@@ -196,3 +218,13 @@ All P1 and P2 items shipped on 2026-03-29 (15 features in one session). OWASP AS
 | 2026-03-29 | Corey OWASP ASI Top 10 audit | Grade B+. All P0s and critical P1s fixed |
 | 2026-03-29 | Open-source repo sanitization | Generic config, example workers, internal refs removed |
 | 2026-03-29 | Azure OAuth credential incident | Hardcoded creds removed, moved to .env, secret revoked, scanner prevents recurrence |
+| 2026-03-30 | Integrated Claude Code terminal | xterm.js + node-pty, Claude Code and shell modes, /terminal namespace |
+| 2026-03-30 | Unified Claude session | SDK-based single process shared between terminal and chat |
+| 2026-03-30 | Shell terminal | General-purpose bash/zsh in web UI |
+| 2026-03-30 | Terminal pop-out window | Standalone window for multi-monitor setups |
+| 2026-03-30 | Channel-terminal bridge | Terminal events to channels, channel context to Claude terminal |
+| 2026-03-30 | Corey audit context update | Architecture context in system prompt, rate limits as user config |
+| 2026-03-30 | BSL 1.1 LICENSE | 5R Industries LLC, 4-year change to Apache 2.0 |
+| 2026-03-30 | Landing page | docs/index.html for darkhan.ai |
+| 2026-03-30 | README rewrite | Cold-visitor optimized, architecture diagram, terminal docs |
+| 2026-03-30 | UI workspace branch | ui-workspace branch + dev guide for contributor UI work |
