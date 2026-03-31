@@ -18,10 +18,9 @@ CREATE TABLE IF NOT EXISTS credentials (
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
--- Migrations are handled by the seed script and server startup, not raw SQL.
--- SQLite does not support IF NOT EXISTS on ALTER TABLE ADD COLUMN, so migration
--- ALTER statements must be run individually with error handling in JavaScript.
-CREATE INDEX IF NOT EXISTS idx_credentials_api_key_hmac ON credentials(api_key_hmac);
+-- Migrations (ALTER TABLE ADD COLUMN, indexes on migrated columns) are handled
+-- by the seed script and server startup with error handling, not raw SQL.
+-- SQLite does not support IF NOT EXISTS on ALTER TABLE ADD COLUMN.
 
 -- Sensitive settings (lockdown PIN hash, etc.)
 -- Moved from darkhan.db settings table for credential isolation.
