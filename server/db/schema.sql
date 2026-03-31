@@ -127,6 +127,7 @@ CREATE TABLE IF NOT EXISTS activity_log (
   details TEXT,
   chain_hash TEXT,                      -- [DARKHAN] SHA-256(prev_hash + entry_data) — tamper-evident chain
   origin TEXT,                          -- [DARKHAN] Federation: source instance ID
+  entry_type TEXT DEFAULT 'event',      -- [DARKHAN] 'event', 'spacer', or 'anchor' (CRISPR defense)
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_activity_actor ON activity_log (actor, created_at);
