@@ -68,6 +68,20 @@ async function seed() {
   });
   console.log('✓ Secrets schema applied.');
 
+  // Run migrations (ALTER TABLE) with error handling — these may already exist on fresh installs
+  const migrations = [
+    'ALTER TABLE credentials ADD COLUMN must_change_password INTEGER DEFAULT 1',
+    'ALTER TABLE credentials ADD COLUMN api_key_hmac TEXT',
+  ];
+  for (const sql of migrations) {
+    try { await secretsRun(sql); } catch (e) {
+      if (!e.message.includes('duplicate column')) throw e;
+      // Column already exists — expected on fresh install where CREATE TABLE included it
+    }
+  }
+  // Ensure HMAC index exists
+  try { await secretsRun('CREATE INDEX IF NOT EXISTS idx_credentials_api_key_hmac ON credentials(api_key_hmac)'); } catch {}
+
   // Set secrets.db permissions to 600 (owner-only)
   try {
     fs.chmodSync(SECRETS_DB_PATH, 0o600);
