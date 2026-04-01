@@ -22,6 +22,21 @@ After cloning, the installer runs the setup wizard automatically.
 git clone https://github.com/5RIndustries/darkhan.git && cd darkhan && node setup.js
 ```
 
+### Option C: Import config from an existing Darkhan instance
+
+If you're setting up a node to match an existing Darkhan (e.g., provisioning a second node for Mokume federation), you can export a portable config and import it:
+
+```bash
+# On the EXISTING Darkhan instance:
+node scripts/export-config.js -o my-config.json --sign
+
+# On the NEW machine:
+git clone https://github.com/5RIndustries/darkhan.git && cd darkhan
+node setup.js --from-config my-config.json
+```
+
+The import shows you exactly what the config contains — team members, channels, LLM providers, permissions — and asks for confirmation before applying anything. Fresh secrets (passwords, API keys, Ed25519 keypair) are always generated locally. Nothing sensitive transfers from the source instance.
+
 ### What the setup wizard does
 
 The setup wizard (`setup.js`) is the primary setup path. It:

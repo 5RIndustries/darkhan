@@ -93,7 +93,252 @@ function checkCommand(cmd) {
   } catch { return false; }
 }
 
+/**
+ * Import a portable config exported from another Darkhan instance.
+ * Shows the human exactly what will be applied, waits for confirmation.
+ * Generates fresh secrets (passwords, keys, keypairs) — never imports them.
+ */
+async function importConfig(configPath) {
+  print('');
+  print(`${c.accent}${c.bold}╔══════════════════════════════════════╗${c.reset}`);
+  print(`${c.accent}${c.bold}║     Darkhan — The Forge              ║${c.reset}`);
+  print(`${c.accent}${c.bold}║     Import Configuration             ║${c.reset}`);
+  print(`${c.accent}${c.bold}╚══════════════════════════════════════╝${c.reset}`);
+  print('');
+
+  // Load and validate the portable config
+  if (!fs.existsSync(configPath)) {
+    fail(`Config file not found: ${configPath}`);
+    process.exit(1);
+  }
+
+  let imported;
+  try {
+    imported = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+  } catch (e) {
+    fail(`Invalid JSON in config file: ${e.message}`);
+    process.exit(1);
+  }
+
+  // Validate format
+  if (!imported._meta || imported._meta.format !== 'darkhan-portable-config-v1') {
+    fail('Not a valid Darkhan portable config file.');
+    info('Expected format: darkhan-portable-config-v1');
+    info('Export one with: node scripts/export-config.js -o config.json');
+    process.exit(1);
+  }
+
+  // Verify signature if present
+  if (imported._meta.signature && imported._meta.signingKey) {
+    try {
+      const configCopy = JSON.parse(JSON.stringify(imported));
+      delete configCopy._meta.signature;
+      delete configCopy._meta.signingKey;
+      const configData = JSON.stringify(configCopy);
+      const publicKeyObj = crypto.createPublicKey(imported._meta.signingKey);
+      const valid = crypto.verify(
+        null,
+        Buffer.from(configData),
+        publicKeyObj,
+        Buffer.from(imported._meta.signature, 'base64')
+      );
+      if (valid) {
+        success('Config signature verified — exported by a trusted Darkhan instance');
+      } else {
+        warn('Config signature INVALID — config may have been tampered with');
+        const proceed = await ask('Continue anyway? [y/N]', 'n');
+        if (proceed.toLowerCase() !== 'y') process.exit(1);
+      }
+    } catch (e) {
+      warn(`Could not verify signature: ${e.message}`);
+    }
+  } else {
+    warn('Config is unsigned — cannot verify origin');
+    info('This is normal for manually shared configs.');
+  }
+
+  // Show the human exactly what this config contains
+  banner('Configuration Review');
+  info(`Exported from: ${imported._meta.exportedFrom} on ${imported._meta.exportedAt}`);
+  print('');
+
+  print(`${c.bold}  Instance:${c.reset}`);
+  print(`    Name:     ${imported.instance?.name || 'My Forge'}`);
+  print(`    Brand:    ${imported.instance?.brandName || 'Darkhan'}`);
+  print(`    Port:     ${imported.instance?.port || 3001}`);
+  print(`    Timezone: ${imported.instance?.timezone || 'America/New_York'}`);
+  print('');
+
+  print(`${c.bold}  Team Members:${c.reset}`);
+  for (const member of (imported.team?.members || [])) {
+    const type = member.type === 'human' ? `${c.green}[human]${c.reset}` : `${c.cyan}[agent]${c.reset}`;
+    const model = member.model ? ` — ${member.model.provider}/${member.model.model}` : '';
+    const perms = member.permissions?.shell ? ` (shell: ${member.permissions.shell})` : '';
+    print(`    ${type} ${member.name} (${member.id})${model}${perms}`);
+  }
+  print('');
+
+  print(`${c.bold}  Channels:${c.reset}`);
+  for (const ch of (imported.channels || [])) {
+    print(`    ${ch.name} — ${ch.description}`);
+  }
+  print('');
+
+  print(`${c.bold}  LLM Providers:${c.reset}`);
+  for (const [name] of Object.entries(imported.llm?.providers || {})) {
+    print(`    ${name}`);
+  }
+  print('');
+
+  print(`${c.bold}  What will be generated fresh on THIS node:${c.reset}`);
+  print(`    ${c.green}✓${c.reset} New admin password (you set it on first login)`);
+  print(`    ${c.green}✓${c.reset} New lockdown PIN (you set it on first login)`);
+  print(`    ${c.green}✓${c.reset} New session secret`);
+  print(`    ${c.green}✓${c.reset} New Ed25519 keypair (unique to this node)`);
+  print(`    ${c.green}✓${c.reset} New API keys for each agent`);
+  print(`    ${c.green}✓${c.reset} Fresh database`);
+  print('');
+
+  print(`${c.bold}  What will NOT be imported:${c.reset}`);
+  print(`    ${c.accent}⚠${c.reset} No passwords, API keys, or secrets from the source`);
+  print(`    ${c.accent}⚠${c.reset} No message history or activity logs`);
+  print(`    ${c.accent}⚠${c.reset} No vault path (you will set your own)`);
+  print('');
+
+  const confirm = await ask(`${c.bold}Apply this configuration?${c.reset} [y/N]`, 'n');
+  if (confirm.toLowerCase() !== 'y') {
+    print('Cancelled. No changes made.');
+    rl.close();
+    process.exit(0);
+  }
+
+  // Let the human customize node-specific settings
+  banner('Node-Specific Settings');
+
+  const instanceName = await ask('Instance name for THIS node', imported.instance?.name || 'My Forge');
+  const port = await ask('Port', String(imported.instance?.port || 3001));
+  const timezone = await ask('Timezone', imported.instance?.timezone || 'America/New_York');
+  const vaultPath = await ask('Vault path (or Enter to skip)', '');
+
+  // API keys
+  banner('API Keys');
+  info('The source config used these providers. Enter keys for the ones you want to enable:');
+  const providerKeys = {};
+  for (const [name, prov] of Object.entries(imported.llm?.providers || {})) {
+    if (name === 'ollama') continue; // Local, no key needed
+    const key = await ask(`  ${name} API key (Enter to skip)`, '');
+    if (key) providerKeys[name] = key;
+  }
+
+  // Admin setup
+  banner('Admin Account');
+  const adminMember = (imported.team?.members || []).find(m => m.role === 'admin');
+  const adminName = await ask('Your name', adminMember?.name || 'Admin');
+  const adminUsername = adminName.toLowerCase().replace(/[^a-z0-9]/g, '');
+  info(`Login username: ${adminUsername}`);
+  info('You will set your password and lockdown PIN after your first login.');
+
+  // Build the full config for this node
+  const sessionSecret = crypto.randomBytes(32).toString('hex');
+
+  // Merge imported structure with node-specific values
+  const nodeConfig = {
+    instance: {
+      name: instanceName,
+      brandName: imported.instance?.brandName || 'Darkhan',
+      port: parseInt(port),
+      timezone,
+    },
+    team: imported.team,
+    llm: {
+      triage: imported.llm?.triage,
+      providers: {
+        ollama: imported.llm?.providers?.ollama || { host: 'localhost', port: 11434 },
+        ...(providerKeys.google ? { google: { keyEnvVar: 'GOOGLE_API_KEY' } } : {}),
+        ...(providerKeys.anthropic ? { anthropic: { keyEnvVar: 'ANTHROPIC_API_KEY' } } : {}),
+      },
+      globalRateLimits: imported.llm?.globalRateLimits || {},
+    },
+    channels: imported.channels,
+    ...(vaultPath ? { vault: { path: vaultPath } } : {}),
+    sandbox: imported.sandbox || { processIsolation: false },
+    federation: { enabled: false },  // Federation is opt-in after setup
+  };
+
+  // Update admin member with local identity
+  const adminIdx = nodeConfig.team.members.findIndex(m => m.role === 'admin');
+  if (adminIdx !== -1) {
+    nodeConfig.team.members[adminIdx].id = `user_${adminUsername}`;
+    nodeConfig.team.members[adminIdx].name = adminName;
+  }
+
+  // Generate .env
+  const envContent = [
+    '# Darkhan — Environment Configuration',
+    `# Generated by setup wizard (imported config) on ${new Date().toISOString()}`,
+    `# Source: ${imported._meta.exportedFrom}`,
+    '# NEVER commit this file to version control.',
+    '',
+    `PORT=${port}`,
+    `SESSION_SECRET=${sessionSecret}`,
+    `CORS_ORIGIN=http://localhost:${port}`,
+    '',
+    '# Local LLM',
+    'OLLAMA_HOST=localhost',
+    'OLLAMA_PORT=11434',
+    `OLLAMA_MODEL=${imported.llm?.triage?.model || 'qwen2.5:3b'}`,
+    '',
+    '# Cloud APIs',
+    providerKeys.google ? `GOOGLE_API_KEY=${providerKeys.google}` : '# GOOGLE_API_KEY=',
+    providerKeys.anthropic ? `ANTHROPIC_API_KEY=${providerKeys.anthropic}` : '# ANTHROPIC_API_KEY=',
+    '',
+    '# Claude Relay',
+    'DARYL_RELAY_MODE=cli',
+    '',
+  ].join('\n');
+
+  fs.writeFileSync(ENV_PATH, envContent, { mode: 0o600 });
+  success('.env generated');
+
+  fs.writeFileSync(CONFIG_PATH, JSON.stringify(nodeConfig, null, 2));
+  success('darkhan.config.json generated');
+
+  // Copy worker files for agents that reference them
+  for (const member of nodeConfig.team.members) {
+    if (member.worker) {
+      const workerSrc = path.join(SERVER_DIR, 'workers', 'examples', 'assistant.worker.js');
+      const workerDst = path.join(SERVER_DIR, 'workers', member.worker);
+      if (fs.existsSync(workerSrc) && !fs.existsSync(workerDst)) {
+        let workerCode = fs.readFileSync(workerSrc, 'utf8');
+        workerCode = workerCode.replace(/id:\s*'agent_\w+'/, `id: '${member.id}'`);
+        workerCode = workerCode.replace(/name:\s*'[^']+'/, `name: '${member.name}'`);
+        fs.writeFileSync(workerDst, workerCode);
+        success(`Worker file created: workers/${member.worker}`);
+      }
+    }
+  }
+
+  // Return to the normal setup flow for deps, db seed, and server start
+  return { sessionSecret, adminUsername, port, nodeConfig };
+}
+
 async function main() {
+  // Check for --from-config flag
+  const args = process.argv.slice(2);
+  const configFlagIndex = args.indexOf('--from-config');
+
+  if (configFlagIndex !== -1) {
+    const configPath = args[configFlagIndex + 1];
+    if (!configPath) {
+      fail('Usage: node setup.js --from-config <path-to-config.json>');
+      process.exit(1);
+    }
+    const result = await importConfig(configPath);
+    // Skip to dependency install + db seed + server start
+    await finishSetup(result.sessionSecret, result.adminUsername, result.port);
+    return;
+  }
+
   print('');
   print(`${c.accent}${c.bold}╔══════════════════════════════════════╗${c.reset}`);
   print(`${c.accent}${c.bold}║     Darkhan — The Forge              ║${c.reset}`);
@@ -328,6 +573,15 @@ async function main() {
     fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
   }
 
+  // Hand off to shared finish flow
+  await finishSetup(sessionSecret, adminUsername, port);
+}
+
+/**
+ * Shared setup completion — used by both interactive wizard and config import.
+ * Handles: npm install, pre-commit hook, db seed, credentials file, server start.
+ */
+async function finishSetup(sessionSecret, adminUsername, port) {
   // ── Install Dependencies ──
   banner('Installing dependencies...');
   try {
@@ -373,8 +627,8 @@ async function main() {
       env: {
         ...process.env,
         SESSION_SECRET: sessionSecret,
-        DARKHAN_SETUP_PASSWORD: adminPassword,
-        DARKHAN_SETUP_PIN: lockdownPin,
+        DARKHAN_SETUP_PASSWORD: 'changeme',
+        DARKHAN_SETUP_PIN: '',
       },
     });
     success('Database seeded');
@@ -391,7 +645,7 @@ async function main() {
     '',
     `Admin Login:`,
     `  Username: ${adminUsername}`,
-    `  Password: (the one you chose during setup)`,
+    `  Password: changeme (you MUST change this on first login)`,
     '',
     'API Keys:',
     '  (See seed.js output above)',

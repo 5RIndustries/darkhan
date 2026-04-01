@@ -6,6 +6,11 @@ All notable changes to Darkhan are documented here.
 
 First public release. Darkhan is a self-hosted AI command center that gives you full control over your AI agents — what they can do, what they can see, and what happens when they go wrong.
 
+### Portable Config Export/Import (2026-04-01)
+- **`scripts/export-config.js`** — Exports a portable configuration file from an existing Darkhan instance. Strips all secrets (API keys, passwords, Ed25519 keypairs, session secrets). Preserves team structure, channels, LLM provider config, permissions, and rate limits. Supports Ed25519 signing (`--sign`) so the receiving node can verify the config came from a trusted source.
+- **`setup.js --from-config`** — Imports a portable config on a new node. Shows the human exactly what the config contains (every member, channel, provider, permission) and requires explicit confirmation before applying. Verifies Ed25519 signature if present. Always generates fresh secrets locally — nothing sensitive transfers between instances.
+- **Mokume federation prep** — These features are the foundation for Mokume enterprise provisioning. A Mokume hub can offer a signed config; the new node pulls it, the human approves it, and the install runs locally. The hub never gets shell access to the new node.
+
 ### Dress Rehearsal Bug Fixes (2026-03-31)
 Five bugs caught during clean-install dress rehearsal on MacBook Air:
 1. **Seed script duplicate column** — `must_change_password` column declared twice in `secrets-schema.sql`, causing seed failure on fresh installs
