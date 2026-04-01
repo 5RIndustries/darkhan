@@ -454,6 +454,7 @@ async function main() {
 
   const googleKey = await ask('Google API key (for Gemini agents) — Enter to skip', '');
   const anthropicKey = await ask('Anthropic API key (for Claude escalation) — Enter to skip', '');
+  const openaiKey = await ask('OpenAI API key (for GPT consensus model) — Enter to skip', '');
 
   // ── Step 6: Vault ──
   banner('Step 6: Knowledge base (vault)');
@@ -491,6 +492,7 @@ async function main() {
     '# Cloud APIs',
     googleKey ? `GOOGLE_API_KEY=${googleKey}` : '# GOOGLE_API_KEY=',
     anthropicKey ? `ANTHROPIC_API_KEY=${anthropicKey}` : '# ANTHROPIC_API_KEY=',
+    openaiKey ? `OPENAI_API_KEY=${openaiKey}` : '# OPENAI_API_KEY=',
     '',
     '# Claude Relay',
     'DARYL_RELAY_MODE=cli',
@@ -539,11 +541,13 @@ async function main() {
         ollama: { host: 'localhost', port: 11434 },
         ...(googleKey ? { google: { keyEnvVar: 'GOOGLE_API_KEY' } } : {}),
         ...(anthropicKey ? { anthropic: { keyEnvVar: 'ANTHROPIC_API_KEY' } } : {}),
+        ...(openaiKey ? { openai: { keyEnvVar: 'OPENAI_API_KEY' } } : {}),
       },
       globalRateLimits: {
         ollama: { requestsPerDay: 0, requestsPerMinute: 0 },
         ...(googleKey ? { google: { requestsPerDay: 1000, requestsPerMinute: 15 } } : {}),
         ...(anthropicKey ? { anthropic: { requestsPerDay: 500, requestsPerMinute: 10 } } : {}),
+        ...(openaiKey ? { openai: { requestsPerDay: 500, requestsPerMinute: 10 } } : {}),
       },
     },
     channels: [

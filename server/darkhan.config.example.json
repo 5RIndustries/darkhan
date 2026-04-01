@@ -47,11 +47,13 @@
     "providers": {
       "ollama": { "host": "localhost", "port": 11434 },
       "google": { "keyEnvVar": "GOOGLE_API_KEY" },
-      "anthropic": { "keyEnvVar": "ANTHROPIC_API_KEY" }
+      "anthropic": { "keyEnvVar": "ANTHROPIC_API_KEY" },
+      "openai": { "keyEnvVar": "OPENAI_API_KEY" }
     },
     "globalRateLimits": {
       "google": { "requestsPerDay": 1000, "requestsPerMinute": 15 },
       "anthropic": { "requestsPerDay": 500, "requestsPerMinute": 10 },
+      "openai": { "requestsPerDay": 500, "requestsPerMinute": 10 },
       "ollama": { "requestsPerDay": 0, "requestsPerMinute": 0 }
     }
   },

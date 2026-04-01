@@ -1,7 +1,7 @@
 /**
  * Darkhan — Unified LLM Interface
  *
- * Single interface for all LLM calls: Ollama, Google Gemini, Anthropic Claude.
+ * Single interface for all LLM calls: Ollama, Google Gemini, Anthropic Claude, OpenAI GPT.
  * Rate limiting and cost tracking integrated.
  */
 
@@ -45,6 +45,9 @@ class LLMService {
         break;
       case 'anthropic':
         result = await this._anthropicComplete(model, messages, options);
+        break;
+      case 'openai':
+        result = await this._openaiComplete(model, messages, options);
         break;
       default:
         throw new Error(`Unknown LLM provider: ${provider}`);
@@ -333,6 +336,74 @@ Respond with ONLY the category name, nothing else.`;
     });
   }
 
+  async _openaiComplete(model, messages, options) {
+    const keyEnvVar = this.providers.openai?.keyEnvVar || 'OPENAI_API_KEY';
+    const apiKey = process.env[keyEnvVar];
+    if (!apiKey) throw new Error(`Missing env var ${keyEnvVar} for OpenAI`);
+
+    const timeout = options.timeout || 30000;
+
+    const body = {
+      model,
+      messages: messages.map(m => ({ role: m.role, content: m.content })),
+      max_completion_tokens: options.maxTokens || 4096,
+    };
+    if (options.temperature !== undefined) body.temperature = options.temperature;
+
+    const postData = JSON.stringify(body);
+    console.log(`[LLM/OpenAI] Request: model=${model}, messages=${messages.length}`);
+
+    return new Promise((resolve, reject) => {
+      const req = https.request({
+        hostname: 'api.openai.com',
+        path: '/v1/chat/completions',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
+        },
+        timeout,
+      }, (res) => {
+        let data = '';
+        res.on('data', chunk => data += chunk);
+        res.on('end', () => {
+          try {
+            const result = JSON.parse(data);
+
+            if (result.error) {
+              if (result.error.code === 'rate_limit_exceeded') {
+                const err = new Error(`OpenAI rate limited: ${result.error.message}`);
+                err.name = 'RateLimitError';
+                err.retryable = true;
+                reject(err);
+                return;
+              }
+              reject(new Error(`OpenAI API error: ${result.error.message}`));
+              return;
+            }
+
+            const text = result.choices?.[0]?.message?.content || '';
+            const usage = result.usage || {};
+            resolve({
+              response: text.trim(),
+              usage: {
+                inputTokens: usage.prompt_tokens || 0,
+                outputTokens: usage.completion_tokens || 0,
+              },
+            });
+          } catch (e) {
+            reject(new Error(`OpenAI parse error: ${e.message}`));
+          }
+        });
+      });
+
+      req.on('error', e => reject(new Error(`OpenAI connection error: ${e.message}`)));
+      req.on('timeout', () => { req.destroy(); reject(new Error('OpenAI timeout')); });
+      req.write(postData);
+      req.end();
+    });
+  }
+
   /**
    * Estimate cost in millicents based on provider pricing.
    * Returns 0 for local models.
@@ -350,6 +421,14 @@ Respond with ONLY the category name, nothing else.`;
         'claude-sonnet-4-6': { input: 300, output: 1500 }, // $3/$15 per 1M
         'claude-opus-4-6': { input: 1500, output: 7500 },  // $15/$75 per 1M
         'claude-haiku-4-5': { input: 80, output: 400 },    // $0.80/$4 per 1M
+      },
+      'openai': {
+        'gpt-4o': { input: 250, output: 1000 },            // $2.50/$10 per 1M
+        'gpt-4o-mini': { input: 15, output: 60 },           // $0.15/$0.60 per 1M
+        'gpt-4.1': { input: 200, output: 800 },             // $2/$8 per 1M
+        'gpt-4.1-mini': { input: 40, output: 160 },         // $0.40/$1.60 per 1M
+        'gpt-4.1-nano': { input: 10, output: 40 },          // $0.10/$0.40 per 1M
+        'o3-mini': { input: 110, output: 440 },              // $1.10/$4.40 per 1M
       },
     };
 
