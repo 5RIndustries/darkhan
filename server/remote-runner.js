@@ -18,7 +18,12 @@
  * Keys are loaded dynamically from config team members that have a `worker` field.
  */
 
-try { process.loadEnvFile(require('path').join(__dirname, '.env')); } catch (_) { /* .env may not exist */ }
+if (typeof process.loadEnvFile === 'function') {
+  try { process.loadEnvFile(require('path').join(__dirname, '.env')); } catch (_) { /* .env may not exist */ }
+} else {
+  console.error('[Darkhan] Node 20.12+ required (process.loadEnvFile not available). Current: ' + process.version);
+  process.exit(1);
+}
 
 const path = require('path');
 const fs = require('fs');

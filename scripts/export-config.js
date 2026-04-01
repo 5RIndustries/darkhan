@@ -141,24 +141,27 @@ const cleanJSON = JSON.parse(JSON.stringify(portable));
 // Sign if requested and keypair is available
 if (shouldSign) {
   try {
-    const sqlite3 = require('better-sqlite3');
     if (!fs.existsSync(DB_PATH)) throw new Error('Database not found');
 
-    const db = sqlite3(DB_PATH, { readonly: true });
-    const row = db.prepare('SELECT value FROM instance_identity WHERE key = ?').get('ed25519_private');
-    db.close();
+    // Use sqlite3 CLI (no extra dependency) to read the keypair
+    const { execSync } = require('child_process');
+    const privKey = execSync(
+      `sqlite3 '${DB_PATH}' "SELECT value FROM instance_identity WHERE key = 'ed25519_private';"`,
+      { encoding: 'utf8', timeout: 5000, shell: '/bin/bash' }
+    ).trim();
 
-    if (row) {
+    if (privKey) {
       const configData = JSON.stringify(cleanJSON);
-      const privateKeyObj = crypto.createPrivateKey(row.value);
+      const privateKeyObj = crypto.createPrivateKey(privKey);
       const signature = crypto.sign(null, Buffer.from(configData), privateKeyObj).toString('base64');
 
-      // Get public key for verification
-      const pubRow = require('better-sqlite3')(DB_PATH, { readonly: true })
-        .prepare('SELECT value FROM instance_identity WHERE key = ?').get('ed25519_public');
+      const pubKey = execSync(
+        `sqlite3 '${DB_PATH}' "SELECT value FROM instance_identity WHERE key = 'ed25519_public';"`,
+        { encoding: 'utf8', timeout: 5000, shell: '/bin/bash' }
+      ).trim();
 
       cleanJSON._meta.signature = signature;
-      cleanJSON._meta.signingKey = pubRow?.value || null;
+      cleanJSON._meta.signingKey = pubKey || null;
       success('Config signed with instance Ed25519 key');
     } else {
       warn('No Ed25519 keypair found — exporting unsigned');

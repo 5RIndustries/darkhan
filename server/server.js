@@ -1,4 +1,10 @@
-try { process.loadEnvFile(require('path').join(__dirname, '.env')); } catch (_) { /* .env may not exist */ }
+// Load .env — requires Node 20.12+ (process.loadEnvFile)
+if (typeof process.loadEnvFile === 'function') {
+  try { process.loadEnvFile(require('path').join(__dirname, '.env')); } catch (_) { /* .env may not exist */ }
+} else {
+  console.error('[Darkhan] Node 20.12+ required (process.loadEnvFile not available). Current: ' + process.version);
+  process.exit(1);
+}
 const express = require('express');
 const http = require('http');
 const https = require('https');

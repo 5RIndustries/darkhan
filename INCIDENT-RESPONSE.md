@@ -77,7 +77,7 @@ The hash-chain audit log tells you exactly when tampering started:
 
 **Timeline commitment:**
 - **Initial disclosure:** Within 24 hours of confirmed breach
-- **Full post-mortem:** Within 72 hours
+- **Full post-mortem:** Within 72 hours. If the investigation is ongoing at the 72-hour mark, we will publish what we know and update as we learn more. Honest partial disclosure beats polished silence.
 
 **Every disclosure MUST include:**
 
