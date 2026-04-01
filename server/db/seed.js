@@ -120,11 +120,19 @@ async function seed() {
     if (member.type === 'human') {
       // If running from setup wizard, use the password the user chose.
       // Otherwise, generate a random temporary password.
-      const setupPassword = process.env.DARKHAN_SETUP_PASSWORD;
+      const setupPassword = process.env.DARKHAN_SETUP_PASSWORD || '';
+      const isChangeme = setupPassword === 'changeme';
       const defaultPw = setupPassword || crypto.randomBytes(16).toString('hex');
       passwordHash = await bcrypt.hash(defaultPw, 12);
       apiKey = generateApiKey('dk_user');
-      if (!setupPassword) {
+      if (isChangeme) {
+        // Wizard path: user will set real password on first login
+        console.log(`✓ Admin "${member.name}" created.`);
+        console.log(`   Login username: ${member.name.toLowerCase()}`);
+        console.log(`   Temporary password: changeme`);
+        console.log(`   You will be prompted to change this on first login.`);
+      } else if (!setupPassword) {
+        // Manual seed: random password, display once
         console.log('\n' + '='.repeat(60));
         console.log('  TEMPORARY PASSWORD — CHANGE IMMEDIATELY');
         console.log(`   User: ${member.name} (${member.id})`);
@@ -134,6 +142,7 @@ async function seed() {
         console.log('   This password will NOT be displayed again.');
         console.log('='.repeat(60) + '\n');
       } else {
+        // Custom password from environment
         console.log(`✓ Admin "${member.name}" created with your chosen password.`);
         console.log(`   Login username: ${member.name.toLowerCase()}`);
       }

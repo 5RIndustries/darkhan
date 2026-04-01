@@ -137,13 +137,53 @@
 
       try {
         await api('POST', '/auth/change-password', { currentPassword, newPassword: newPw });
-        status.textContent = 'Password changed. Loading...';
+        status.textContent = 'Password changed. One more step...';
         status.style.color = '#27ae60';
-        document.removeEventListener('keydown', blockEscape);
-        // Small delay so user sees success, then proceed to app
+
+        // Step 2: Lockdown PIN setup
         setTimeout(() => {
-          overlay.remove();
-          showApp();
+          overlay.querySelector('div').innerHTML = `
+            <h2 style="margin:0 0 0.5rem 0;color:var(--text-primary, #e0e0e0);">Set Lockdown PIN</h2>
+            <p style="color:var(--text-secondary, #aaa);font-size:0.9rem;margin:0 0 1.5rem 0;">
+              The lockdown PIN is a second factor for unlocking Darkhan after a security event.
+              Choose something you will remember — if the system locks down, only this PIN can unlock it.
+            </p>
+            <form id="force-pin-form" style="display:flex;flex-direction:column;gap:0.75rem;">
+              <input type="password" id="fpin-value" placeholder="Lockdown PIN (4+ characters)" required minlength="4"
+                style="padding:0.6rem;background:var(--bg-primary, #1e1e1e);border:1px solid var(--border, #404040);border-radius:4px;color:var(--text-primary, #e0e0e0);font-size:1rem;">
+              <button type="submit" style="padding:0.6rem 1rem;background:var(--accent, #3498db);color:white;border:none;border-radius:4px;cursor:pointer;font-size:1rem;font-weight:bold;">Set PIN</button>
+              <div id="fpin-status" style="font-size:0.9rem;min-height:1.2em;"></div>
+            </form>
+          `;
+
+          document.getElementById('force-pin-form').addEventListener('submit', async (pinEv) => {
+            pinEv.preventDefault();
+            const pinStatus = document.getElementById('fpin-status');
+            const pinValue = document.getElementById('fpin-value').value;
+
+            if (pinValue.length < 4) {
+              pinStatus.textContent = 'PIN must be at least 4 characters';
+              pinStatus.style.color = '#e74c3c';
+              return;
+            }
+
+            pinStatus.textContent = 'Setting PIN...';
+            pinStatus.style.color = 'var(--text-secondary, #aaa)';
+
+            try {
+              await api('POST', '/auth/set-lockdown-pin', { pin: pinValue });
+              pinStatus.textContent = 'PIN set. Welcome to Darkhan.';
+              pinStatus.style.color = '#27ae60';
+              document.removeEventListener('keydown', blockEscape);
+              setTimeout(() => {
+                overlay.remove();
+                showApp();
+              }, 800);
+            } catch (pinErr) {
+              pinStatus.textContent = pinErr.message;
+              pinStatus.style.color = '#e74c3c';
+            }
+          });
         }, 800);
       } catch (err) {
         status.textContent = err.message;

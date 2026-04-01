@@ -22,7 +22,9 @@ const fs = require('fs');
 const path = require('path');
 const { execSync, spawn } = require('child_process');
 
+const os = require('os');
 const SERVER_DIR = path.join(__dirname, 'server');
+const OS = os.platform();
 const ENV_PATH = path.join(SERVER_DIR, '.env');
 const CONFIG_PATH = path.join(SERVER_DIR, 'darkhan.config.json');
 
@@ -171,38 +173,11 @@ async function main() {
   const adminId = `user_${adminName.toLowerCase().replace(/[^a-z0-9]/g, '')}`;
   const adminUsername = adminName.toLowerCase().replace(/[^a-z0-9]/g, '');
   info(`Login username: ${adminUsername}`);
+  info('You will set your password and lockdown PIN after your first login.');
 
-  // Let the user set their own password — no random generation
-  let adminPassword = '';
-  while (true) {
-    adminPassword = await askSecret('Choose a password (min 8 characters)');
-    if (adminPassword.length < 8) {
-      warn('Password must be at least 8 characters. Try again.');
-      continue;
-    }
-    const confirm = await askSecret('Confirm password');
-    if (adminPassword !== confirm) {
-      warn('Passwords do not match. Try again.');
-      continue;
-    }
-    break;
-  }
-  success('Password set');
-
-  // Lockdown PIN
-  let lockdownPin = '';
-  print('');
-  info('The lockdown PIN is a second factor for unlocking the system after');
-  info('a security event. Choose something you will remember.');
-  while (true) {
-    lockdownPin = await askSecret('Choose a lockdown PIN (min 4 characters)');
-    if (lockdownPin.length < 4) {
-      warn('PIN must be at least 4 characters. Try again.');
-      continue;
-    }
-    break;
-  }
-  success('Lockdown PIN set');
+  // Default password — user changes it on first login (forced)
+  const adminPassword = 'changeme';
+  const lockdownPin = '';
 
   // ── Step 4: Local LLM ──
   banner('Step 4: Local LLM');
@@ -432,13 +407,12 @@ async function main() {
   print(`${c.accent}${c.bold}║     Setup Complete!                  ║${c.reset}`);
   print(`${c.accent}${c.bold}╚══════════════════════════════════════╝${c.reset}`);
   print('');
-  print(`${c.bold}  Login:${c.reset}`);
-  print(`    URL:      ${c.cyan}http://localhost:${port}${c.reset}`);
-  print(`    Username: ${c.accent}${adminUsername}${c.reset}`);
-  print(`    Password: ${c.accent}(the one you just chose)${c.reset}`);
+  print(`${c.bold}  What happens next:${c.reset}`);
+  print(`    1. Darkhan will start and open in your browser`);
+  print(`    2. Log in with username ${c.accent}${adminUsername}${c.reset} and password ${c.accent}changeme${c.reset}`);
+  print(`    3. You will be guided to set a new password and lockdown PIN`);
   print('');
-  print(`${c.bold}  Your password and lockdown PIN are already configured.${c.reset}`);
-  print(`${c.dim}  Credentials file: darkhan-credentials.txt (delete after saving API keys)${c.reset}`);
+  print(`${c.dim}  API keys saved to: darkhan-credentials.txt (delete after saving)${c.reset}`);
   print('');
 
   const startNow = await ask('Start Darkhan now? [Y/n]', 'y');
@@ -448,12 +422,29 @@ async function main() {
     print('');
     info('Starting Darkhan...');
     print('');
+
+    const serverUrl = `http://localhost:${port}`;
+
     const server = spawn('node', ['server.js'], {
       cwd: SERVER_DIR,
       stdio: 'inherit',
       env: { ...process.env, SESSION_SECRET: sessionSecret },
     });
     server.on('error', (e) => { fail('Failed to start: ' + e.message); process.exit(1); });
+
+    // Wait for server to be ready, then open browser
+    setTimeout(() => {
+      try {
+        if (OS === 'darwin') {
+          execSync(`open ${serverUrl}`, { stdio: 'pipe' });
+        } else if (OS === 'linux') {
+          execSync(`xdg-open ${serverUrl}`, { stdio: 'pipe' });
+        }
+      } catch {
+        print('');
+        print(`${c.bold}  Open your browser to: ${c.cyan}${serverUrl}${c.reset}`);
+      }
+    }, 4000);  // Give server 4 seconds to start
   }
 }
 
