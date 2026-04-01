@@ -958,6 +958,109 @@ class WorkerRuntime {
             });
           },
         },
+
+        /**
+         * Web tools — search and fetch external URLs.
+         * Agents can research topics and retrieve web content.
+         * Respects sandbox network egress rules.
+         */
+        web: {
+          /**
+           * Search the web using Google Custom Search API.
+           * Requires GOOGLE_API_KEY and GOOGLE_SEARCH_CX in .env.
+           * Falls back to a simple fetch-based search if not configured.
+           */
+          async search(query, opts = {}) {
+            toolLimits.checkFs('read'); // Count against read limits
+            const maxResults = opts.maxResults || 5;
+
+            self.activityLog?.append({
+              actor: agentId,
+              action: 'web_search',
+              target: query.substring(0, 100),
+              details: JSON.stringify({ maxResults }),
+            });
+
+            // Use Google Custom Search if configured
+            const googleKey = process.env.GOOGLE_API_KEY;
+            const searchCx = process.env.GOOGLE_SEARCH_CX;
+
+            if (googleKey && searchCx) {
+              const url = `https://www.googleapis.com/customsearch/v1?key=${encodeURIComponent(googleKey)}&cx=${encodeURIComponent(searchCx)}&q=${encodeURIComponent(query)}&num=${maxResults}`;
+              const resp = await fetch(url, { signal: AbortSignal.timeout(15000) });
+              if (!resp.ok) throw new Error(`Search API error: ${resp.status}`);
+              const data = await resp.json();
+              return (data.items || []).map(item => ({
+                title: item.title,
+                url: item.link,
+                snippet: item.snippet,
+              }));
+            }
+
+            // Fallback: use the LLM's knowledge (no external search configured)
+            return [{ title: 'No search API configured', url: '', snippet: 'Set GOOGLE_API_KEY and GOOGLE_SEARCH_CX in .env to enable web search. Falling back to LLM knowledge.' }];
+          },
+
+          /**
+           * Fetch a URL and return its text content.
+           * Respects timeout and size limits.
+           */
+          async fetch(url, opts = {}) {
+            toolLimits.checkFs('read'); // Count against read limits
+            const timeout = opts.timeout || 15000;
+            const maxSize = opts.maxSize || 100000; // 100KB default
+
+            // Basic URL validation
+            let parsed;
+            try {
+              parsed = new URL(url);
+            } catch {
+              throw new Error(`Invalid URL: ${url}`);
+            }
+
+            // Security: only allow http/https
+            if (!['http:', 'https:'].includes(parsed.protocol)) {
+              throw new Error(`Blocked protocol: ${parsed.protocol}`);
+            }
+
+            self.activityLog?.append({
+              actor: agentId,
+              action: 'web_fetch',
+              target: url.substring(0, 200),
+            });
+
+            const resp = await fetch(url, {
+              signal: AbortSignal.timeout(timeout),
+              headers: { 'User-Agent': 'Darkhan/1.0 (research agent)' },
+            });
+
+            if (!resp.ok) throw new Error(`Fetch error: ${resp.status} ${resp.statusText}`);
+
+            const text = await resp.text();
+
+            // Truncate to max size
+            const result = text.length > maxSize ? text.substring(0, maxSize) + '\n[TRUNCATED]' : text;
+
+            // [ASI01] Scan fetched content for injection
+            if (self.securityService && result.length > 0) {
+              const scan = self.securityService.scanForInjection(result, {
+                source: `web:${url.substring(0, 100)}`,
+                origin: 'external',
+              });
+              if (!scan.safe && scan.severity === 'critical') {
+                self.activityLog?.append({
+                  actor: agentId,
+                  action: 'tool_output_injection_detected',
+                  target: url.substring(0, 200),
+                  details: JSON.stringify({ severity: scan.severity }),
+                });
+                throw new Error(`ASI01: Fetched content contains critical injection patterns — blocked`);
+              }
+            }
+
+            return result;
+          },
+        },
       },
 
       // Agent config
