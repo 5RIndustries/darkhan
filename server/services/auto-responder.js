@@ -506,7 +506,8 @@ async function processLocalLlmMessage(channelId, fromUser, messageBody, context)
 
   const darylContext = await buildDarylContext(db, channelId);
 
-  const prompt = `You are Darkhan, the command center assistant. You are NOT Claude — Claude is the Chief of Staff who operates in the terminal. You are Darkhan, running on a local Qwen 2.5 14B model.
+  const ollamaModel = process.env.OLLAMA_MODEL || 'qwen2.5:14b';
+  const prompt = `You are Darkhan, the command center assistant. You are NOT Claude — Claude is the Chief of Staff who operates in the terminal. You are Darkhan, running on a local ${ollamaModel} model.
 
 Your role: Handle routine communication, answer questions about current status from the conversation context below, relay acknowledgments, and be a competent front-desk assistant.
 
@@ -524,7 +525,6 @@ Respond concisely as Darkhan.`;
 
   const ollamaHost = process.env.OLLAMA_HOST || 'localhost';
   const ollamaPort = parseInt(process.env.OLLAMA_PORT || '11434');
-  const ollamaModel = process.env.OLLAMA_MODEL || 'qwen2.5:14b';
 
   return new Promise((resolve) => {
     const postData = JSON.stringify({

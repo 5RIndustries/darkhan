@@ -895,6 +895,18 @@ server.listen(PORT, BIND_HOST, () => {
   const { startMonitor } = require('./services/monitor');
   startMonitor(db, io);
 
+  // Check local LLM model capability — warn if below recommended minimum
+  const configuredModel = process.env.OLLAMA_MODEL || config.llm?.triage?.model || 'unknown';
+  const modelSizeMatch = configuredModel.match(/(\d+)b/i);
+  const modelSizeB = modelSizeMatch ? parseInt(modelSizeMatch[1]) : 0;
+  if (modelSizeB > 0 && modelSizeB < 14) {
+    console.warn(`[Darkhan] WARNING: Local LLM "${configuredModel}" is below the recommended minimum (14B).`);
+    console.warn(`[Darkhan] Triage, injection detection, and consensus verification may be unreliable.`);
+    console.warn(`[Darkhan] Recommended: qwen2.5:14b or any 14B+ model. Run: ollama pull qwen2.5:14b`);
+  } else if (modelSizeB >= 14) {
+    console.log(`[Darkhan] Local LLM: ${configuredModel} (meets minimum capability)`);
+  }
+
   // Delay startup sequence to ensure DB schema is fully applied
   setTimeout(async () => {
     // RATE LIMITER: Restore today's usage from cost_tracking so restarts don't reset budgets

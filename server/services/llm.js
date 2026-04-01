@@ -22,8 +22,8 @@ class LLMService {
    *
    * @param {Object} opts
    * @param {string} opts.agentId - Agent making the request (for rate limiting + cost tracking)
-   * @param {string} opts.provider - 'ollama', 'google', or 'anthropic'
-   * @param {string} opts.model - Model ID (e.g., 'qwen2.5:14b', 'gemini-2.5-pro')
+   * @param {string} opts.provider - 'ollama', 'google', 'anthropic', or 'openai'
+   * @param {string} opts.model - Model ID (e.g., 'qwen2.5:14b', 'gemini-2.5-pro', 'gpt-4o')
    * @param {Array} opts.messages - [{ role: 'user'|'assistant'|'system', content: string }]
    * @param {Object} opts.options - Provider-specific options (temperature, maxTokens, etc.)
    * @param {string} opts.requestType - For cost tracking ('triage', 'task', 'subagent', etc.)
