@@ -118,18 +118,25 @@ async function seed() {
     let passwordHash, apiKey;
 
     if (member.type === 'human') {
-      // SECURITY: Generate a random temporary password — never use a hardcoded default.
-      // This password is printed to stdout ONCE. It must be changed via the web UI Settings.
-      const defaultPw = crypto.randomBytes(16).toString('hex');
+      // If running from setup wizard, use the password the user chose.
+      // Otherwise, generate a random temporary password.
+      const setupPassword = process.env.DARKHAN_SETUP_PASSWORD;
+      const defaultPw = setupPassword || crypto.randomBytes(16).toString('hex');
       passwordHash = await bcrypt.hash(defaultPw, 12);
       apiKey = generateApiKey('dk_user');
-      console.log('\n' + '='.repeat(60));
-      console.log('⚠  WARNING: TEMPORARY PASSWORD — CHANGE IMMEDIATELY');
-      console.log(`   User: ${member.name} (${member.id})`);
-      console.log(`   Password: ${defaultPw}`);
-      console.log('   Change this password via the Darkhan web UI Settings.');
-      console.log('   This password will NOT be displayed again.');
-      console.log('='.repeat(60) + '\n');
+      if (!setupPassword) {
+        console.log('\n' + '='.repeat(60));
+        console.log('  TEMPORARY PASSWORD — CHANGE IMMEDIATELY');
+        console.log(`   User: ${member.name} (${member.id})`);
+        console.log(`   Login username: ${member.name.toLowerCase()}`);
+        console.log(`   Password: ${defaultPw}`);
+        console.log('   Change this password via the Darkhan web UI Settings.');
+        console.log('   This password will NOT be displayed again.');
+        console.log('='.repeat(60) + '\n');
+      } else {
+        console.log(`✓ Admin "${member.name}" created with your chosen password.`);
+        console.log(`   Login username: ${member.name.toLowerCase()}`);
+      }
     } else {
       passwordHash = await bcrypt.hash(crypto.randomBytes(32).toString('hex'), 10);
       apiKey = generateApiKey('dk_agent');
@@ -188,6 +195,17 @@ async function seed() {
       console.log(`  ${id}: ${key}`);
     }
     console.log('---');
+  }
+
+  // Set lockdown PIN if provided by setup wizard
+  const setupPin = process.env.DARKHAN_SETUP_PIN;
+  if (setupPin) {
+    const pinHash = await bcrypt.hash(setupPin, 12);
+    await secretsRun(
+      `INSERT OR REPLACE INTO secret_settings (key, value) VALUES ('lockdown_pin', ?)`,
+      [pinHash]
+    );
+    console.log('✓ Lockdown PIN configured.');
   }
 
   console.log(`\n=== Seed Complete (${members.length} team members) ===\n`);

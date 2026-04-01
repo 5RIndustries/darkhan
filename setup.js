@@ -169,7 +169,40 @@ async function main() {
 
   const adminName = await ask('Your name', 'Admin');
   const adminId = `user_${adminName.toLowerCase().replace(/[^a-z0-9]/g, '')}`;
-  info(`User ID: ${adminId}`);
+  const adminUsername = adminName.toLowerCase().replace(/[^a-z0-9]/g, '');
+  info(`Login username: ${adminUsername}`);
+
+  // Let the user set their own password — no random generation
+  let adminPassword = '';
+  while (true) {
+    adminPassword = await askSecret('Choose a password (min 8 characters)');
+    if (adminPassword.length < 8) {
+      warn('Password must be at least 8 characters. Try again.');
+      continue;
+    }
+    const confirm = await askSecret('Confirm password');
+    if (adminPassword !== confirm) {
+      warn('Passwords do not match. Try again.');
+      continue;
+    }
+    break;
+  }
+  success('Password set');
+
+  // Lockdown PIN
+  let lockdownPin = '';
+  print('');
+  info('The lockdown PIN is a second factor for unlocking the system after');
+  info('a security event. Choose something you will remember.');
+  while (true) {
+    lockdownPin = await askSecret('Choose a lockdown PIN (min 4 characters)');
+    if (lockdownPin.length < 4) {
+      warn('PIN must be at least 4 characters. Try again.');
+      continue;
+    }
+    break;
+  }
+  success('Lockdown PIN set');
 
   // ── Step 4: Local LLM ──
   banner('Step 4: Local LLM');
@@ -298,12 +331,27 @@ async function main() {
       { id: 'chan_alerts', name: '#alerts', description: 'System alerts' },
     ],
     ...(vaultPath ? { vault: { path: vaultPath } } : {}),
-    sandbox: { processIsolation: true },
+    sandbox: { processIsolation: false },  // Start with in-process workers; enable forked mode after testing
     federation: { enabled: false },
   };
 
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
   success('darkhan.config.json generated');
+
+  // Copy example worker so the agent has code to run
+  const workerSrc = path.join(SERVER_DIR, 'workers', 'examples', 'assistant.worker.js');
+  const workerDst = path.join(SERVER_DIR, 'workers', `${agentName.toLowerCase().replace(/[^a-z0-9]/g, '')}.worker.js`);
+  if (fs.existsSync(workerSrc) && !fs.existsSync(workerDst)) {
+    let workerCode = fs.readFileSync(workerSrc, 'utf8');
+    // Update the agent ID and name in the worker file
+    workerCode = workerCode.replace(/id:\s*'agent_\w+'/, `id: '${agentId}'`);
+    workerCode = workerCode.replace(/name:\s*'[^']+'/, `name: '${agentName}'`);
+    fs.writeFileSync(workerDst, workerCode);
+    success(`Worker file created: workers/${path.basename(workerDst)}`);
+    // Update config to point to the worker file
+    config.team.members[1].worker = path.basename(workerDst);
+    fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
+  }
 
   // ── Install Dependencies ──
   banner('Installing dependencies...');
@@ -315,22 +363,44 @@ async function main() {
     process.exit(1);
   }
 
-  // ── Set up git hooks ──
+  // ── Set up pre-commit hook ──
   try {
-    execSync('git config core.hooksPath .githooks', { cwd: __dirname, stdio: 'pipe' });
-    success('Pre-commit secret scanner enabled');
+    const hookSrc = path.join(__dirname, 'scripts', 'pre-commit-hook.sh');
+    const hookDir = path.join(__dirname, '.git', 'hooks');
+    const hookDst = path.join(hookDir, 'pre-commit');
+    if (fs.existsSync(hookSrc) && fs.existsSync(path.join(__dirname, '.git'))) {
+      if (!fs.existsSync(hookDir)) fs.mkdirSync(hookDir, { recursive: true });
+      fs.copyFileSync(hookSrc, hookDst);
+      fs.chmodSync(hookDst, 0o755);
+      success('Pre-commit hook installed (blocks secrets, source maps, db files)');
+    }
   } catch {
-    warn('Could not set up git hooks (not a git repo?)');
+    warn('Could not install pre-commit hook');
   }
 
   // ── Seed Database ──
   banner('Initializing database...');
   print('');
+
+  // Remove any stale databases from a previous partial run
+  for (const dbFile of ['darkhan.db', 'secrets.db', 'sessions.db']) {
+    const dbPath = path.join(SERVER_DIR, 'db', dbFile);
+    if (fs.existsSync(dbPath)) fs.unlinkSync(dbPath);
+    // Also check server root (some installs put db files here)
+    const rootDbPath = path.join(SERVER_DIR, dbFile);
+    if (fs.existsSync(rootDbPath)) fs.unlinkSync(rootDbPath);
+  }
+
   try {
     execSync(`node db/seed.js`, {
       cwd: SERVER_DIR,
       stdio: 'inherit',
-      env: { ...process.env, SESSION_SECRET: sessionSecret },
+      env: {
+        ...process.env,
+        SESSION_SECRET: sessionSecret,
+        DARKHAN_SETUP_PASSWORD: adminPassword,
+        DARKHAN_SETUP_PIN: lockdownPin,
+      },
     });
     success('Database seeded');
   } catch (e) {
@@ -338,25 +408,37 @@ async function main() {
     process.exit(1);
   }
 
+  // Save credentials to a file (not stdout) so users don't lose them
+  const credsPath = path.join(__dirname, 'darkhan-credentials.txt');
+  const credsContent = [
+    'Darkhan Credentials',
+    `Generated: ${new Date().toISOString()}`,
+    '',
+    `Admin Login:`,
+    `  Username: ${adminUsername}`,
+    `  Password: (the one you chose during setup)`,
+    '',
+    'API Keys:',
+    '  (See seed.js output above)',
+    '',
+    'IMPORTANT: Delete this file after saving the API keys somewhere safe.',
+  ].join('\n');
+  fs.writeFileSync(credsPath, credsContent, { mode: 0o600 });
+  success(`Credentials saved to darkhan-credentials.txt (mode 600)`);
+
   // ── Done ──
   print('');
   print(`${c.accent}${c.bold}╔══════════════════════════════════════╗${c.reset}`);
   print(`${c.accent}${c.bold}║     Setup Complete!                  ║${c.reset}`);
   print(`${c.accent}${c.bold}╚══════════════════════════════════════╝${c.reset}`);
   print('');
-  print(`${c.bold}  To start Darkhan:${c.reset}`);
-  print(`    cd server && node server.js`);
+  print(`${c.bold}  Login:${c.reset}`);
+  print(`    URL:      ${c.cyan}http://localhost:${port}${c.reset}`);
+  print(`    Username: ${c.accent}${adminUsername}${c.reset}`);
+  print(`    Password: ${c.accent}(the one you just chose)${c.reset}`);
   print('');
-  print(`${c.bold}  Then open:${c.reset}`);
-  print(`    ${c.cyan}http://localhost:${port}${c.reset}`);
-  print('');
-  print(`${c.bold}  First login:${c.reset}`);
-  print(`    Username: ${c.accent}${adminName.toLowerCase()}${c.reset}`);
-  print(`    Password: ${c.accent}(printed above by seed script)${c.reset}`);
-  print('');
-  print(`${c.bold}  IMPORTANT — do these immediately after login:${c.reset}`);
-  print(`    1. Change your password (Settings)`);
-  print(`    2. Set a lockdown PIN (Settings)`);
+  print(`${c.bold}  Your password and lockdown PIN are already configured.${c.reset}`);
+  print(`${c.dim}  Credentials file: darkhan-credentials.txt (delete after saving API keys)${c.reset}`);
   print('');
 
   const startNow = await ask('Start Darkhan now? [Y/n]', 'y');
