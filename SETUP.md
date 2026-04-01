@@ -253,7 +253,7 @@ You should see output confirming:
 ## Step 6: First Login & Security Setup
 
 1. Open `http://localhost:3001` in your browser
-2. Log in with your username (lowercase, from config) and the default password `changeme`
+2. Log in with your username (lowercase, from your config's `name` field) and the **temporary password printed by `seed.js`** (a random hex string shown once during seeding — if you missed it, re-run `node db/seed.js` after deleting both `.db` files)
 3. **Immediately do the following (both are required):**
    - Open the **Settings** view (gear icon, admin users only)
    - **Change your password** to something strong (minimum 8 characters)
