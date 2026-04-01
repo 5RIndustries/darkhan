@@ -6,6 +6,10 @@ All notable changes to Darkhan are documented here.
 
 First public release. Darkhan is a self-hosted AI command center that gives you full control over your AI agents — what they can do, what they can see, and what happens when they go wrong.
 
+### Incident Response Framework (2026-04-01)
+- **`INCIDENT-RESPONSE.md`** — Full incident response plan: detect, contain, analyze, fix, communicate, return. Includes post-mortem template, user-facing guidance, and communication timeline commitments (24h initial disclosure, 72h full post-mortem).
+- **`server/scripts/incident-snapshot.js`** — One-command forensic capture tool. Snapshots databases (via SQLite backup for WAL consistency), config (secrets redacted), integrity baseline, 7-day audit log export (CSV), hash-chain summary, process list, network connections, file permissions, git state, and system info. Outputs a SHA-256-hashed tarball. Run this FIRST when you suspect a compromise.
+
 ### Supply Chain Hardening — Dependency Reduction (2026-04-01)
 Removed 3 single-maintainer npm packages and replaced with Node.js built-ins:
 - **`uuid` → `crypto.randomUUID()`** — 13 files updated. Node built-in since v19.
