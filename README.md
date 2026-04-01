@@ -23,7 +23,9 @@ Most agent frameworks trust the agent. Darkhan does not.
 
 **Identity enforcement.** Agents cannot impersonate humans or each other. Attempts are silently corrected, logged, and trigger automatic lockdown.
 
-**$0/day local LLM.** Triage, classification, and routine agent work runs on Ollama (Qwen 2.5 3B by default — runs on 8GB Macs) locally. Cloud APIs (Gemini, Anthropic) are available for heavier tasks. You control the cost.
+**$0/day local LLM.** Triage, classification, and routine agent work runs on Ollama (Qwen 2.5 14B default, 16GB+ RAM) locally. Four cloud providers supported (Google Gemini, Anthropic Claude, OpenAI GPT) for heavier tasks and cross-provider consensus. You choose every model. You control the cost.
+
+**Action-Evidence Protocol.** Every tool call produces system-captured evidence (file hashes, PIDs, exit codes, search results). Agent messages are evaluated against their evidence trail and tagged: verified, partial, claimed, or contradicted. Agents can say whatever they want — the evidence trail is immutable.
 
 **Federation across machines.** Run workers on multiple nodes with a single hub. Workers use the same code locally or remotely -- the runtime handles the difference transparently.
 
@@ -104,7 +106,8 @@ darkhan/
 
 | Service | Purpose |
 |---------|---------|
-| `llm.js` | Unified LLM interface (Ollama, Gemini, Anthropic) with automatic rate limiting and cost tracking |
+| `llm.js` | Unified LLM interface (Ollama, Gemini, Anthropic, OpenAI) with automatic rate limiting and cost tracking |
+| `action-evidence.js` | Action-Evidence Protocol — 13-verb controlled vocabulary, system-captured evidence, automatic claim downgrade |
 | `security.js` | Injection detection, identity enforcement, leak prevention, auto-lockdown |
 | `integrity.js` | File hash monitoring, config checksum, tamper detection |
 | `activity-log.js` | Immutable hash chain audit trail with CRISPR defense spacers |
@@ -193,7 +196,8 @@ All scanning flows through a single `sanitizeMessage()` entry point. There are n
 **Input/Output Scanning**
 - Regex + local LLM classification on all incoming messages
 - Content normalization strips encoding tricks before scanning (Unicode control chars, zero-width text, RTL overrides, HTML comments, base64 decode-and-scan)
-- Two-LLM consensus for external and agent-origin messages (local Ollama + cloud provider must agree)
+- Two-LLM consensus for external and agent-origin messages (local Ollama + cloud provider must agree — cross-company independence supported)
+- Action-Evidence Protocol: 13-verb controlled vocabulary with system-captured evidence, automatic claim downgrade
 - Tool output injection scanning on `fs.read()` and `shell.exec()` before results reach the LLM context
 - Outbound leak prevention scans for API keys, passwords, private keys
 

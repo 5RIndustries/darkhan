@@ -6,6 +6,27 @@ All notable changes to Darkhan are documented here.
 
 First public release. Darkhan is a self-hosted AI command center that gives you full control over your AI agents — what they can do, what they can see, and what happens when they go wrong.
 
+### Action-Evidence Protocol (2026-04-01)
+- **`server/services/action-evidence.js`** — Core trust layer. 13-verb controlled action vocabulary (WROTE_CODE, DEPLOYED, VERIFIED, SEARCHED, CLAIMED, etc.) with required evidence schemas. Evidence is captured automatically by the system from tool execution — agents do not self-report. Automatic downgrade when evidence doesn't match claims. Persistent traces in SQLite. Every message is evaluated against its evidence trail and tagged: verified, partial, claimed, or contradicted.
+- **Worker runtime integration** — Every tool call (fs.read, fs.write, shell.exec, web.search, web.fetch) now records structured evidence with content hashes. Each task starts a trace; each message is evaluated before DB insertion.
+
+### OpenAI/GPT Provider Support (2026-04-01)
+- **Fourth LLM provider** — OpenAI Chat Completions API added to `llm.js`. Supports gpt-4o, gpt-4.1 family, gpt-4.1-mini, gpt-4.1-nano, o3-mini. Full rate limiting, cost tracking, and error handling.
+- **Cross-provider consensus** — Two-LLM consensus can now use models from different companies (e.g., local Qwen + OpenAI GPT). Genuinely independent verification with different training data and architectural biases.
+- **Setup wizard** — OPENAI_API_KEY prompt added. Config example updated with OpenAI provider and rate limits.
+
+### Web Research Tools for Workers (2026-04-01)
+- **`tools.web.search()`** — Google Custom Search API integration. Workers can search the web directly. Falls back gracefully when API not configured.
+- **`tools.web.fetch()`** — Fetch any URL with timeout and size limits. Content passes through ASI01 injection scanning before reaching LLM context. All web tool usage logged to activity trail.
+
+### Default LLM Upgraded to 14B (2026-04-01)
+- **Qwen 2.5 14B** is now the default local model (was 3B). Requires 16GB+ RAM. Setup wizard still offers 3B fallback for smaller systems.
+- **Minimum capability check** — Server warns at startup if local model is below 14B. Triage, injection detection, and consensus participation are unreliable below this threshold.
+
+### Model-Agnostic Architecture (2026-04-01)
+- **User chooses all models** — Any Ollama-compatible model works for any role. Four cloud providers (Ollama, Google, Anthropic, OpenAI) are built in. Darkhan enforces a capability floor (14B recommended), not a brand.
+- **Zero cloud dependency possible** — A fully air-gapped setup with only open-source models is supported.
+
 ### Incident Response Framework (2026-04-01)
 - **`INCIDENT-RESPONSE.md`** — Full incident response plan: detect, contain, analyze, fix, communicate, return. Includes post-mortem template, user-facing guidance, and communication timeline commitments (24h initial disclosure, 72h full post-mortem).
 - **`server/scripts/incident-snapshot.js`** — One-command forensic capture tool. Snapshots databases (via SQLite backup for WAL consistency), config (secrets redacted), integrity baseline, 7-day audit log export (CSV), hash-chain summary, process list, network connections, file permissions, git state, and system info. Outputs a SHA-256-hashed tarball. Run this FIRST when you suspect a compromise.

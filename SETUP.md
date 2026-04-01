@@ -170,6 +170,7 @@ Edit `.env` with your values:
 | `OLLAMA_MODEL` | No | Your Ollama model name (default: `qwen2.5:14b`) |
 | `GOOGLE_API_KEY` | If using Gemini agents | Your Google AI Studio API key |
 | `ANTHROPIC_API_KEY` | If using security escalation | Your Anthropic API key |
+| `OPENAI_API_KEY` | If using GPT consensus model | Your OpenAI API key |
 
 See `.env.example` for the full list of supported variables with comments.
 
