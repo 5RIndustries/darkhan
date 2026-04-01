@@ -15,6 +15,7 @@ const { OnboardingService } = require('./onboarding');
 const { EvidenceService } = require('./evidence');
 const { ClaimVerifierService } = require('./claim-verifier');
 const { WorkerSandbox } = require('./sandbox');
+const { ActionEvidenceProtocol } = require('./action-evidence');
 
 class WorkerRuntime {
   constructor({ llmService, db, io, config, activityLog, costTracker, securityService }) {
@@ -47,6 +48,9 @@ class WorkerRuntime {
 
     // Worker sandbox — OS-level isolation and resource monitoring
     this.sandbox = new WorkerSandbox({ config, activityLog });
+
+    // Action-Evidence Protocol — every tool call produces verifiable evidence
+    this.aep = new ActionEvidenceProtocol({ activityLog, db });
 
     // Listener registry: pattern -> [{ workerId, listenerName, handler, timeout }]
     this.messageListeners = [];
@@ -589,10 +593,14 @@ class WorkerRuntime {
     worker.status = 'busy';
     const startTime = Date.now();
 
+    // [AEP] Start evidence trace for this task execution
+    const traceId = this.aep.startTrace(workerId, taskName);
+    context._aepTraceId = traceId;
+
     // [ASI02] Reset tool rate limits for this task execution
     if (context.tools?._toolLimits) context.tools._toolLimits.reset();
 
-    console.log(`[WorkerRuntime] ${workerId}.${taskName} STARTED`);
+    console.log(`[WorkerRuntime] ${workerId}.${taskName} STARTED (trace: ${traceId.substring(0, 8)})`);
     this.activityLog.append({
       actor: workerId,
       action: 'task_started',
@@ -871,6 +879,11 @@ class WorkerRuntime {
                 console.warn(`[ASI01] ${agentId} read file with injection patterns: ${filePath} (${scan.severity})`);
               }
             }
+            // [AEP] Record READ_FILE evidence
+            if (context._aepTraceId) {
+              self.aep.recordEvidence(context._aepTraceId, 'READ_FILE',
+                ActionEvidenceProtocol.buildEvidence.fileRead(fullPath, content));
+            }
             return content;
           },
           write: (filePath, data) => {
@@ -896,6 +909,11 @@ class WorkerRuntime {
             }
             const dir = path.dirname(fullPath);
             if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+            // [AEP] Record WROTE_FILE evidence
+            if (context._aepTraceId) {
+              self.aep.recordEvidence(context._aepTraceId, 'WROTE_FILE',
+                ActionEvidenceProtocol.buildEvidence.fileWrite(fullPath, data));
+            }
             return fs.promises.writeFile(fullPath, data, 'utf8');
           },
           exists: (filePath) => {
@@ -953,6 +971,11 @@ class WorkerRuntime {
                     return;
                   }
                 }
+                // [AEP] Record SHELL_EXEC evidence
+                if (context._aepTraceId) {
+                  self.aep.recordEvidence(context._aepTraceId, 'SHELL_EXEC',
+                    ActionEvidenceProtocol.buildEvidence.shellExec(command, 0, result.stdout));
+                }
                 resolve(result);
               });
             });
@@ -990,11 +1013,17 @@ class WorkerRuntime {
               const resp = await fetch(url, { signal: AbortSignal.timeout(15000) });
               if (!resp.ok) throw new Error(`Search API error: ${resp.status}`);
               const data = await resp.json();
-              return (data.items || []).map(item => ({
+              const results = (data.items || []).map(item => ({
                 title: item.title,
                 url: item.link,
                 snippet: item.snippet,
               }));
+              // [AEP] Record SEARCHED evidence
+              if (context._aepTraceId) {
+                self.aep.recordEvidence(context._aepTraceId, 'SEARCHED',
+                  ActionEvidenceProtocol.buildEvidence.search(query, results));
+              }
+              return results;
             }
 
             // Fallback: use the LLM's knowledge (no external search configured)
@@ -1058,6 +1087,12 @@ class WorkerRuntime {
               }
             }
 
+            // [AEP] Record FETCHED evidence
+            if (context._aepTraceId) {
+              self.aep.recordEvidence(context._aepTraceId, 'FETCHED',
+                ActionEvidenceProtocol.buildEvidence.httpFetch(url, resp.status, result));
+            }
+
             return result;
           },
         },
@@ -1092,18 +1127,42 @@ class WorkerRuntime {
     const id = crypto.randomUUID();
 
     // [CLAIM VERIFICATION] Verify agent claims before saving
-    let metadataStr = null;
+    let metadata = {};
     if (this.claimVerifier && fromUser && fromUser.startsWith('agent_')) {
       try {
         const verification = await this.claimVerifier.verify(body, fromUser);
         if (verification) {
-          metadataStr = JSON.stringify({ claimVerification: verification });
+          metadata.claimVerification = verification;
         }
       } catch (e) {
         // Non-blocking — verification failure does not prevent posting
         console.warn('[WorkerRuntime] Claim verification error:', e.message);
       }
     }
+
+    // [AEP] Evaluate message against evidence trail
+    if (this.aep && fromUser && fromUser.startsWith('agent_')) {
+      try {
+        // Find the active trace for this agent
+        const worker = this.workers.get(fromUser);
+        const traceId = worker?.context?._aepTraceId;
+        if (traceId) {
+          const evaluation = this.aep.evaluateMessage(traceId, body);
+          metadata.evidenceEvaluation = {
+            level: evaluation.level,
+            claimsDetected: evaluation.claims.length,
+            claimsVerified: evaluation.claims.filter(c => c.status === 'verified').length,
+            claimsClaimed: evaluation.claims.filter(c => c.status === 'claimed').length,
+            gaps: evaluation.gaps,
+          };
+          console.log(`[AEP] ${fromUser} message: ${evaluation.level} (${evaluation.claims.length} claims, ${evaluation.gaps.length} gaps)`);
+        }
+      } catch (e) {
+        console.warn('[AEP] Evaluation error:', e.message);
+      }
+    }
+
+    const metadataStr = Object.keys(metadata).length > 0 ? JSON.stringify(metadata) : null;
 
     this.db.run(
       'INSERT INTO messages (id, channel_id, from_user, body, priority, type, metadata) VALUES (?, ?, ?, ?, ?, ?, ?)',
