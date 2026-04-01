@@ -286,7 +286,7 @@ async function importConfig(configPath) {
     '# Local LLM',
     'OLLAMA_HOST=localhost',
     'OLLAMA_PORT=11434',
-    `OLLAMA_MODEL=${imported.llm?.triage?.model || 'qwen2.5:3b'}`,
+    `OLLAMA_MODEL=${imported.llm?.triage?.model || 'qwen2.5:14b'}`,
     '',
     '# Cloud APIs',
     providerKeys.google ? `GOOGLE_API_KEY=${providerKeys.google}` : '# GOOGLE_API_KEY=',
@@ -427,14 +427,16 @@ async function main() {
   // ── Step 4: Local LLM ──
   banner('Step 4: Local LLM');
 
-  let ollamaModel = 'qwen2.5:3b';
+  let ollamaModel = 'qwen2.5:14b';
   const totalMemGB = Math.round(require('os').totalmem() / (1024 ** 3));
   if (totalMemGB >= 16) {
-    info(`Detected ${totalMemGB}GB RAM — you can run the larger 14B model.`);
-    const modelChoice = await ask('Model size: 3b (fast, 8GB+) or 14b (accurate, 16GB+)', '3b');
-    ollamaModel = modelChoice === '14b' ? 'qwen2.5:14b' : 'qwen2.5:3b';
+    info(`Detected ${totalMemGB}GB RAM — defaulting to 14B model (recommended).`);
+    const modelChoice = await ask('Model size: 14b (accurate, 16GB+, recommended) or 3b (fast, 8GB+)', '14b');
+    ollamaModel = modelChoice === '3b' ? 'qwen2.5:3b' : 'qwen2.5:14b';
   } else {
-    info(`Detected ${totalMemGB}GB RAM — using 3B model (recommended for your hardware).`);
+    warn(`Detected ${totalMemGB}GB RAM — less than 16GB. The 14B model may not run well.`);
+    const modelChoice = await ask('Model size: 3b (recommended for your hardware) or 14b (may be slow)', '3b');
+    ollamaModel = modelChoice === '14b' ? 'qwen2.5:14b' : 'qwen2.5:3b';
   }
 
   // Pull model

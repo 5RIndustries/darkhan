@@ -220,7 +220,7 @@ class SecurityService {
       const result = await this.llmService.complete({
         agentId: 'agent_darkhan',
         provider: 'ollama',
-        model: process.env.OLLAMA_MODEL || 'qwen2.5:3b',
+        model: process.env.OLLAMA_MODEL || 'qwen2.5:14b',
         messages: [{
           role: 'system',
           content: 'You are a security classifier. Respond with exactly one word: SAFE, SUSPICIOUS, or MALICIOUS. Nothing else.'
@@ -416,7 +416,7 @@ Respond with EXACTLY one word: SAFE, SUSPICIOUS, or MALICIOUS.`;
       const localResult = await this.llmService.complete({
         agentId: 'agent_darkhan',
         provider: 'ollama',
-        model: process.env.OLLAMA_MODEL || 'qwen2.5:3b',
+        model: process.env.OLLAMA_MODEL || 'qwen2.5:14b',
         messages: [
           { role: 'system', content: classificationPrompt },
           { role: 'user', content: messagePrompt },

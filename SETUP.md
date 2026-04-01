@@ -47,7 +47,7 @@ The setup wizard (`setup.js`) is the primary setup path. It:
 4. Auto-detects your system timezone
 5. Copies and configures the example worker file for your chosen agent
 6. Cleans stale databases from any previous failed runs
-7. Pulls the local LLM (Qwen 2.5 3B)
+7. Pulls the local LLM (Qwen 2.5 14B)
 8. Seeds the database with default password `changeme`
 9. Defaults to in-process workers (not forked) for simpler first-run experience
 10. Starts the server and auto-opens your browser (macOS and Linux)
@@ -99,7 +99,7 @@ brew install node ollama
 
 # Start Ollama and pull the local LLM
 brew services start ollama
-ollama pull qwen2.5:3b
+ollama pull qwen2.5:14b
 ```
 
 ### Required
@@ -115,8 +115,8 @@ ollama pull qwen2.5:3b
 - **Tailscale** -- for multi-node federation. Get it at [tailscale.com](https://tailscale.com)
 
 ### Hardware guidance
-- **8GB RAM** (e.g., MacBook Air M4 base): runs Qwen 2.5 3B comfortably -- this is the default model
-- **16GB RAM**: can run Qwen 2.5 14B for better triage accuracy
+- **8GB RAM** (e.g., MacBook Air M4 base): runs Qwen 2.5 3B (setup wizard offers this as fallback)
+- **16GB RAM**: runs Qwen 2.5 14B comfortably -- this is the default model
 - **24GB+ RAM**: recommended for running multiple cloud-backed agents alongside local LLM
 
 ---
@@ -135,18 +135,18 @@ cp scripts/pre-commit-hook.sh .git/hooks/pre-commit && chmod +x .git/hooks/pre-c
 cd server
 npm install
 
-# Pull the local LLM (3B is the default — runs on 8GB Macs)
-ollama pull qwen2.5:3b
+# Pull the local LLM (14B is the default — needs 16GB+ RAM)
+ollama pull qwen2.5:14b
 
-# If your machine has 16GB+ RAM, you can use the larger model for better accuracy:
-# ollama pull qwen2.5:14b
+# If your machine has less than 16GB RAM, use the smaller model instead:
+# ollama pull qwen2.5:3b
 ```
 
 Verify Ollama is running and the model is available:
 
 ```bash
 ollama list
-# Should show qwen2.5:3b (or your chosen model)
+# Should show qwen2.5:14b (or your chosen model)
 ```
 
 ---
@@ -167,7 +167,7 @@ Edit `.env` with your values:
 |----------|----------|-------------|
 | `SESSION_SECRET` | **Yes** | The random string you just generated. **Server refuses to start without it.** Also used to derive HMAC keys for lockdown state signing. |
 | `PORT` | No | Server port (default: 3001) |
-| `OLLAMA_MODEL` | No | Your Ollama model name (default: qwen2.5:3b) |
+| `OLLAMA_MODEL` | No | Your Ollama model name (default: `qwen2.5:14b`) |
 | `GOOGLE_API_KEY` | If using Gemini agents | Your Google AI Studio API key |
 | `ANTHROPIC_API_KEY` | If using security escalation | Your Anthropic API key |
 
@@ -205,7 +205,7 @@ Edit `darkhan.config.json` to define your instance and team members. Here is a m
         "role": "agent",
         "model": {
           "provider": "ollama",
-          "model": "qwen2.5:3b",
+          "model": "qwen2.5:14b",
           "mode": "worker"
         },
         "worker": "chief.worker.js",
@@ -719,7 +719,7 @@ After setup, verify everything works:
 | Symptom | Likely Cause | Fix |
 |---------|-------------|-----|
 | "connection refused" on 11434 | Ollama not running | `brew services start ollama` |
-| Model not found | Not pulled | `ollama pull qwen2.5:3b` |
+| Model not found | Not pulled | `ollama pull qwen2.5:14b` |
 | Slow responses | Insufficient RAM | Use a smaller model: `ollama pull qwen2.5:7b` |
 
 ### Break-Glass Recovery

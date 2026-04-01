@@ -73,7 +73,7 @@ jobs:
           cp .env.example .env
           SESSION_SECRET=$(node -e "console.log(require('crypto').randomBytes(32).toString('hex'))")
           echo "SESSION_SECRET=$SESSION_SECRET" >> .env
-          echo "OLLAMA_MODEL=qwen2.5:3b" >> .env
+          echo "OLLAMA_MODEL=qwen2.5:14b" >> .env
 
       - name: Create minimal config
         working-directory: server

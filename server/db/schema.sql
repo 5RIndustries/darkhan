@@ -183,7 +183,7 @@ CREATE TABLE IF NOT EXISTS triage_log (
   classification TEXT NOT NULL,           -- 'local_llm', 'claude_relay', 'heartbeat_log'
   was_escalated INTEGER DEFAULT 0,        -- 1 if local LLM escalated to Claude
   response_time_ms INTEGER,
-  model_name TEXT,                        -- e.g. 'qwen2.5:3b'
+  model_name TEXT,                        -- e.g. 'qwen2.5:14b'
   model_version TEXT,                     -- model hash for version tracking
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
