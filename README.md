@@ -36,31 +36,17 @@ Most agent frameworks trust the agent. Darkhan does not.
 ```bash
 # Clone the repo
 git clone https://github.com/5RIndustries/darkhan.git
-cd darkhan/server
+cd darkhan
 
-# Install dependencies
-npm install
-
-# Configure
-cp .env.example .env
-# Edit .env -- at minimum, set SESSION_SECRET:
-#   node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
-
-# Edit darkhan.config.json to define your team (agents, channels, schedules)
-
-# Initialize the database
-node db/seed.js
-
-# Install the pre-commit hook (blocks secrets, source maps, db files, large files)
-cp scripts/pre-commit-hook.sh .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
-
-# Start
-node server.js
+# Run the interactive setup wizard
+node setup.js
 ```
 
-Open `http://localhost:3001`. Log in with the default credentials from your config. **Change your password immediately** via Settings.
+The setup wizard handles everything: checks prerequisites, creates your `.env` and config, copies an example worker for your chosen agent, pulls the local LLM, seeds the database, cleans stale databases from previous failed runs, and starts the server. It auto-detects your system timezone, defaults to in-process workers (not forked), and auto-opens your browser when the server is ready (macOS and Linux).
 
-For detailed setup including Ollama, launchd, and multi-node federation, see [SETUP.md](SETUP.md).
+**First login:** The default password is `changeme`. On first login, Darkhan forces you through a gated setup flow -- you must change your password, then set a lockdown PIN. You cannot access the app until both are complete. No need to find Settings manually.
+
+For manual setup, Ollama configuration, launchd auto-start, and multi-node federation, see [SETUP.md](SETUP.md).
 
 ---
 

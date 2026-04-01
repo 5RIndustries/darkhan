@@ -6,6 +6,57 @@ All notable changes to Darkhan are documented here.
 
 First public release. Darkhan is a self-hosted AI command center that gives you full control over your AI agents — what they can do, what they can see, and what happens when they go wrong.
 
+### Dress Rehearsal Bug Fixes (2026-03-31)
+Five bugs caught during clean-install dress rehearsal on MacBook Air:
+1. **Seed script duplicate column** — `must_change_password` column declared twice in `secrets-schema.sql`, causing seed failure on fresh installs
+2. **Seed schema index on nonexistent column** — Index referenced `api_key_hmac` column that does not exist in the schema
+3. **Missing `glob` dependency** — `glob` package used but not listed in `package.json`; `npm install` did not pull it
+4. **Missing `entry_type` column** — `activity_log` table in `schema.sql` was missing the `entry_type` column, breaking activity log inserts
+5. **SETUP.md incorrect default password** — Documentation referenced a random hex password; actual default is now `changeme`
+
+### Corey Audit Fixes (2026-03-31)
+Eight findings from Corey red team audit, all resolved:
+1. **C-1: Federation header spoofing** — Added spacer ingestion validation and server-side trust level enforcement; federated messages cannot spoof trust classification
+2. **C-2: Socket.IO auth HMAC bypass** — Socket.IO authentication now properly validates HMAC signatures; bypass path closed
+3. **L-4: Quarantine INSERT wrong column name** — Quarantine insert was silently broken due to incorrect column name; fixed and verified
+4. **H-5: Activity log trimming removed** — Trimming was breaking the hash chain integrity; removed the trim operation to preserve chain continuity
+5. **M-6: requireHumanAdmin logic bug** — AND condition was combining two checks incorrectly; separated into distinct checks
+6. **H-1: Session store table name injection** — Added validation to prevent SQL injection via session store table name parameter
+7. **L-3: Orphan detection wrong ps format** — Fixed `ps` command format string for correct orphan process detection across macOS versions
+8. **M-4: JSON.parse safety in message listing** — Added try/catch around JSON.parse calls in message listing to prevent crashes on malformed data
+
+### Siege Adversarial Agent (2026-03-31)
+- **New example worker: `examples/adversary.worker.js`** — Persistent hostile red team agent for continuous security testing
+- Uses Gemini Flash for research ($0 for HTTP probes)
+- 6 probe categories: injection, auth bypass, privilege escalation, data exfiltration, federation spoofing, resource exhaustion
+- Daily research sweep for new attack techniques, daily adversarial report to alerts channel
+- Designed for dedicated Node 3 deployment (keeps adversarial traffic off production nodes)
+
+### Setup Wizard Overhaul (2026-03-31)
+Complete rewrite of `setup.js` for zero-friction onboarding:
+- Default password is now `changeme` (no password prompts during setup)
+- No PIN prompt during setup — handled by gated first-login flow in the browser
+- Auto-detects system timezone (no manual IANA timezone entry)
+- Auto-opens browser after server starts (macOS + Linux)
+- Copies and configures example worker file for the chosen agent
+- Cleans stale databases from previous failed runs
+- Defaults to in-process workers (not forked) for simpler first-run experience
+- Clear "what happens next" instructions printed after setup
+
+### First-Login Gated Flow (2026-03-31)
+New forced security setup on first login (`client/js/app.js`):
+- Logging in with `changeme` triggers a forced password change overlay (cannot be dismissed)
+- After password change, a forced lockdown PIN setup overlay appears (cannot be dismissed)
+- User cannot access any part of the app until both are complete
+- Eliminates the need to find Settings manually — every new user completes security setup automatically
+
+### install.sh Improvements (2026-03-31)
+Rewrote the install script for real-world reliability:
+- Each prerequisite (Homebrew, Node.js, Ollama) asks before installing — skip if already present
+- Homebrew PATH auto-added to `~/.zprofile` (the number one friction point on fresh Macs)
+- Clear PAT (Personal Access Token) guidance when `git clone` fails for private repos
+- Existing installs pull latest instead of re-cloning
+
 ### P0 Security Hardening (2026-03-31)
 Driven by cross-referencing the Anthropic Claude Code source map leak against Darkhan's attack surface. Five fixes addressing trust spoofing, credential exposure, file permissions, scan pipeline integrity, and onboarding data minimization.
 

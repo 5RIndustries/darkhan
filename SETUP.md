@@ -3,14 +3,44 @@
 > This guide walks a new team member through deploying Darkhan on their own machine.
 > Estimated time: 30-45 minutes for a single node, 60 minutes for a federated setup.
 
-## Quick Start (One-Line Install)
+## Quick Start (Recommended)
+
+### Option A: Automated install (macOS)
 
 ```bash
-# Clone and run the interactive setup wizard
+# Download and run the installer
+curl -fsSL https://raw.githubusercontent.com/5RIndustries/darkhan/main/install.sh | bash
+```
+
+The installer asks before installing each prerequisite (Homebrew, Node.js, Ollama) -- skip any you already have. It auto-adds Homebrew to your `~/.zprofile` PATH (the number one friction point on fresh Macs). If the `git clone` fails for the private repo, it gives clear guidance on creating a GitHub Personal Access Token. If you already have a Darkhan clone, it pulls the latest instead of re-cloning.
+
+After cloning, the installer runs the setup wizard automatically.
+
+### Option B: Manual clone + setup wizard
+
+```bash
 git clone https://github.com/5RIndustries/darkhan.git && cd darkhan && node setup.js
 ```
 
-The setup wizard checks prerequisites, creates your config, pulls the local LLM, seeds the database, and starts the server. If you prefer to configure manually, follow the steps below.
+### What the setup wizard does
+
+The setup wizard (`setup.js`) is the primary setup path. It:
+
+1. Checks prerequisites (Node.js, npm, Ollama)
+2. Creates your `.env` with a generated `SESSION_SECRET`
+3. Creates `darkhan.config.json` with your team name, admin username, and agent selection
+4. Auto-detects your system timezone
+5. Copies and configures the example worker file for your chosen agent
+6. Cleans stale databases from any previous failed runs
+7. Pulls the local LLM (Qwen 2.5 3B)
+8. Seeds the database with default password `changeme`
+9. Defaults to in-process workers (not forked) for simpler first-run experience
+10. Starts the server and auto-opens your browser (macOS and Linux)
+11. Prints clear "what happens next" instructions
+
+**No password or PIN prompts during setup.** Both are handled on first login in the browser (see Step 6).
+
+If you prefer to configure manually, follow the steps below.
 
 ---
 
@@ -37,14 +67,17 @@ The setup wizard checks prerequisites, creates your config, pulls the local LLM,
 
 ### Fresh Mac? Start here.
 
-If you are setting up on a brand new Mac, run these first:
+The easiest path is `install.sh` (see Quick Start above) -- it handles Homebrew, Node.js, and Ollama installation interactively, asking before each one and auto-configuring your PATH.
+
+If you prefer to install prerequisites manually:
 
 ```bash
 # Install Homebrew (macOS package manager)
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
-# IMPORTANT: Follow the instructions Homebrew prints at the end to add it to your PATH.
-# It will tell you to run two commands — do that before continuing.
+# IMPORTANT: Add Homebrew to your PATH (install.sh does this automatically for .zprofile):
+echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> ~/.zprofile
+eval "$(/opt/homebrew/bin/brew shellenv)"
 
 # Install Node.js and Ollama
 brew install node ollama
@@ -207,9 +240,11 @@ This creates two SQLite databases and seeds them:
 
 The seed process:
 - Creates user accounts for every team member in your config
+- Sets the default password to `changeme` (forced change on first login)
 - Seeds default channels
 - Generates API keys for agent accounts (stored in secrets.db)
 - Sets permissions on secrets.db to 600 (owner-only read/write)
+- Cleans stale databases from previous failed runs if detected
 
 **Save the API keys that are printed to the console.** You will need them for:
 - Agent scripts that post to Darkhan from outside
@@ -252,14 +287,14 @@ You should see output confirming:
 
 ## Step 6: First Login & Security Setup
 
-1. Open `http://localhost:3001` in your browser
-2. Log in with your username (lowercase, from your config's `name` field) and the **temporary password printed by `seed.js`** (a random hex string shown once during seeding — if you missed it, re-run `node db/seed.js` after deleting both `.db` files)
-3. **Immediately do the following (both are required):**
-   - Open the **Settings** view (gear icon, admin users only)
-   - **Change your password** to something strong (minimum 8 characters)
-   - **Set a lockdown PIN** -- this is a second factor required to unlock the system after a lockdown event. Minimum 4 characters. Choose something you will remember but that an agent cannot guess.
+1. Open `http://localhost:3001` in your browser (the setup wizard auto-opens this for you)
+2. Log in with your username (lowercase, from your config's `name` field) and the default password `changeme`
+3. **Darkhan handles the rest automatically with a gated first-login flow:**
+   - A **forced password change overlay** appears immediately -- you must set a strong password (minimum 8 characters). This overlay cannot be dismissed.
+   - After changing your password, a **forced lockdown PIN setup overlay** appears -- you must set a PIN (minimum 4 characters). This overlay cannot be dismissed either.
+   - You cannot access any part of the app until both steps are complete.
 
-**Both steps are critical.** If you skip setting the lockdown PIN and the system enters lockdown (auto-triggered or manual), you will not be able to unlock it. The system fails closed: no PIN configured means no unlock allowed. You would need to re-seed the database to recover.
+**No need to find Settings manually.** The gated flow ensures every new user completes security setup before they can do anything else.
 
 **Why the lockdown PIN matters:** If a security event triggers automatic lockdown, agents cannot unlock the system. You (the human admin) must authenticate via the web UI and provide the PIN to restore agent operations. The PIN hash is stored in `secrets.db` (not the main database), so even a worker with full database access to `darkhan.db` cannot read it.
 
@@ -603,9 +638,9 @@ After setup, verify everything works:
 
 ### Core Functionality
 - [ ] `http://localhost:3001` loads the login page
-- [ ] Login works with your credentials
-- [ ] You changed the default password via Settings (minimum 8 characters)
-- [ ] You set a lockdown PIN via Settings (minimum 4 characters) -- **required before lockdown can be lifted**
+- [ ] Login works with default password `changeme`
+- [ ] First-login gated flow forced you to change your password (minimum 8 characters)
+- [ ] First-login gated flow forced you to set a lockdown PIN (minimum 4 characters)
 - [ ] Messages appear in the #command channel
 - [ ] Workers show as loaded: `curl -s http://localhost:3001/api/workers -H "X-API-Key: YOUR_KEY"`
 - [ ] Agent status dots show green in the Health view
