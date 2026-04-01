@@ -15,7 +15,6 @@
 
 const express = require('express');
 const crypto = require('crypto');
-const { v4: uuidv4 } = require('uuid');
 const router = express.Router();
 const { requireAuth, requireAdmin } = require('../middleware/auth');
 
@@ -66,7 +65,7 @@ router.post('/', (req, res) => {
       const io = req.app.locals.io;
       if (io) {
         io.to('chan_alerts').emit('new_message', {
-          id: uuidv4(), channel_id: 'chan_alerts', from_user: 'darkhan_security',
+          id: crypto.randomUUID(), channel_id: 'chan_alerts', from_user: 'darkhan_security',
           body: `[QUARANTINE] Message from ${from_user} quarantined — LLM consensus disagreement (local: ${local_verdict}, cloud: ${cloud_verdict}). Review in Quarantine queue.`,
           priority: 'high', type: 'alert', created_at: now,
         });
@@ -109,7 +108,7 @@ router.post('/:id/approve', requireAdmin, (req, res) => {
     if (!row) return res.status(404).json({ error: 'Quarantined message not found or already reviewed' });
 
     // Release: insert the message into the actual messages table
-    const msgId = uuidv4();
+    const msgId = crypto.randomUUID();
     const trustLevel = 'human_verified'; // Admin approved = highest trust
     const signature = instanceIdentity ? instanceIdentity.sign(msgId, row.from_user, row.body, trustLevel) : null;
     const metadata = JSON.stringify({

@@ -19,7 +19,7 @@
 const Anthropic = require('@anthropic-ai/sdk');
 const fs = require('fs');
 const path = require('path');
-const { v4: uuidv4 } = require('uuid');
+const crypto = require('crypto');
 const { executeTool } = require('./tool-executor');
 
 // Initialize Anthropic client
@@ -350,7 +350,7 @@ You are Darkhan, the command center assistant. You are NOT Claude.
  * Store a conversation message in the database
  */
 function storeConversationMessage(db, channelId, role, content, toolUse = null) {
-  const id = uuidv4();
+  const id = crypto.randomUUID();
   const tokenCount = estimateTokens(content);
 
   db.run(

@@ -16,7 +16,7 @@
 
 const pty = require('node-pty');
 const os = require('os');
-const { v4: uuidv4 } = require('uuid');
+const crypto = require('crypto');
 
 class TerminalRelay {
   constructor({ io, db, config, activityLog, unifiedClaude }) {
@@ -342,7 +342,7 @@ class TerminalRelay {
    */
   _postToChannel(channelId, body) {
     if (!this.db) return;
-    const id = uuidv4();
+    const id = crypto.randomUUID();
     this.db.run(
       `INSERT INTO messages (id, channel_id, from_user, body, priority, type) VALUES (?, ?, ?, ?, ?, ?)`,
       [id, channelId, 'system_terminal', body, 'low', 'status'],

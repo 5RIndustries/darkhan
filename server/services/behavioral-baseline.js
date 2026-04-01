@@ -151,10 +151,10 @@ class BehavioralBaseline {
 
             // Post alert
             if (this.io) {
-              const { v4: uuidv4 } = require('uuid');
+              const crypto = require('crypto');
               const alertBody = `[BEHAVIORAL ANOMALY] ${agentId}: ${anomalies.map(a => `${a.metric} at ${a.ratio.toFixed(1)}x baseline`).join(', ')}`;
               this.io.to('chan_alerts').emit('new_message', {
-                id: uuidv4(), channel_id: 'chan_alerts', from_user: 'darkhan_security',
+                id: crypto.randomUUID(), channel_id: 'chan_alerts', from_user: 'darkhan_security',
                 body: alertBody, priority: 'high', type: 'alert',
                 created_at: new Date().toISOString(),
               });

@@ -1,4 +1,4 @@
-require('dotenv').config({ path: require('path').join(__dirname, '.env') });
+try { process.loadEnvFile(require('path').join(__dirname, '.env')); } catch (_) { /* .env may not exist */ }
 const express = require('express');
 const http = require('http');
 const https = require('https');

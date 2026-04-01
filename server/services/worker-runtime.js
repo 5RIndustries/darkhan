@@ -11,7 +11,6 @@
 const cron = require('node-cron');
 const fs = require('fs');
 const path = require('path');
-const { Glob } = require('glob');
 const { OnboardingService } = require('./onboarding');
 const { EvidenceService } = require('./evidence');
 const { ClaimVerifierService } = require('./claim-verifier');
@@ -986,8 +985,8 @@ class WorkerRuntime {
   // --- Internal helpers ---
 
   async _postToChannel(channelId, body, fromUser, opts = {}) {
-    const { v4: uuidv4 } = require('uuid');
-    const id = uuidv4();
+    const crypto = require('crypto');
+    const id = crypto.randomUUID();
 
     // [CLAIM VERIFICATION] Verify agent claims before saving
     let metadataStr = null;
@@ -1029,8 +1028,8 @@ class WorkerRuntime {
   }
 
   _createTask({ title, assignee, priority = 3, description, createdBy }) {
-    const { v4: uuidv4 } = require('uuid');
-    const id = uuidv4();
+    const crypto = require('crypto');
+    const id = crypto.randomUUID();
     this.db.run(
       'INSERT INTO tasks (id, title, description, assignee, created_by, priority) VALUES (?, ?, ?, ?, ?, ?)',
       [id, title, description, assignee, createdBy, priority],

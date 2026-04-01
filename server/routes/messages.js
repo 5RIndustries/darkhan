@@ -9,7 +9,7 @@
  */
 
 const express = require('express');
-const { v4: uuidv4 } = require('uuid');
+const crypto = require('crypto');
 const router = express.Router();
 const { requireAuth, getCurrentUserId, validateIdentity } = require('../middleware/auth');
 const { onNewMessage } = require('../services/auto-responder');
@@ -161,7 +161,7 @@ router.post('/', async (req, res) => {
     // Quarantine is now handled inside sanitizeMessage() when consensus disagrees.
     // If sanitizeMessage returned action:'quarantine', handle it here:
     if (scan.metadata.injectionScan.action === 'quarantine') {
-      const qId = uuidv4();
+      const qId = crypto.randomUUID();
       // [L-4 FIX] Schema uses 'original_channel', not 'channel_id'
       db.run(
         `INSERT INTO quarantine_queue (id, original_channel, from_user, body, local_verdict, cloud_verdict, consensus, metadata, status)
@@ -175,7 +175,7 @@ router.post('/', async (req, res) => {
           if (qErr) console.error('[Security] Failed to quarantine message:', qErr.message);
         }
       );
-      const alertId = uuidv4();
+      const alertId = crypto.randomUUID();
       db.run(
         'INSERT INTO messages (id, channel_id, from_user, body, priority, type) VALUES (?, ?, ?, ?, ?, ?)',
         [alertId, 'chan_alerts', 'agent_darkhan',
@@ -187,7 +187,7 @@ router.post('/', async (req, res) => {
     }
   }
 
-  const id = uuidv4();
+  const id = crypto.randomUUID();
   // Merge security metadata with any existing metadata
   const combinedMetadata = { ...(metadata || {}), ...(securityMetadata || {}) };
 

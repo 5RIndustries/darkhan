@@ -1208,8 +1208,7 @@ Respond with EXACTLY one word: SAFE, SUSPICIOUS, or MALICIOUS.`;
   }
 
   _postLockdownAlert(reason) {
-    const { v4: uuidv4 } = require('uuid');
-    const id = uuidv4();
+    const id = crypto.randomUUID();
     const body = `*** SECURITY LOCKDOWN ***\n\nReason: ${reason}\n\nAll agent traffic has been suspended. Only human admin users can post messages.\n\nTo restore operations: POST /api/security/unlock (human admin only) or use the Darkhan UI unlock button.`;
 
     this.db.run(

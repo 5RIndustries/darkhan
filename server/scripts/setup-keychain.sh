@@ -40,7 +40,7 @@ cd "$SERVER_DIR"
 /opt/homebrew/bin/node -e "
 const path = require('path');
 process.chdir('$SERVER_DIR');
-require('dotenv').config({ path: path.join('$SERVER_DIR', '.env') });
+try { process.loadEnvFile(path.join('$SERVER_DIR', '.env')); } catch (_) { /* .env may not exist */ }
 
 const { KeychainService } = require('./services/keychain');
 const activityLog = { append: (e) => console.log('[Activity]', e.action, e.target || '') };

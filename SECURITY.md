@@ -252,7 +252,7 @@ These areas have defenses but with known gaps:
 
 1. **Agent lying about verifiable facts** — Claim verification checks assertions against a ground truth registry. Coverage depends on registry completeness. Facts not in the registry are reported as "unverified," not "false."
 2. **Slow-burn data exfiltration** — Network egress deny-default and data leak scanning exist, but small amounts of data embedded in legitimate output over time may bypass detection.
-3. **Supply chain attacks** — Model hash verification at startup. `npm audit` enforced in CI (fails on HIGH+). Pre-commit hook blocks sensitive files. Dependency audit before every release. Custom session store eliminates vulnerable transitive dependency chains. See [RELEASE-CHECKLIST.md](RELEASE-CHECKLIST.md) for the continuous evaluation process.
+3. **Supply chain attacks** — Model hash verification at startup. `npm audit` enforced in CI (fails on HIGH+). Pre-commit hook blocks sensitive files. Dependency audit before every release. Custom session store eliminates vulnerable transitive dependency chains. Minimal dependency philosophy: 14 direct dependencies, single-maintainer packages replaced with Node.js built-ins where possible (uuid→crypto.randomUUID, dotenv→process.loadEnvFile). See [RELEASE-CHECKLIST.md](RELEASE-CHECKLIST.md) for the continuous evaluation process.
 4. **Novel attack patterns** — CRISPR defense spacers propagate detected attack patterns across instances. This defends against known patterns. Novel attacks are detected by the consensus pipeline, not the spacer library.
 
 ## Threat Model Boundaries

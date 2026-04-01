@@ -47,8 +47,8 @@ router.post('/message', async (req, res) => {
 
     // Post Claude's text response to the channel so it appears in chat
     if (result.response) {
-      const { v4: uuidv4 } = require('uuid');
-      const msgId = uuidv4();
+      const crypto = require('crypto');
+      const msgId = crypto.randomUUID();
       db.run(
         'INSERT INTO messages (id, channel_id, from_user, body, priority, type) VALUES (?, ?, ?, ?, ?, ?)',
         [msgId, channel_id, 'agent_darkhan', result.response, 'normal', 'message'],

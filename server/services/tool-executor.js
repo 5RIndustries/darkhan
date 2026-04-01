@@ -7,7 +7,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const { v4: uuidv4 } = require('uuid');
+const crypto = require('crypto');
 const { checkPermission, normalizePath } = require('./permissions');
 
 /**
@@ -54,7 +54,7 @@ async function sendMessage(input, context) {
   }
 
   return new Promise((resolve) => {
-    const id = uuidv4();
+    const id = crypto.randomUUID();
     const darylUserId = 'agent_darkhan'; // DARYL intelligence layer identity
 
     db.run(
@@ -101,7 +101,7 @@ async function createTask(input, context) {
   }
 
   return new Promise((resolve) => {
-    const id = uuidv4();
+    const id = crypto.randomUUID();
     const darylUserId = 'agent_darkhan';
 
     db.run(
@@ -177,7 +177,7 @@ async function writeFile(input, context) {
   if (perm.status === 'queued') {
     // Queue for approval
     return new Promise((resolve) => {
-      const id = uuidv4();
+      const id = crypto.randomUUID();
       const actionDetail = JSON.stringify({ path: vaultPath, contentLength: content.length });
 
       db.run(

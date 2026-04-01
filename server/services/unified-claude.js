@@ -19,7 +19,7 @@ const {
   unstable_v2_createSession,
   unstable_v2_resumeSession,
 } = require('@anthropic-ai/claude-agent-sdk');
-const { v4: uuidv4 } = require('uuid');
+const crypto = require('crypto');
 
 class UnifiedClaudeSession {
   constructor({ db, io, config, activityLog }) {
@@ -299,7 +299,7 @@ class UnifiedClaudeSession {
    */
   _postToChannel(channelId, body) {
     if (!this.db) return;
-    const id = uuidv4();
+    const id = crypto.randomUUID();
     this.db.run(
       `INSERT INTO messages (id, channel_id, from_user, body, priority, type) VALUES (?, ?, ?, ?, ?, ?)`,
       [id, channelId, 'agent_claude', body, 'low', 'message'],

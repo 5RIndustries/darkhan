@@ -16,7 +16,7 @@
 const { execFile } = require('child_process');
 const fs = require('fs');
 const path = require('path');
-const { v4: uuidv4 } = require('uuid');
+const crypto = require('crypto');
 const { processAgentMessage } = require('./agent-relay');
 
 // Relay mode: 'sdk' uses Agent SDK, 'cli' uses claude -p --resume
@@ -731,7 +731,7 @@ async function processMessage(channelId, fromUser, messageBody, context) {
  * Post a message to a Darkhan channel. Returns the message ID.
  */
 function postToChannel(db, io, channelId, body, fromUser = 'agent_claude') {
-  const id = uuidv4();
+  const id = crypto.randomUUID();
   db.run(
     'INSERT INTO messages (id, channel_id, from_user, body, priority, type) VALUES (?, ?, ?, ?, ?, ?)',
     [id, channelId, fromUser, body, 'normal', 'message'],

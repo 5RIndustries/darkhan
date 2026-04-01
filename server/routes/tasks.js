@@ -8,7 +8,7 @@
  */
 
 const express = require('express');
-const { v4: uuidv4 } = require('uuid');
+const crypto = require('crypto');
 const router = express.Router();
 const { requireAuth, requireAdmin, getCurrentUserId } = require('../middleware/auth');
 
@@ -84,7 +84,7 @@ router.post('/', (req, res) => {
     return res.status(400).json({ error: 'title and assignee are required' });
   }
 
-  const id = uuidv4();
+  const id = crypto.randomUUID();
 
   db.run(
     `INSERT INTO tasks (id, title, description, assignee, created_by, priority, vault_path)
