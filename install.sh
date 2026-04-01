@@ -53,16 +53,25 @@ fi
 if [ "$OS" = "Darwin" ]; then
   if ! command -v brew &> /dev/null; then
     echo ""
-    echo -e "${BOLD}Installing Homebrew...${RESET}"
-    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+    echo -n "  Homebrew is required but not installed. Install it? [Y/n]: "
+    read -r INSTALL_BREW
+    if [ "${INSTALL_BREW,,}" != "n" ]; then
+      /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
-    # Add to PATH for this session
-    if [ -f "/opt/homebrew/bin/brew" ]; then
-      eval "$(/opt/homebrew/bin/brew shellenv)"
-    elif [ -f "/usr/local/bin/brew" ]; then
-      eval "$(/usr/local/bin/brew shellenv)"
+      # Add to PATH for this session (the step users always miss)
+      if [ -f "/opt/homebrew/bin/brew" ]; then
+        eval "$(/opt/homebrew/bin/brew shellenv)"
+        # Also add to .zprofile so it persists
+        echo 'eval "$(/opt/homebrew/bin/brew shellenv)"' >> ~/.zprofile 2>/dev/null
+      elif [ -f "/usr/local/bin/brew" ]; then
+        eval "$(/usr/local/bin/brew shellenv)"
+        echo 'eval "$(/usr/local/bin/brew shellenv)"' >> ~/.zprofile 2>/dev/null
+      fi
+      success "Homebrew installed and added to PATH"
+    else
+      fail "Homebrew is required on macOS. Install it and re-run this script."
+      exit 1
     fi
-    success "Homebrew installed"
   else
     success "Homebrew found"
   fi
@@ -84,27 +93,38 @@ if command -v node &> /dev/null; then
     success "Node.js $(node -v)"
   fi
 else
-  echo -e "${BOLD}Installing Node.js...${RESET}"
-  if [ "$OS" = "Darwin" ]; then
-    brew install node
+  echo -n "  Node.js is required but not installed. Install it? [Y/n]: "
+  read -r INSTALL_NODE
+  if [ "${INSTALL_NODE,,}" != "n" ]; then
+    if [ "$OS" = "Darwin" ]; then
+      brew install node
+    else
+      curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+      sudo apt-get install -y nodejs
+    fi
+    success "Node.js $(node -v) installed"
   else
-    curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
-    sudo apt-get install -y nodejs
+    fail "Node.js 20+ is required. Install it and re-run this script."
+    exit 1
   fi
-  success "Node.js $(node -v) installed"
 fi
 
 # ── Ollama ──
 if command -v ollama &> /dev/null; then
   success "Ollama found"
 else
-  echo -e "${BOLD}Installing Ollama...${RESET}"
-  if [ "$OS" = "Darwin" ]; then
-    brew install ollama
+  echo -n "  Ollama provides the free local LLM. Install it? [Y/n]: "
+  read -r INSTALL_OLLAMA
+  if [ "${INSTALL_OLLAMA,,}" != "n" ]; then
+    if [ "$OS" = "Darwin" ]; then
+      brew install ollama
+    else
+      curl -fsSL https://ollama.com/install.sh | sh
+    fi
+    success "Ollama installed"
   else
-    curl -fsSL https://ollama.com/install.sh | sh
+    warn "Skipping Ollama. Local LLM features will not work until you install it."
   fi
-  success "Ollama installed"
 fi
 
 # Start Ollama if not running
@@ -145,10 +165,23 @@ fi
 
 if [ ! -d "$INSTALL_DIR" ]; then
   echo -e "${BOLD}Cloning Darkhan...${RESET}"
-  git clone https://github.com/5RIndustries/darkhan.git "$INSTALL_DIR"
+  info "If prompted for credentials, use a GitHub Personal Access Token as the password."
+  info "Generate one at: https://github.com/settings/tokens (select 'repo' scope)"
+  echo ""
+  if ! git clone https://github.com/5RIndustries/darkhan.git "$INSTALL_DIR" 2>/dev/null; then
+    echo ""
+    warn "Clone failed. This is likely an authentication issue."
+    info "For private repos, GitHub requires a Personal Access Token (PAT)."
+    info "1. Go to https://github.com/settings/tokens"
+    info "2. Generate new token (classic) with 'repo' scope"
+    info "3. Re-run this installer and use the token as your password"
+    exit 1
+  fi
   success "Cloned to $INSTALL_DIR"
 else
   success "Using existing $INSTALL_DIR"
+  info "Pulling latest changes..."
+  cd "$INSTALL_DIR" && git pull 2>/dev/null
 fi
 
 # ── Run Setup Wizard ──
