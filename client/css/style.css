@@ -243,6 +243,7 @@ html, body {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  min-height: 0;
 }
 
 .channel-header {
@@ -549,6 +550,7 @@ html, body {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  min-height: 0;
 }
 .split-panel-selector {
   display: flex;

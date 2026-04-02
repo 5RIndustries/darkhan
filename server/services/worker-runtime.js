@@ -16,6 +16,7 @@ const { EvidenceService } = require('./evidence');
 const { ClaimVerifierService } = require('./claim-verifier');
 const { WorkerSandbox } = require('./sandbox');
 const { ActionEvidenceProtocol } = require('./action-evidence');
+const { ObservationEvidenceProtocol } = require('./observation-evidence');
 
 class WorkerRuntime {
   constructor({ llmService, db, io, config, activityLog, costTracker, securityService }) {
@@ -51,6 +52,9 @@ class WorkerRuntime {
 
     // Action-Evidence Protocol — every tool call produces verifiable evidence
     this.aep = new ActionEvidenceProtocol({ activityLog, db });
+
+    // Observation-Evidence Protocol — structured observations with signal/interpretation separation
+    this.oep = new ObservationEvidenceProtocol({ activityLog, db, aep: this.aep });
 
     // Listener registry: pattern -> [{ workerId, listenerName, handler, timeout }]
     this.messageListeners = [];
@@ -523,6 +527,7 @@ class WorkerRuntime {
             throw new Error(`ASI01: File ${filePath} contains critical injection patterns — read blocked`);
           }
         }
+        this.activityLog?.append({ actor: agentId, action: 'fs_read', target: fullPath, details: JSON.stringify({ size: content.length }) });
         return content;
       }
       case 'tools.fs.write': {
@@ -537,6 +542,7 @@ class WorkerRuntime {
         const dir = path.dirname(fullPath);
         if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
         await fs.promises.writeFile(fullPath, data, 'utf8');
+        this.activityLog?.append({ actor: agentId, action: 'fs_write', target: fullPath, details: JSON.stringify({ size: data.length }) });
         return { ok: true };
       }
       case 'tools.shell.exec': {
@@ -737,6 +743,7 @@ class WorkerRuntime {
             });
           }
 
+          const llmStart = Date.now();
           const result = await self.llmService.complete({
             agentId,
             provider: opts.provider || agentConfig.model?.provider,
@@ -744,6 +751,18 @@ class WorkerRuntime {
             messages,
             options: opts.options || {},
             requestType: opts.requestType || 'task',
+          });
+
+          self.activityLog?.append({
+            actor: agentId, action: 'llm_call',
+            target: opts.provider || agentConfig.model?.provider || 'default',
+            details: JSON.stringify({
+              model: opts.model || agentConfig.model?.model,
+              inputTokens: result.usage?.inputTokens,
+              outputTokens: result.usage?.outputTokens,
+              durationMs: Date.now() - llmStart,
+              responseLength: (result.response || '').length,
+            }),
           });
 
           // Security: validate LLM output if validation rules provided
@@ -884,6 +903,25 @@ class WorkerRuntime {
               self.aep.recordEvidence(context._aepTraceId, 'READ_FILE',
                 ActionEvidenceProtocol.buildEvidence.fileRead(fullPath, content));
             }
+            // [PRIVILEGE BOUNDARY] Auto-detect reads outside authorized scope
+            if (context._aepTraceId) {
+              const sensitivePatterns = ['.env', 'secrets.db', '.ssh', '.gnupg', 'private_key', 'credentials'];
+              const isSensitive = sensitivePatterns.some(p => fullPath.includes(p));
+              if (isSensitive) {
+                self.aep.recordEvidence(context._aepTraceId, 'PRIVILEGE_BOUNDARY', {
+                  resource: fullPath,
+                  authorizedScope: `vault: ${self.vaultPath}, fsWrite: ${(agentConfig.permissions?.fsWrite || []).join(', ') || 'none'}`,
+                  action: `READ_FILE on sensitive path`,
+                });
+                self.activityLog?.append({
+                  actor: agentId,
+                  action: 'privilege_boundary_crossing',
+                  target: fullPath,
+                  details: JSON.stringify({ type: 'sensitive_read', agent: agentId }),
+                });
+              }
+            }
+            self.activityLog?.append({ actor: agentId, action: 'fs_read', target: fullPath, details: JSON.stringify({ size: content.length }) });
             return content;
           },
           write: (filePath, data) => {
@@ -914,6 +952,7 @@ class WorkerRuntime {
               self.aep.recordEvidence(context._aepTraceId, 'WROTE_FILE',
                 ActionEvidenceProtocol.buildEvidence.fileWrite(fullPath, data));
             }
+            self.activityLog?.append({ actor: agentId, action: 'fs_write', target: fullPath, details: JSON.stringify({ size: (data || '').length }) });
             return fs.promises.writeFile(fullPath, data, 'utf8');
           },
           exists: (filePath) => {
@@ -976,6 +1015,25 @@ class WorkerRuntime {
                   self.aep.recordEvidence(context._aepTraceId, 'SHELL_EXEC',
                     ActionEvidenceProtocol.buildEvidence.shellExec(command, 0, result.stdout));
                 }
+                // [PRIVILEGE BOUNDARY] Auto-detect shell access to sensitive resources
+                if (context._aepTraceId) {
+                  const sensitiveShellPatterns = ['.env', 'secrets.db', '/etc/passwd', 'printenv', 'security find'];
+                  const touchesSensitive = sensitiveShellPatterns.some(p => command.includes(p));
+                  if (touchesSensitive) {
+                    self.aep.recordEvidence(context._aepTraceId, 'PRIVILEGE_BOUNDARY', {
+                      resource: command.substring(0, 200),
+                      authorizedScope: `shell: ${agentConfig.permissions?.shell || 'restricted'}`,
+                      action: 'SHELL_EXEC accessing sensitive resource',
+                    });
+                    self.activityLog?.append({
+                      actor: agentId,
+                      action: 'privilege_boundary_crossing',
+                      target: 'shell',
+                      details: JSON.stringify({ type: 'sensitive_shell', command: command.substring(0, 100) }),
+                    });
+                  }
+                }
+                self.activityLog?.append({ actor: agentId, action: 'shell_exec', target: command.substring(0, 200), details: JSON.stringify({ exitCode: 0, stdoutLength: result.stdout.length }) });
                 resolve(result);
               });
             });
@@ -1098,6 +1156,47 @@ class WorkerRuntime {
         },
       },
 
+      // Observation-Evidence Protocol — structured diagnostic observations
+      observe: {
+        /**
+         * Record a structured observation with raw signals, interpretation,
+         * confidence, and required alternative interpretation.
+         *
+         * @param {Object} obs
+         * @param {string} obs.type - Observation type (PROCESS_IDLE, LOG_SILENCE, etc.)
+         * @param {Object} obs.signals - Raw signal data (must match type's required signals)
+         * @param {string} obs.interpretation - What the agent thinks the signals mean
+         * @param {string} obs.alternativeInterpretation - "Could be wrong" explanation (REQUIRED)
+         * @param {string[]} [obs.independentSignals] - Which signals are independent (for confidence)
+         * @returns {Object} The stored observation record
+         */
+        record: (obs) => {
+          return self.oep.record({
+            ...obs,
+            agentId,
+            traceId: context._aepTraceId || null,
+          });
+        },
+
+        /** Get the observation vocabulary with types and required signals. */
+        getVocabulary: () => self.oep.getVocabulary(),
+
+        /** Check if a process is idle (0% CPU). Returns observation record or null. */
+        checkProcessIdle: (pid) => self.oep.checkProcessIdle(agentId, pid, context._aepTraceId),
+
+        /** Check if an expected process is absent. Returns observation record or null. */
+        checkProcessAbsent: (processPattern) => self.oep.checkProcessAbsent(agentId, processPattern, context._aepTraceId),
+
+        /** Check system memory pressure. Returns observation record or null. */
+        checkResourcePressure: () => self.oep.checkResourcePressure(agentId, context._aepTraceId),
+
+        /** Get recent observations for this agent. */
+        getRecent: (limit) => self.oep.getByAgent(agentId, limit),
+
+        /** Format an observation for channel display. */
+        format: (record) => self.oep.formatForDisplay(record),
+      },
+
       // Agent config
       config: agentConfig,
 
@@ -1156,6 +1255,22 @@ class WorkerRuntime {
             gaps: evaluation.gaps,
           };
           console.log(`[AEP] ${fromUser} message: ${evaluation.level} (${evaluation.claims.length} claims, ${evaluation.gaps.length} gaps)`);
+
+          // [AEP CROSS-PROVIDER] If claims detected, run cross-provider consensus verification
+          if (evaluation.claims.length > 0 && this.llmService) {
+            try {
+              const cpVerify = await this.aep.crossProviderVerify(traceId, body, this.llmService);
+              metadata.evidenceEvaluation.crossProvider = {
+                consensus: cpVerify.consensus,
+                level: cpVerify.level,
+                localVerdict: cpVerify.localVerdict,
+                cloudVerdict: cpVerify.cloudVerdict,
+              };
+              console.log(`[AEP] Cross-provider: ${cpVerify.consensus} → ${cpVerify.level}`);
+            } catch (cpErr) {
+              console.warn('[AEP] Cross-provider verification error:', cpErr.message);
+            }
+          }
         }
       } catch (e) {
         console.warn('[AEP] Evaluation error:', e.message);
@@ -1173,6 +1288,11 @@ class WorkerRuntime {
         if (this.io) this.io.to(channelId).emit('new_message', message);
       }
     );
+
+    this.activityLog?.append({
+      actor: fromUser, action: 'message_posted', target: channelId,
+      details: JSON.stringify({ messageId: id, bodyLength: (body || '').length }),
+    });
   }
 
   _getMessages(channelId, opts = {}) {

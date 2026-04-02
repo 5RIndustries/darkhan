@@ -1,16 +1,16 @@
 /**
- * Darkhan Auto-Responder — Message Router (v5)
+ * Darkhan Auto-Responder — Message Router (v6)
  *
- * Routes incoming messages through a three-tier system:
- *   1. Local LLM (Llama 3.2 3B via Ollama) — handles routine messages at $0
- *   2. Claude Code relay (Opus via Max plan) — handles complex requests at $0
- *   3. Pushover escalation — pings the admin when Claude is in REST mode
+ * Routes incoming messages through a two-tier system:
+ *   1. Local LLM (Qwen 2.5 14B via Ollama) — handles routine messages at $0
+ *   2. Unified Claude session (Opus via Max plan) — handles everything else at $0
  *
- * Architecture (2026-03-27):
- *   - Darkhan runs with local Ollama
- *   - Claude relay uses `claude -p --model opus` (Max plan, no API key needed)
- *   - Presence system: [STATUS:ACTIVE] / [STATUS:REST]
- *   - Bridge script handles agent routing
+ * Architecture (2026-04-01):
+ *   - Darkhan runs with local Ollama for front-desk triage
+ *   - Claude runs as a unified session (SDK-based) shared between chat and terminal
+ *   - When a unified session is active, ALL human messages route to Claude
+ *   - When no session exists, local LLM handles routine; complex messages
+ *     prompt the user to open the terminal tab to start a Claude session
  */
 
 const { execFile } = require('child_process');
@@ -20,11 +20,15 @@ const crypto = require('crypto');
 const { processAgentMessage } = require('./agent-relay');
 
 // Relay mode: 'sdk' uses Agent SDK, 'cli' uses claude -p --resume
-const RELAY_MODE = process.env.Darkhan_RELAY_MODE || 'cli';
+const RELAY_MODE = process.env.DARKHAN_RELAY_MODE || process.env.DARYL_RELAY_MODE || 'cli';
 
 // Debounce tracking
 const pendingResponses = new Map();
 const DEBOUNCE_MS = 3000;
+
+// Terminal Claude activity tracking — suppress auto-responder when terminal is active
+const terminalClaudeActivity = new Map(); // channel_id -> timestamp
+const TERMINAL_ACTIVE_WINDOW_MS = 120000; // 2 minutes
 
 // Session persistence: channel_id -> { sessionId, createdAt, messageCount, lastMessageAt }
 const channelSessions = new Map();
@@ -419,6 +423,7 @@ function classifyMessage(messageBody, fromUser) {
 
   // Claude relay indicators: operations that need vault access, deep analysis, or tool use
   const relayIndicators = [
+    'claude',
     'deploy', 'implement', 'build', 'create', 'write', 'draft',
     'analyze', 'investigate', 'dispatch', 'update state',
     'red team', 'checkpoint', 'transcript', 'session log',
@@ -441,57 +446,13 @@ function classifyMessage(messageBody, fromUser) {
 }
 
 /**
- * Check Claude's presence status from recent messages.
- * Returns 'ACTIVE' or 'REST'.
+ * Prompt the user to start a Claude session when Claude is not active.
+ * No external escalation needed — the terminal tab is built into Darkhan.
  */
-function getClaudeStatus(db) {
-  return new Promise((resolve) => {
-    // Check heartbeat table first (set by health ping API)
-    db.get(
-      `SELECT status, last_ping_at FROM agent_heartbeats WHERE agent = 'agent_claude'`,
-      [],
-      (err, row) => {
-        if (err || !row) return resolve('REST');
-
-        // If pinged within last 5 minutes, Claude is ACTIVE
-        if (row.last_ping_at) {
-          const pingAge = Date.now() - new Date(row.last_ping_at + (row.last_ping_at.endsWith('Z') ? '' : 'Z')).getTime();
-          if (pingAge < 5 * 60 * 1000 && row.status === 'active') {
-            return resolve('ACTIVE');
-          }
-        }
-
-        // Fallback: check recent messages for status markers
-        db.all(
-          `SELECT body FROM messages WHERE from_user = 'agent_claude' ORDER BY created_at DESC LIMIT 10`,
-          [],
-          (err2, rows) => {
-            if (err2 || !rows) return resolve('REST');
-            for (const r of rows) {
-              if (r.body.includes('[STATUS:ACTIVE]')) return resolve('ACTIVE');
-              if (r.body.includes('[STATUS:REST]')) return resolve('REST');
-            }
-            resolve('REST');
-          }
-        );
-      }
-    );
-  });
-}
-
-/**
- * Escalate to admin via Pushover when Claude is in REST mode
- */
-function escalateToTerminal(db, io, channelId, fromUser, messageBody) {
-  const summary = messageBody.substring(0, 200);
-  const escalationMsg = `[ESCALATION] ${fromUser}: "${summary}" — Claude is in REST mode. Pinging admin via Pushover.`;
-  postToChannel(db, io, channelId, escalationMsg, 'agent_darkhan');
-
-  const pushScript = path.join(HOME, 'scripts', 'push-alert.sh');
-  execFile(pushScript, ['Darkhan Escalation', `${fromUser}: ${summary}`], (err) => {
-    if (err) console.error(`[Escalation] Pushover failed: ${err.message}`);
-    else console.log(`[Escalation] Pushover sent for ${fromUser}`);
-  });
+function promptForClaudeSession(db, io, channelId, fromUser, messageBody) {
+  const msg = `Claude doesn't have an active session right now. Open the **Terminal** tab and start a Claude session — once it's running, your chat messages will route to Claude automatically.`;
+  postToChannel(db, io, channelId, msg, 'agent_darkhan');
+  console.log(`[Router] Prompted ${fromUser} to open terminal for Claude session`);
 }
 
 /**
@@ -507,13 +468,13 @@ async function processLocalLlmMessage(channelId, fromUser, messageBody, context)
   const darylContext = await buildDarylContext(db, channelId);
 
   const ollamaModel = process.env.OLLAMA_MODEL || 'qwen2.5:14b';
-  const prompt = `You are Darkhan, the command center assistant. You are NOT Claude — Claude is the Chief of Staff who operates in the terminal. You are Darkhan, running on a local ${ollamaModel} model.
+  const prompt = `You are Darkhan, the command center assistant. You are NOT Claude — Claude is the Chief of Staff who runs in the terminal tab. You are Darkhan, running on a local ${ollamaModel} model.
 
-Your role: Handle routine communication, answer questions about current status from the conversation context below, relay acknowledgments, and be a competent front-desk assistant.
+Your role: Handle routine communication (greetings, acknowledgments, status questions you can answer from context), and be a competent front-desk assistant.
 
 ESCALATION RULES:
-If the message requires vault/file access, code execution, agent dispatch, deep strategic analysis, or anything beyond your conversation context — respond with EXACTLY:
-[NEEDS_CLAUDE] Brief reason why this needs Claude
+If the message requires vault/file access, code execution, agent dispatch, deep analysis, or anything beyond your conversation context — respond with EXACTLY:
+[NEEDS_CLAUDE] Brief reason
 
 Recent conversation:
 ${darylContext}
@@ -596,9 +557,39 @@ async function processMessage(channelId, fromUser, messageBody, context) {
     }
   }
 
+  // Check for pending permission approval via chat
+  const unifiedClaudeForPerm = context.unifiedClaude;
+  if (unifiedClaudeForPerm && HUMAN_USERS.includes(fromUser)) {
+    const sessionUser = fromUser;
+    if (unifiedClaudeForPerm.hasPendingPermission(sessionUser)) {
+      const lower = cleanBody.toLowerCase().trim();
+      if (lower === 'approve' || lower === 'y' || lower === 'yes' || lower === 'allow') {
+        unifiedClaudeForPerm.resolvePermission(sessionUser, 'allow');
+        postToChannel(db, io, channelId, 'Permission granted.', 'agent_darkhan');
+        return;
+      } else if (lower === 'always' || lower === 'a') {
+        unifiedClaudeForPerm.resolvePermission(sessionUser, 'always');
+        postToChannel(db, io, channelId, 'Permission granted (always allow).', 'agent_darkhan');
+        return;
+      } else if (lower === 'deny' || lower === 'n' || lower === 'no') {
+        unifiedClaudeForPerm.resolvePermission(sessionUser, 'deny');
+        postToChannel(db, io, channelId, 'Permission denied.', 'agent_darkhan');
+        return;
+      }
+      // If not a clear approval/denial, continue normal processing
+    }
+  }
+
   // Worker listeners already fired in onNewMessage() before reaching processMessage.
   // If the message is an @mention that workers handle, the worker responses are
   // already being sent. The auto-responder continues for LLM triage routing.
+
+  // Check if terminal Claude is actively handling this channel — suppress duplicate responses
+  const lastTerminalPost = terminalClaudeActivity.get(channelId);
+  if (lastTerminalPost && (Date.now() - lastTerminalPost) < TERMINAL_ACTIVE_WINDOW_MS) {
+    console.log(`[Router] Terminal Claude active in ${channelId} (${Math.round((Date.now() - lastTerminalPost) / 1000)}s ago) — suppressing auto-response`);
+    return;
+  }
 
   // Post "thinking" indicator
   postToChannel(db, io, channelId, '...thinking', 'agent_darkhan');
@@ -614,7 +605,13 @@ async function processMessage(channelId, fromUser, messageBody, context) {
     }
 
     // LOCAL LLM FAST PATH — routine responses via Ollama ($0)
-    if (tier === 'local_llm') {
+    // BUT: if a unified Claude session is active, route human messages through Claude
+    // so that chat and terminal share the same context
+    const unifiedActive = context.unifiedClaude && context.unifiedClaude.sessions.has(
+      HUMAN_USERS.includes(fromUser) ? fromUser : fromUser
+    );
+
+    if (tier === 'local_llm' && !unifiedActive) {
       const llmResponse = await processLocalLlmMessage(channelId, fromUser, cleanBody, context);
       deleteThinkingMessage(db, io, channelId);
 
@@ -622,18 +619,10 @@ async function processMessage(channelId, fromUser, messageBody, context) {
         // Check if local LLM is requesting escalation to Claude
         if (llmResponse.includes('[NEEDS_CLAUDE]')) {
           markTriageEscalation(db, messageBody);
-          const claudeStatus = await getClaudeStatus(db);
-          console.log(`[Router] Local LLM requested escalation — Claude status: ${claudeStatus}`);
-
-          if (claudeStatus === 'ACTIVE') {
-            // Claude is ACTIVE — route to Claude relay (Opus, Max plan, $0)
-            postToChannel(db, io, channelId, `Routing to Claude...`, 'agent_darkhan');
-            // Fall through to Claude relay below
-          } else {
-            // Claude is REST — escalate with Pushover
-            escalateToTerminal(db, io, channelId, fromUser, cleanBody);
-            return;
-          }
+          console.log(`[Router] Local LLM requested escalation to Claude`);
+          // Prompt user to start a Claude session via the terminal tab
+          promptForClaudeSession(db, io, channelId, fromUser, cleanBody);
+          return;
         } else {
           // Local LLM handled it
           postToChannel(db, io, channelId, llmResponse, 'agent_darkhan');
@@ -643,6 +632,9 @@ async function processMessage(channelId, fromUser, messageBody, context) {
         // Local LLM failed — fall through to Claude relay
         console.log(`[Router] Local LLM failed → Claude relay fallback`);
       }
+    } else if (tier === 'local_llm' && unifiedActive) {
+      console.log(`[Router] Unified session active — routing local_llm tier to Claude for ${fromUser}`);
+      // Fall through to Claude relay below
     }
 
     // CLAUDE RELAY — Opus via Max plan ($0)
@@ -653,9 +645,9 @@ async function processMessage(channelId, fromUser, messageBody, context) {
     // UNIFIED SESSION PATH — shared context with terminal
     const unifiedClaude = context.unifiedClaude;
     const sessionUser = HUMAN_USERS.includes(fromUser) ? fromUser : fromUser;
-    if (unifiedClaude && unifiedClaude.sessions.has(sessionUser)) {
-      // Active unified session exists — route through it for shared context
-      console.log(`[Router] Using unified Claude session for ${fromUser}`);
+    if (unifiedClaude) {
+      // Route through unified session — creates one if none exists (shared context with terminal)
+      console.log(`[Router] Using unified Claude session for ${fromUser} (exists: ${unifiedClaude.sessions.has(sessionUser)})`);
       const chatMessage = `[Chat message from ${fromUser} in ${channelId}]: ${cleanBody}`;
       trimmedResponse = await unifiedClaude.sendFromChat(sessionUser, chatMessage, channelId);
     } else if (RELAY_MODE === 'sdk') {
@@ -685,11 +677,17 @@ async function processMessage(channelId, fromUser, messageBody, context) {
       trimmedResponse = (result.response || '').trim();
     }
 
-    // Post Claude's response
+    // Post Claude's response (run through review gate if enabled)
     deleteThinkingMessage(db, io, channelId);
 
     if (trimmedResponse.length > 0) {
-      postToChannel(db, io, channelId, trimmedResponse);
+      const reviewGate = context.reviewGate;
+      if (reviewGate && reviewGate.enabled) {
+        const review = await reviewGate.review(trimmedResponse, cleanBody, fromUser);
+        postToChannel(db, io, channelId, review.response);
+      } else {
+        postToChannel(db, io, channelId, trimmedResponse);
+      }
     }
   } catch (err) {
     console.error(`[Relay] Processing error:`, err.message);
@@ -766,6 +764,95 @@ function deleteThinkingMessage(db, io, channelId) {
 }
 
 /**
+ * Handle slash commands — returns true if handled, false to continue normal routing.
+ */
+function handleSlashCommand(body, fromUser, channelId, context) {
+  const { db, io } = context;
+
+  // /review-gate on | off | status
+  if (body.startsWith('/review-gate') || body.startsWith('/reviewgate')) {
+    const arg = body.split(/\s+/)[1] || 'status';
+    const reviewGate = context.reviewGate;
+    if (!reviewGate) {
+      postToChannel(db, io, channelId, 'Review gate not initialized.', 'agent_darkhan');
+      return true;
+    }
+
+    if (arg === 'on' || arg === 'enable') {
+      reviewGate.enable();
+      postToChannel(db, io, channelId, '**Review Gate enabled.** Claude\'s responses will be reviewed by the local LLM before posting. Toggle off with `/review-gate off`.', 'agent_darkhan');
+    } else if (arg === 'off' || arg === 'disable') {
+      reviewGate.disable();
+      postToChannel(db, io, channelId, '**Review Gate disabled.** Responses post directly without review.', 'agent_darkhan');
+    } else {
+      const status = reviewGate.getStatus();
+      postToChannel(db, io, channelId,
+        `**Review Gate:** ${status.enabled ? 'ON' : 'OFF'}\n` +
+        `Model: ${status.model} | Severity: ${status.severity}\n` +
+        `Stats: ${status.stats.reviewed} reviewed, ${status.stats.flagged} flagged, ${status.stats.passed} passed`,
+        'agent_darkhan');
+    }
+    return true;
+  }
+
+  // /status — show running worker tasks and unified session status
+  if (body === '/status') {
+    const lines = ['**Darkhan Status**\n'];
+
+    // Worker status
+    const workerRuntime = context.workerRuntime;
+    if (workerRuntime) {
+      const workers = workerRuntime.getStatus();
+      lines.push('**Workers:**');
+      for (const w of workers) {
+        const icon = w.disabled ? '⏸' : (w.running ? '🔄' : '✅');
+        const runningInfo = w.running ? ` — running \`${w.running}\`` : '';
+        lines.push(`${icon} **${w.name}** (${w.status})${runningInfo}`);
+      }
+    }
+
+    // Unified Claude session
+    const unified = context.unifiedClaude;
+    if (unified) {
+      const uStatus = unified.getStatus();
+      lines.push(`\n**Claude Session:** ${uStatus.activeSessions > 0 ? 'Active' : 'No active session'}`);
+      if (uStatus.sessions.length > 0) {
+        for (const s of uStatus.sessions) {
+          lines.push(`  Messages: ${s.messageCount} | Subscribers: ${s.subscriberCount} | Busy: ${s.busy}`);
+        }
+      }
+      if (uStatus.storedSessions > 0) {
+        lines.push(`  Stored sessions (resumable): ${uStatus.storedSessions}`);
+      }
+    }
+
+    // Review gate
+    const reviewGate = context.reviewGate;
+    if (reviewGate) {
+      const rStatus = reviewGate.getStatus();
+      lines.push(`\n**Review Gate:** ${rStatus.enabled ? 'ON' : 'OFF'} (${rStatus.stats.reviewed} reviewed, ${rStatus.stats.flagged} flagged)`);
+    }
+
+    postToChannel(db, io, channelId, lines.join('\n'), 'agent_darkhan');
+    return true;
+  }
+
+  // /help — list available commands
+  if (body === '/help' || body === '/commands') {
+    postToChannel(db, io, channelId,
+      '**Darkhan Commands:**\n' +
+      '`/status` — Worker status, Claude session, review gate\n' +
+      '`/review-gate on|off|status` — Toggle output review gate\n' +
+      '`@claude <message>` — Force message to Claude\n' +
+      '`/quick <message>` — Force message to local LLM (Darkhan)',
+      'agent_darkhan');
+    return true;
+  }
+
+  return false; // Not a slash command we handle
+}
+
+/**
  * Entry point — called by messages route when a new message is posted
  */
 function onNewMessage(message, context) {
@@ -773,6 +860,11 @@ function onNewMessage(message, context) {
 
   if (!body || body.trim().length === 0) return;
   if (from_user === 'agent_darkhan') return;
+
+  // Track terminal Claude activity — agent_claude posts from terminal via darkhan-post.sh
+  if (from_user === 'agent_claude' && !body.startsWith('HEARTBEAT:')) {
+    terminalClaudeActivity.set(channel_id, Date.now());
+  }
 
   // Route to worker listeners FIRST — any message can trigger a listener
   // (comms checks, @mentions, etc.) regardless of who sent it
@@ -795,6 +887,14 @@ function onNewMessage(message, context) {
   const workerMentionPattern = workerNames?.length ? new RegExp(`@(${workerNames.join('|')})\\b`, 'i') : /^$/;
   if (workerMentionPattern.test(body)) {
     return; // Worker listener already fired above — it handles the response
+  }
+
+  // --- Slash commands (handled immediately, no debounce) ---
+  const trimmedBody = body.trim().toLowerCase();
+
+  if (HUMAN_USERS.includes(from_user) && trimmedBody.startsWith('/')) {
+    const handled = handleSlashCommand(trimmedBody, from_user, channel_id, context);
+    if (handled) return;
   }
 
   // Auto-responder filtering — only process messages from humans for LLM routing

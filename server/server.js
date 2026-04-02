@@ -340,7 +340,6 @@ const authRoutes = require('./routes/auth');
 const messageRoutes = require('./routes/messages');
 const taskRoutes = require('./routes/tasks');
 const healthRoutes = require('./routes/health');
-const claudeRoutes = require('./routes/claude');
 const approvalsRoutes = require('./routes/approvals');
 const quarantineRoutes = require('./routes/quarantine');
 
@@ -351,7 +350,6 @@ app.use('/api/auth', authRoutes);
 app.use('/api/messages', messageRoutes);
 app.use('/api/tasks', taskRoutes);
 app.use('/api/health', healthRoutes);
-app.use('/api/claude', claudeRoutes);
 app.use('/api/approvals', approvalsRoutes);
 app.use('/api/quarantine', quarantineRoutes);
 
@@ -501,6 +499,57 @@ app.post('/api/ground-truth/check', secReqAuth, (req, res) => {
   if (!text) return res.status(400).json({ error: 'text required' });
   const results = groundTruth.checkMessage(text);
   res.json({ results, count: results.length });
+});
+
+// Zero-auth diagnostic endpoint — agents verify system state without credentials
+// Returns ONLY non-sensitive operational state: process health, session counts, worker status
+// See OPERATOR-TESTING.md for the principle: "Test through observable side effects, not authentication"
+app.get('/api/diagnostic', (req, res) => {
+  const diag = {
+    server: 'running',
+    uptime: Math.floor(process.uptime()),
+    timestamp: new Date().toISOString(),
+    workers: [],
+    claudeSession: { active: false },
+    reviewGate: { enabled: false },
+  };
+
+  if (app.locals.workerRuntime) {
+    diag.workers = app.locals.workerRuntime.getStatus().map(w => ({
+      name: w.name,
+      status: w.status,
+      running: w.running || null,
+      disabled: w.disabled || false,
+    }));
+  }
+
+  if (app.locals.unifiedClaude) {
+    const uStatus = app.locals.unifiedClaude.getStatus();
+    diag.claudeSession = {
+      active: uStatus.activeSessions > 0,
+      count: uStatus.activeSessions,
+      storedSessions: uStatus.storedSessions,
+    };
+  }
+
+  if (app.locals.reviewGate) {
+    const rg = app.locals.reviewGate.getStatus();
+    diag.reviewGate = { enabled: rg.enabled, stats: rg.stats };
+  }
+
+  // OEP: Observation-Evidence Protocol status
+  if (app.locals.workerRuntime?.oep) {
+    diag.oep = { active: true };
+  }
+
+  // AEP: Action-Evidence Protocol status
+  if (app.locals.workerRuntime?.aep) {
+    diag.aep = { active: true, activeTraces: app.locals.workerRuntime.aep.traces.size };
+  }
+
+  // Intentionally excludes: credentials, API keys, session tokens,
+  // database contents, file paths, user info, config details
+  res.json(diag);
 });
 
 // Instance identity (public key for federation trust)
@@ -849,6 +898,11 @@ instanceIdentity.initialize().then(() => {
 });
 app.locals.instanceIdentity = instanceIdentity;
 
+// Review Gate — optional output verification before posting
+const { ReviewGate } = require('./services/review-gate');
+const reviewGate = new ReviewGate({ config });
+app.locals.reviewGate = reviewGate;
+
 // Unified Claude Session — one Claude process, two interfaces (terminal + chat)
 const unifiedClaude = new UnifiedClaudeSession({ db, io, config, activityLog });
 app.locals.unifiedClaude = unifiedClaude;
@@ -869,6 +923,9 @@ io.on('connection', (socket) => {
     } else {
       console.warn(`[Darkhan] Rejected channel join: ${channelId} (not in config)`);
     }
+  });
+  socket.on('leave_channel', (channelId) => {
+    socket.leave(channelId);
   });
   socket.on('disconnect', () => { console.log('[Darkhan] Client disconnected:', socket.id); });
 });

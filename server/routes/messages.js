@@ -270,6 +270,7 @@ router.post('/', async (req, res) => {
         io: req.app.locals.io,
         workerRuntime: req.app.locals.workerRuntime,
         unifiedClaude: req.app.locals.unifiedClaude,
+        reviewGate: req.app.locals.reviewGate,
       });
 
       return res.status(201).json({ ok: true, message });

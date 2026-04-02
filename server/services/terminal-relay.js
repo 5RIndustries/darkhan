@@ -95,39 +95,100 @@ class TerminalRelay {
    */
   async _spawnUnifiedClaude(socket, userId, key, cols, rows) {
     try {
-      const entry = await this.unifiedClaude.getOrCreateSession(userId);
+      // Don't eagerly create/resume the session — it will be created on first
+      // terminal input (via sendFromTerminal → getOrCreateSession) or on first
+      // chat message (via sendFromChat → getOrCreateSession). This prevents
+      // orphan sessions from spawning on server startup before anyone types.
       const subscriberId = `terminal_${key}`;
 
       // Subscribe to stream events and render as terminal text
-      this.unifiedClaude.subscribe(userId, subscriberId, 'terminal', (event) => {
+      // Tool calls collapse into a single spinner line to keep context visible
+      const toolState = { tools: [], spinnerActive: false };
+      const spinnerFrames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+      let spinnerIdx = 0;
+      let spinnerInterval = null;
+
+      const startSpinner = () => {
+        if (spinnerInterval) return;
+        toolState.spinnerActive = true;
+        spinnerInterval = setInterval(() => {
+          spinnerIdx = (spinnerIdx + 1) % spinnerFrames.length;
+          const frame = spinnerFrames[spinnerIdx];
+          const toolList = toolState.tools.slice(-6).join(', ');
+          // \r moves to start of line, \x1b[2K clears the line
+          socket.emit('terminal:output', { key,
+            data: `\r\x1b[2K\x1b[90m  ${frame} Thinking... (${toolList})\x1b[0m` });
+        }, 120);
+      };
+
+      const stopSpinner = () => {
+        if (spinnerInterval) {
+          clearInterval(spinnerInterval);
+          spinnerInterval = null;
+        }
+        if (toolState.spinnerActive) {
+          // Clear the spinner line and add breathing room
+          socket.emit('terminal:output', { key, data: `\r\x1b[2K\r\n` });
+          toolState.spinnerActive = false;
+          toolState.tools = [];
+        }
+      };
+
+      // Store the callback — will be attached lazily on first terminal input
+      let lastEventType = null;
+      const subscriberCallback = (event) => {
         switch (event.type) {
-          case 'text_delta':
-            socket.emit('terminal:output', { key, data: event.text });
+          case 'assistant_message': {
+            stopSpinner();
+            const text = (event.text || '').replace(/\n/g, '\r\n');
+            if (text.length > 0) {
+              // Add a blank line before text if coming from a different event type
+              const spacer = (lastEventType && lastEventType !== 'assistant_message') ? '\r\n' : '';
+              socket.emit('terminal:output', { key, data: spacer + text + '\r\n' });
+            }
+            lastEventType = 'assistant_message';
             break;
-          case 'assistant_message':
-            // Full message — already streamed via deltas, just add newline
-            socket.emit('terminal:output', { key, data: '\r\n' });
+          }
+          case 'tool_summary': {
+            const toolName = (event.text || '').split('(')[0];
+            // Add a blank line before tool calls if coming from text output
+            if (lastEventType === 'assistant_message' && !toolState.spinnerActive) {
+              socket.emit('terminal:output', { key, data: '\r\n' });
+            }
+            toolState.tools.push(toolName);
+            startSpinner();
+            lastEventType = 'tool_summary';
             break;
-          case 'tool_summary':
-            socket.emit('terminal:output', { key,
-              data: `\x1b[36m[Tool] ${event.text}\x1b[0m\r\n` });
-            break;
-          case 'system':
-            socket.emit('terminal:output', { key,
-              data: `\x1b[33m${event.text}\x1b[0m\r\n` });
-            break;
+          }
           case 'result':
+            stopSpinner();
             socket.emit('terminal:output', { key,
-              data: `\r\n\x1b[32m> \x1b[0m` }); // Show prompt
+              data: `\r\n\r\n\x1b[32m> \x1b[0m` });
+            lastEventType = 'result';
             break;
           case 'error':
+            stopSpinner();
             socket.emit('terminal:output', { key,
-              data: `\x1b[31m${event.text}\x1b[0m\r\n` });
+              data: `\r\n\x1b[31m${(event.text || '').replace(/\n/g, '\r\n')}\x1b[0m\r\n\r\n` });
+            lastEventType = 'error';
+            break;
+          case 'permission_prompt':
+            stopSpinner();
+            socket.emit('terminal:output', { key, data: '\r\n' + (event.text || '') });
+            lastEventType = 'permission_prompt';
             break;
         }
-      });
+      };
 
       // Handle terminal input — send to unified session
+      // If session already exists (e.g., chat already created one), attach subscriber now
+      const existingSession = this.unifiedClaude.sessions.get(userId);
+      let alreadyAttached = false;
+      if (existingSession) {
+        this.unifiedClaude.subscribe(userId, subscriberId, 'terminal', subscriberCallback);
+        alreadyAttached = true;
+      }
+
       this.sessions.set(key, {
         userId,
         socketId: socket.id,
@@ -135,9 +196,10 @@ class TerminalRelay {
         mode: 'claude',
         unified: true,
         subscriberId,
+        subscriberCallback,
+        subscriberAttached: alreadyAttached,
         disconnectTimer: null,
         startTime: new Date().toISOString(),
-        // Input buffer for building complete messages (enter key = send)
         inputBuffer: '',
       });
 
@@ -267,13 +329,40 @@ class TerminalRelay {
         session.inputBuffer = '';
         session.socket.emit('terminal:output', { key, data: '\r\n' });
 
+        // Check if there's a pending permission to resolve
+        if (message.length > 0 && this.unifiedClaude.hasPendingPermission(session.userId)) {
+          const lower = message.toLowerCase();
+          if (lower === 'y' || lower === 'yes' || lower === 'approve') {
+            this.unifiedClaude.resolvePermission(session.userId, 'allow');
+            session.socket.emit('terminal:output', { key, data: '\x1b[32m✓ Allowed\x1b[0m\r\n' });
+          } else if (lower === 'a' || lower === 'always') {
+            this.unifiedClaude.resolvePermission(session.userId, 'always');
+            session.socket.emit('terminal:output', { key, data: '\x1b[36m✓ Always allowed\x1b[0m\r\n' });
+          } else if (lower === 'n' || lower === 'no' || lower === 'deny') {
+            this.unifiedClaude.resolvePermission(session.userId, 'deny');
+            session.socket.emit('terminal:output', { key, data: '\x1b[31m✗ Denied\x1b[0m\r\n' });
+          } else {
+            session.socket.emit('terminal:output', { key, data: '\x1b[33mType y/n/a (allow, deny, always allow)\x1b[0m\r\n\x1b[33m? \x1b[0m' });
+          }
+          return;
+        }
+
         if (message.length > 0) {
           if (message === '/quit' || message === '/exit') {
             this._kill(key, 'user_quit');
             session.socket.emit('terminal:exit', { key, exitCode: 0, signal: null });
             return;
           }
-          this.unifiedClaude.sendFromTerminal(session.userId, message);
+          // Ensure subscriber is attached (lazy — session may not exist until first send)
+          if (session.subscriberId && !session.subscriberAttached) {
+            this.unifiedClaude.getOrCreateSession(session.userId).then(() => {
+              this.unifiedClaude.subscribe(session.userId, session.subscriberId, 'terminal', session.subscriberCallback);
+              session.subscriberAttached = true;
+              this.unifiedClaude.sendFromTerminal(session.userId, message);
+            });
+          } else {
+            this.unifiedClaude.sendFromTerminal(session.userId, message);
+          }
         } else {
           session.socket.emit('terminal:output', { key, data: '\x1b[32m> \x1b[0m' });
         }
@@ -328,11 +417,11 @@ class TerminalRelay {
   _onDisconnect(userId, socketId) {
     for (const [key, session] of this.sessions) {
       if (session.userId === userId && session.socketId === socketId) {
-        console.log(`[Terminal] User ${userId} disconnected — 30s grace period for ${key}`);
+        console.log(`[Terminal] User ${userId} disconnected — 120s grace period for ${key}`);
         session.disconnectTimer = setTimeout(() => {
-          console.log(`[Terminal] Grace period expired for ${key} — killing PTY`);
+          console.log(`[Terminal] Grace period expired for ${key} — killing subscriber`);
           this._kill(key, 'disconnect_timeout');
-        }, 30000);
+        }, 120000);
       }
     }
   }
@@ -340,22 +429,22 @@ class TerminalRelay {
   /**
    * Bridge: Post a message to a Darkhan channel.
    */
-  _postToChannel(channelId, body) {
+  _postToChannel(channelId, body, fromUser = 'system_terminal') {
     if (!this.db) return;
     const id = crypto.randomUUID();
+    const msgType = fromUser.startsWith('user_') ? 'message' : 'status';
     this.db.run(
       `INSERT INTO messages (id, channel_id, from_user, body, priority, type) VALUES (?, ?, ?, ?, ?, ?)`,
-      [id, channelId, 'system_terminal', body, 'low', 'status'],
+      [id, channelId, fromUser, body, 'normal', msgType],
       (err) => {
         if (err) {
           console.error(`[Terminal] Failed to post to ${channelId}:`, err.message);
           return;
         }
-        // Emit via Socket.IO so connected clients see it in real-time
         if (this.io) {
           this.io.to(channelId).emit('new_message', {
-            id, channel_id: channelId, from_user: 'system_terminal',
-            body, priority: 'low', type: 'status',
+            id, channel_id: channelId, from_user: fromUser,
+            body, priority: 'normal', type: msgType,
             created_at: new Date().toISOString(),
           });
         }

@@ -25,7 +25,9 @@ Most agent frameworks trust the agent. Darkhan does not.
 
 **$0/day local LLM.** Triage, classification, and routine agent work runs on Ollama (Qwen 2.5 14B default, 16GB+ RAM) locally. Four cloud providers supported (Google Gemini, Anthropic Claude, OpenAI GPT) for heavier tasks and cross-provider consensus. You choose every model. You control the cost.
 
-**Action-Evidence Protocol.** Every tool call produces system-captured evidence (file hashes, PIDs, exit codes, search results). Agent messages are evaluated against their evidence trail and tagged: verified, partial, claimed, or contradicted. Agents can say whatever they want — the evidence trail is immutable.
+**Action-Evidence Protocol.** Every tool call produces system-captured evidence (file hashes, PIDs, exit codes, search results). Agent messages are evaluated against their evidence trail and tagged: verified, partial, claimed, or contradicted. Agents can say whatever they want — the evidence trail is immutable. Cross-provider claim verification sends the evidence trail to two independent LLMs for consensus.
+
+**Observation-Evidence Protocol.** System observations (process state, resource pressure, behavioral patterns) are recorded with mandatory signal-interpretation separation. Every observation requires an alternative interpretation — the system enforces intellectual humility. Confidence is computed from signal count, not self-assessment.
 
 **Federation across machines.** Run workers on multiple nodes with a single hub. Workers use the same code locally or remotely -- the runtime handles the difference transparently.
 
@@ -33,7 +35,7 @@ Most agent frameworks trust the agent. Darkhan does not.
 
 ## Quick Start
 
-**Requirements:** Node.js 20+, npm, Ollama (recommended for local LLM)
+**Requirements:** Node.js 20.12+, npm, 16GB+ RAM, Ollama (for local 14B model)
 
 ```bash
 # Clone the repo
@@ -107,7 +109,8 @@ darkhan/
 | Service | Purpose |
 |---------|---------|
 | `llm.js` | Unified LLM interface (Ollama, Gemini, Anthropic, OpenAI) with automatic rate limiting and cost tracking |
-| `action-evidence.js` | Action-Evidence Protocol — 13-verb controlled vocabulary, system-captured evidence, automatic claim downgrade |
+| `action-evidence.js` | Action-Evidence Protocol — 15-verb controlled vocabulary, system-captured evidence, automatic claim downgrade, cross-provider claim verification |
+| `observation-evidence.js` | Observation-Evidence Protocol — signal-interpretation separation for system observations, mandatory alternative interpretations, confidence scoring |
 | `security.js` | Injection detection, identity enforcement, leak prevention, auto-lockdown |
 | `integrity.js` | File hash monitoring, config checksum, tamper detection |
 | `activity-log.js` | Immutable hash chain audit trail with CRISPR defense spacers |
@@ -115,10 +118,11 @@ darkhan/
 | `claim-verifier.js` | Automatic verification tagging on every agent message |
 | `ground-truth.js` | Canonical registry of verified facts; contradiction detection |
 | `onboarding.js` | Injects verified identity and rules into every agent at startup |
-| `worker-runtime.js` | Cron scheduling, task execution, listener dispatch |
+| `worker-runtime.js` | Cron scheduling, task execution, listener dispatch, complete activity logging |
 | `unified-claude.js` | Single Claude SDK session shared between terminal and chat interfaces |
 | `terminal-relay.js` | WebSocket relay for Claude Code and shell terminals in the browser |
-| `auto-responder.js` | Two-tier message routing: local LLM triage, Claude escalation, unified session bridge |
+| `auto-responder.js` | Two-tier message routing: local LLM triage, Claude escalation, unified session bridge, slash commands |
+| `review-gate.js` | Optional output verification — local LLM reviews Claude responses for unverified claims and hallucinations before posting |
 | `federated-runtime.js` | Cross-node HTTP federation for distributed workers |
 | `sandbox.js` | Native macOS process isolation (sandbox-exec profiles) |
 | `tool-executor.js` | Sandboxed tool execution with injection scanning and rate limits |
@@ -130,6 +134,11 @@ darkhan/
 | `behavioral-baseline.js` | Per-agent anomaly detection: message, LLM, shell, and channel baselines |
 | `instance-identity.js` | Ed25519 keypair per instance, message signing for federation readiness |
 | `model-verifier.js` | SHA-256 verification of local Ollama model files against manifests |
+| `agent-relay.js` | Claude Agent SDK relay with programmatic tool gating and session persistence |
+| `keychain.js` | macOS Keychain integration for Layer 3 credential storage |
+| `permissions.js` | Permission management with file path allowlists and blocklists |
+| `telegram.js` | Telegram bridge for external stakeholder communication (optional) |
+| `worker-process.js` | Child process handler for forked worker agents with IPC protocol |
 
 ---
 
@@ -197,7 +206,9 @@ All scanning flows through a single `sanitizeMessage()` entry point. There are n
 - Regex + local LLM classification on all incoming messages
 - Content normalization strips encoding tricks before scanning (Unicode control chars, zero-width text, RTL overrides, HTML comments, base64 decode-and-scan)
 - Two-LLM consensus for external and agent-origin messages (local Ollama + cloud provider must agree — cross-company independence supported)
-- Action-Evidence Protocol: 13-verb controlled vocabulary with system-captured evidence, automatic claim downgrade
+- Action-Evidence Protocol: 15-verb controlled vocabulary with system-captured evidence, automatic claim downgrade, cross-provider verification
+- Observation-Evidence Protocol: signal-interpretation separation with mandatory alternative interpretations and confidence scoring
+- Automatic privilege boundary detection: system flags when agents access sensitive resources outside authorized scope
 - Tool output injection scanning on `fs.read()` and `shell.exec()` before results reach the LLM context
 - Outbound leak prevention scans for API keys, passwords, private keys
 
@@ -225,6 +236,7 @@ All scanning flows through a single `sanitizeMessage()` entry point. There are n
 - Baselines update daily at 0200 ET; require 3+ days of data before considered reliable
 
 **Audit and Recovery**
+- Complete activity logging: every user message, Claude response, tool call, LLM request, file read/write, shell command, and permission decision logged to the immutable hash chain
 - Immutable hash chain with CRISPR defense spacers marking security events
 - File integrity monitoring (SHA-256 baseline, verified every 5 minutes)
 - Automatic lockdown on impersonation, repeated injection, data leaks, or integrity violations
@@ -257,7 +269,7 @@ For full details, see [SECURITY.md](SECURITY.md).
 
 **Agents and Workers**
 - Define agents as JavaScript modules with scheduled tasks and message listeners
-- Workers receive `llm`, `darkhan`, `tools`, `config`, `log` interfaces from the runtime
+- Workers receive `llm`, `darkhan`, `tools`, `observe`, `evidence`, `config`, `log` interfaces from the runtime
 - Cron scheduling, error isolation, timeout enforcement
 - Sequential within a worker, parallel across workers
 - Onboarding service injects verified identity into every LLM call
@@ -273,9 +285,11 @@ For full details, see [SECURITY.md](SECURITY.md).
 - General-purpose shell terminal (bash/zsh) for system commands, SSH, and administration
 - Unified Claude session: terminal and chat share the same Claude process and context
 - Claude's terminal work is bridged to channels so agents and humans see what's happening
+- Split terminal observer: watch the running Claude session in real-time in a side-by-side panel while chatting
 - Pop-out window support for multi-monitor setups (drag terminal to second screen)
-- Session persistence with 30-second grace period on page refresh
-- All terminal session events logged to the immutable hash chain audit trail
+- Configurable permission mode with smart routing (terminal prompts if open, chat notifications if not)
+- Session persistence with 120-second grace period on page refresh
+- All terminal session events and interactions logged to the immutable hash chain audit trail
 
 **LLM Support**
 - Ollama (local, $0): Qwen 2.5 3B by default (runs on 8GB Macs), 14B for 16GB+ machines, or any Ollama model

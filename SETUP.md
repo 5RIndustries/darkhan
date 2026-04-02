@@ -345,13 +345,26 @@ Select the mode from the dropdown, then click **Start**.
 
 ### Unified Claude Session (Shared Context)
 
-When you start a Claude Code terminal session, Darkhan creates a **unified session** that is shared with the `@claude` chat relay. This means:
+When you start a Claude Code terminal session, Darkhan creates a **unified session** — a single Claude brain shared between the terminal and chat interfaces.
 
-- Work you do in the Claude terminal is visible when you message `@claude` in the chat
-- `@claude` chat messages are processed by the same Claude instance as the terminal
-- Claude's responses are automatically bridged to the `#claude` channel so your team can see them
+- **Terminal is private.** Your terminal input and Claude's responses stay in the terminal. This is your direct workspace with Claude.
+- **Chat is public.** Messages in channels are visible to all agents and humans. When you type in chat, Claude's response is posted to the channel for everyone to see.
+- **Shared context.** Both interfaces use the same Claude session. Context from terminal conversations carries over to chat, and vice versa. Ask Claude something complex in the terminal, then reference it in chat — Claude remembers.
+- **Session persistence.** If the server restarts, the session is automatically resumed from where it left off (session IDs are saved to disk).
 
-This eliminates the context gap between terminal work and team communication.
+### Chat Commands
+
+Type these directly in any channel:
+
+| Command | What It Does |
+|---------|-------------|
+| `/status` | Worker status, Claude session state, review gate state |
+| `/review-gate on` | Enable output verification (local LLM reviews Claude responses before posting) |
+| `/review-gate off` | Disable output verification |
+| `/review-gate status` | Show review gate stats |
+| `/help` | List all available commands |
+| `@claude <message>` | Force message to Claude (bypasses local LLM triage) |
+| `/quick <message>` | Force message to local LLM (Darkhan) |
 
 ### Pop-Out Window
 

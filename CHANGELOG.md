@@ -6,6 +6,104 @@ All notable changes to Darkhan are documented here.
 
 First public release. Darkhan is a self-hosted AI command center that gives you full control over your AI agents — what they can do, what they can see, and what happens when they go wrong.
 
+### Complete Activity Logging (2026-04-02)
+Closed the gap between the conversation record (messages table) and the immutable audit trail (hash chain). Every interaction is now SHA-256 hash-chained.
+- **Unified session logging** — User messages (chat and terminal), Claude's assistant responses, every tool call, turn completion with duration/tool count, errors, and permission decisions all logged to the activity hash chain.
+- **Worker agent logging** — LLM calls (provider, model, tokens, duration), file reads/writes (path, size), shell commands (command, exit code, output length), and message posts (channel, message ID) all logged.
+- **One clean record** — Between the messages table (conversation content) and the activity log (every action), there is now a complete, tamper-evident record of everything that happens in Darkhan across all interfaces.
+
+### Split Terminal Observer (2026-04-02)
+Live view of the unified Claude session in the split panel — see tool calls, code output, and thinking in real-time while chatting.
+- **Real xterm.js terminal in split panel** — Replaces the old placeholder. Auto-connects to the unified session as a second subscriber.
+- **Bidirectional input** — Type in either the chat or the split terminal. Both go to the same Claude instance, same shared context.
+- **Independent session key** — Split terminal uses `_claude_observer` key, doesn't interfere with the main terminal.
+- **Clean lifecycle** — Auto-cleanup when closing split mode or switching views. Separate Socket.IO connection.
+- **Scroll fix** — Views properly restored when exiting split mode (views moved back to main container, scroll position reset).
+
+### Smart Permission Routing (2026-04-02)
+Configurable permission mode with intelligent routing between terminal and chat.
+- **`permissionMode` configurable** — Set `terminal.permissionMode` in config (`bypassPermissions`, `acceptEdits`, `default`, `plan`). Defaults to `bypassPermissions` for backward compat.
+- **`canUseTool` callback** — SDK permission requests routed through Darkhan's approval system instead of bypassed.
+- **Terminal-aware routing** — If a terminal subscriber is active, permission prompts show in the terminal (formatted box with `[y] Allow [n] Deny [a] Always allow`). If no terminal, prompts post to chat one at a time.
+- **One at a time** — SDK pauses the stream on each permission. Next permission only appears after you approve/deny the current one.
+- **Approval from either interface** — Terminal: type `y/n/a`. Chat: reply `approve/deny/always`.
+
+### Terminal Output Formatting (2026-04-02)
+- Line spacing between different event types (text → tool calls, tool calls → text) for readability.
+- Spinner cleanup preserves whitespace instead of collapsing it.
+
+### Observation-Evidence Protocol (2026-04-02)
+New trust layer extending AEP from actions to observations. AEP answers "did the agent do what it said it did?" OEP answers "did the agent see what it said it saw?"
+- **`server/services/observation-evidence.js`** — 18 structured observation types across system, behavioral, and communication categories (PROCESS_IDLE, LOG_SILENCE, TIMING_ANOMALY, QUALITY_DECLINE, THINKING_MODE, etc.).
+- **Signal-interpretation separation** — Every observation requires raw signal data (verifiable by the human) stored separately from the agent's interpretation. Humans can independently verify the signal and assess whether the conclusion is correct.
+- **Mandatory alternative interpretation** — Every observation must include a "could be wrong" field. Observations without an alternative explanation are rejected by the system.
+- **Confidence from signal independence** — Confidence computed from the number of independent supporting signals: 1 signal = low, 2 = medium, 3+ = high. Agents cannot make high-confidence claims from a single signal.
+- **Worker runtime integration** — Agents access OEP via `context.observe.record()`, with system helpers for common checks (process idle, process absent, resource pressure).
+- **Human verification tracking** — Humans can mark observations as verified and select the alternative interpretation if the primary was wrong. Accuracy stats tracked per observation type.
+
+### Automatic Privilege Boundary Detection (2026-04-02)
+System-level enforcement of the Ethical Capability Architecture principle that capability does not constitute authorization.
+- **Sensitive file access detection** — Worker runtime automatically detects when agents read files in sensitive paths (.env, secrets.db, .ssh, credentials) and records a PRIVILEGE_BOUNDARY evidence entry in the immutable audit trail.
+- **Sensitive shell command detection** — Shell commands touching sensitive resources (printenv, .env, secrets.db, /etc/passwd) trigger automatic PRIVILEGE_BOUNDARY recording.
+- **System enforcement, not agent self-reporting** — The agent cannot suppress or modify privilege boundary evidence. The system catches it independently.
+
+### Cross-Provider Claim Verification Consensus (2026-04-02)
+Extension of two-LLM consensus from injection detection to claim verification.
+- **`crossProviderVerify()`** — Submits agent message AND system-captured evidence trail to two independent LLMs from different providers. Each model independently evaluates whether the agent's claims match the evidence.
+- **Conservative on disagreement** — When models disagree on verification level, the system uses the more conservative (lower trust) verdict.
+- **Automatic on every agent message** — Runs in `_postToChannel` whenever an agent message contains detectable claims. Results stored in message metadata.
+
+### Unified Claude Session v3 (2026-04-01)
+Complete rewrite of the Claude integration layer. Claude Code now runs as a persistent SDK session shared between the terminal and chat interfaces.
+- **Per-turn streaming** — SDK v2's `session.stream()` is per-turn (yields events for one `send()`, then completes). Session stays alive for subsequent turns. Previous architecture assumed a persistent stream, causing session death after each message.
+- **No heavy preamble** — System prompt gives Claude identity, vault path, and operating rules. Claude reads files when it needs them, not upfront. Eliminates 30-60s cold-start delays.
+- **Session persistence** — Session IDs saved to disk (`~/.claude/darkhan-unified-sessions.json`). On server restart, sessions resume via `unstable_v2_resumeSession` instead of creating a fresh session. Context is preserved.
+- **Concurrency guard** — `busy` flag prevents concurrent send/stream calls. Chat waits if terminal is processing, and vice versa.
+- **Dead session recovery** — Detects EPIPE/closed errors and automatically recreates the session (resume first, fresh fallback).
+- **5-minute stream timeout** — Prevents hung sessions from blocking indefinitely.
+- **Terminal privacy** — Terminal input/output stays in the terminal. Chat input/output stays in the chat channel. Both use the same Claude brain (shared context).
+- **Terminal spinner** — Tool calls collapse into a single animated spinner line (`⠹ Thinking... (Read, Bash, Glob)`) instead of 20+ lines of tool output. Clears when the response arrives.
+- **120-second grace period** — Terminal socket disconnect grace period extended from 30s to 120s. Prevents session death during long Claude responses.
+
+### Review Gate (2026-04-01)
+Optional output verification layer. When enabled, Claude's responses are reviewed by the local LLM before posting.
+- **Off by default** — Users opt in via `/review-gate on` in chat.
+- **Local LLM review** — Uses the 14B model ($0 per review, ~3-5s overhead). Checks for unverified claims, hallucinations, contradictions, and overconfident statements.
+- **Visible flags** — Issues are appended to the response as warnings, not silently blocked. Users see exactly what was flagged.
+- **Severity levels** — `critical` (default) only flags unverified claims and hallucinations. `all` flags everything.
+- **Config** — `darkhan.config.json` → `reviewGate: { enabled, model, severity }`.
+- **Inspired by** OpenAI's Codex plugin review gate pattern, adapted for Darkhan's architecture.
+
+### Slash Commands (2026-04-01)
+Built-in commands handled by Darkhan instantly (no LLM call, no debounce):
+- **`/status`** — Shows worker status (running/idle/disabled), Claude session state, review gate state. One command, full operational picture.
+- **`/review-gate on|off|status`** — Toggle the output review gate.
+- **`/help`** — Lists all available commands.
+
+### Pushover Removed (2026-04-01)
+- Pushover escalation system removed. Legacy from DARYL era when Claude ran in a separate terminal.
+- Replaced with in-UI prompt: when Claude has no active session, Darkhan tells the user to open the Terminal tab.
+- `getClaudeStatus()` presence checker (ACTIVE/REST) removed — no longer needed.
+- Pushover config keys removed from `darkhan.config.json`, `.env.example`, and `darkhan.config.example.json`.
+
+### Chat↔Terminal Architecture (2026-04-01)
+- **Chat is public** — Messages in channels are visible to all agents and humans. Claude's responses to chat messages are posted back to the channel.
+- **Terminal is private** — Direct workspace between the user and Claude. Not bridged to channels.
+- **Shared brain** — Both interfaces use the same Claude SDK session. Context from terminal conversations is available when the user asks questions in chat, and vice versa.
+- **Auto-routing** — When a unified session is active, ALL human messages route to Claude (even routine ones that would normally go to the local LLM). When no session exists, the local LLM handles routine messages and prompts the user to open a terminal for complex requests.
+
+### Client-Side Fixes (2026-04-01)
+- **Socket listener guard removed** — `new_message` event handler was gated on `currentView === 'chat'`, causing chat to stop updating when viewing the terminal. Messages now always update the feed regardless of active view.
+- **Split-panel real-time updates** — Split-panel chat view now receives real-time message updates via Socket.IO.
+- **Socket reconnect handling** — Auto-rejoins channels on reconnect; reloads messages to catch anything missed during disconnect.
+- **Terminal re-fit on layout change** — xterm.js recalculates column width when entering/exiting split mode.
+- **CSS min-height fix** — Added `min-height: 0` to `.view` flexbox containers, preventing the message input from being pushed off-screen when message history is long.
+
+### Dead Code Removal (2026-04-01)
+- **Deleted `server/services/claude-api.js`** — Deprecated since 3/27, legacy Anthropic API integration.
+- **Deleted `server/routes/claude.js`** — Deprecated route, only consumer of claude-api.js. Route mount removed from server.js.
+- **`DARYL_RELAY_MODE` → `DARKHAN_RELAY_MODE`** — Renamed in `.env.example`, `setup.js`, and `auto-responder.js` (reads both for backwards compatibility).
+
 ### Action-Evidence Protocol (2026-04-01)
 - **`server/services/action-evidence.js`** — Core trust layer. 13-verb controlled action vocabulary (WROTE_CODE, DEPLOYED, VERIFIED, SEARCHED, CLAIMED, etc.) with required evidence schemas. Evidence is captured automatically by the system from tool execution — agents do not self-report. Automatic downgrade when evidence doesn't match claims. Persistent traces in SQLite. Every message is evaluated against its evidence trail and tagged: verified, partial, claimed, or contradicted.
 - **Worker runtime integration** — Every tool call (fs.read, fs.write, shell.exec, web.search, web.fetch) now records structured evidence with content hashes. Each task starts a trace; each message is evaluated before DB insertion.
@@ -180,9 +278,10 @@ Driven by internal audit after the Anthropic Claude Code source map leak. See [R
 
 ### Requirements
 - macOS (Apple Silicon recommended) or Linux
-- Node.js 20+
-- Ollama (for local LLM — runs Qwen 2.5 3B on 8GB machines)
-- Optional: Claude Code CLI, Google/Anthropic API keys
+- Node.js 20.12+
+- 16GB+ RAM (for 14B local model)
+- Ollama (for local LLM — Qwen 2.5 14B default, 3B fallback for smaller systems)
+- Optional: Claude Code CLI (Max plan recommended), Google/Anthropic/OpenAI API keys
 
 ### License
 BSL 1.1 — free for non-production use, converts to Apache 2.0 after 3 years.

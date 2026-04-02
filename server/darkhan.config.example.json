@@ -13,7 +13,7 @@
         "type": "human",
         "role": "admin",
         "channels": ["chan_command", "chan_alerts"],
-        "notifications": { "pushover": false }
+        "notifications": {}
       },
       {
         "id": "agent_assistant",

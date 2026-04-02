@@ -29,7 +29,7 @@ A worker is a JavaScript module that defines an agent's behavior through two mec
 1. **Scheduled tasks** -- cron-driven jobs that run on a schedule (digests, scans, audits)
 2. **Message listeners** -- event-driven responses triggered when a message matches a pattern (comms checks, @mentions, direct questions)
 
-Workers are loaded from `server/workers/` on server start. The runtime handles scheduling, error isolation, and provides each worker with the `llm`, `darkhan`, `tools`, `config`, and `log` interfaces.
+Workers are loaded from `server/workers/` on server start. The runtime handles scheduling, error isolation, and provides each worker with the `llm`, `darkhan`, `tools`, `observe`, `evidence`, `config`, and `log` interfaces.
 
 Workers never interact with the database, filesystem, or network directly. Everything goes through the provided interfaces, which enforce permissions and log activity.
 
@@ -43,7 +43,7 @@ module.exports = {
   name: 'Chief',
 
   // Called once when the worker is loaded at server start
-  async onLoad({ llm, darkhan, tools, config, log }) {
+  async onLoad({ llm, darkhan, tools, evidence, observe, config, log }) {
     log.info('Chief worker loaded');
     await darkhan.post('chan_command', 'Chief online.');
   },
@@ -56,7 +56,7 @@ module.exports = {
       retryOnFail: false,         // Retry once on uncaught error (default: false)
       runOnLoad: false,           // Run immediately on server start (default: false)
 
-      async run({ llm, darkhan, tools, config, log }) {
+      async run({ llm, darkhan, tools, evidence, observe, config, log }) {
         // Task implementation
       }
     }
@@ -69,7 +69,7 @@ module.exports = {
       timeout: 15000,              // Max runtime in ms (default: 60s)
 
       // Receives context + message details
-      async run({ llm, darkhan, tools, config, log }, { channelId, fromUser, body }) {
+      async run({ llm, darkhan, tools, evidence, observe, config, log }, { channelId, fromUser, body }) {
         await darkhan.post(channelId, 'Standing by.');
       }
     }
@@ -194,6 +194,10 @@ darkhan.flagThreat({ category, severity, description, evidence })
 
 **Model version tagging:** Every LLM call made through `llm.complete()` or `llm.classify()` automatically logs the model identifier and digest to the activity trail. This enables traceability of which model version produced each output. Workers do not need to add model tags — it is automatic.
 
+**Privilege boundary auto-detection:** The runtime automatically records a `PRIVILEGE_BOUNDARY` evidence event when a tool accesses sensitive resources (`.env`, `secrets.db`, `.ssh`, `.gnupg`, private keys, credentials). This applies to both `tools.fs.read()` and `tools.shell.exec()`. Workers do not need to self-report privilege crossings — the system captures them automatically.
+
+**Cross-provider claim verification:** When an agent's message contains claims evaluated by AEP, those claims can be independently verified by two LLMs (local Ollama + cloud provider). Both models evaluate the claims against the evidence trail and must reach consensus. Disagreement defaults to the more conservative verdict. This happens automatically in the message pipeline — workers do not need to opt in.
+
 **Claim verification:** Every agent message posted via `darkhan.post()` is automatically scanned by the Claim Verifier before being saved. The verifier checks:
 - File references ("saved to Intel/report.md") against the filesystem
 - Status claims ("Lindsey is operational") against the heartbeat table
@@ -208,18 +212,94 @@ tools.fs.read(path)         -> Read a file from the vault
 tools.fs.write(path, data)  -> Write a file (respects agent write permissions)
 tools.fs.exists(path)       -> Check if a file exists
 tools.fs.readdir(path)      -> List directory contents
-tools.fs.glob(pattern)      -> Find files matching a glob pattern
-tools.fs.grep(pattern, path) -> Search file contents
 
 tools.shell.exec(command, { timeout?, cwd? })
   -> Execute a shell command (sandboxed per agent config)
+
+tools.web.search(query, { limit? })
+  -> Search the web via Google Custom Search API (requires GOOGLE_CSE_KEY + GOOGLE_CSE_CX)
+
+tools.web.fetch(url, { timeout?, maxLength? })
+  -> Fetch and parse an external URL (HTML → text, JSON passthrough)
 ```
+
+**Activity logging:** Every tool call is automatically logged to the immutable hash chain audit trail:
+- `fs_read` — file path, content size
+- `fs_write` — file path, data size
+- `shell_exec` — command, exit code, stdout length
+- `llm_call` — provider, model, token counts, duration, response length
+- `message_posted` — channel, message ID, body length
+- `web_search` / `web_fetch` — query/URL
+
+Workers do not need to log their own actions — the runtime handles it transparently.
 
 **File write restrictions:** Each agent has a list of permitted write directories in its config. Writes outside those directories are rejected and logged.
 
 **Sandbox enforcement:** When the native sandbox is enabled, `tools.fs.read()` and `tools.fs.write()` enforce a filesystem deny-list in addition to the per-agent write permissions. Access to `db/`, `.env`, `.ssh/`, `.gnupg/`, and TLS certificate directories is blocked at the OS level. This applies even if the agent has `"shell": "full"` -- the sandbox operates below the permission layer.
 
 **Shell restrictions:** Agents with `"shell": "restricted"` cannot run dangerous commands (rm, sudo, kill, curl to external hosts, ssh, etc.). Agents with `"shell": "none"` cannot run any shell commands. Violations are logged and contribute to lockdown thresholds.
+
+### `observe` -- Observation-Evidence Protocol
+
+```
+observe.record({ type, signals, interpretation, alternativeInterpretation })
+  -> { id, type, category, confidence, timestamp, hash }
+```
+
+- Records a structured observation with mandatory signal-interpretation separation
+- `type` must be one of the controlled vocabulary (see `observe.getVocabulary()`)
+- `signals` is an array of raw data points that prompted the observation
+- `interpretation` is the agent's reading of the signals
+- `alternativeInterpretation` is **required** — a plausible alternative explanation
+- Confidence is computed automatically from signal count (1=LOW, 2=MEDIUM, 3+=HIGH)
+- The observation is hashed and stored in the immutable audit trail
+
+```
+observe.getVocabulary()
+  -> Returns the full list of observation types organized by category
+```
+
+Three categories of observation types:
+
+| Category | Types |
+|----------|-------|
+| System | `PROCESS_IDLE`, `PROCESS_BUSY`, `PROCESS_ABSENT`, `PROCESS_DUPLICATE`, `LOG_SILENCE`, `LOG_STORM`, `LOG_SEQUENCE_BREAK`, `TIMING_ANOMALY`, `RESOURCE_PRESSURE`, `CONNECTION_LOST`, `ERROR_DIAGNOSTIC` |
+| Behavioral | `CAPABILITY_GAP`, `QUALITY_DECLINE`, `PATTERN_SHIFT`, `CONFIDENCE_MISMATCH` |
+| Communication | `THINKING_MODE`, `DIRECTING_MODE`, `PIVOT_SIGNAL`, `FATIGUE_SIGNAL` |
+
+```
+observe.checkProcessIdle(pid)
+  -> Checks if a process is idle, records observation automatically
+
+observe.checkProcessAbsent(processPattern)
+  -> Checks if a process matching the pattern is missing, records observation
+
+observe.checkResourcePressure()
+  -> Checks system resource utilization, records observation if pressure detected
+
+observe.getRecent(limit?)
+  -> Returns recent observations for this agent
+
+observe.format(record)
+  -> Formats an observation record for human-readable display
+```
+
+**Example usage in a worker task:**
+
+```javascript
+async run({ observe, log }) {
+  // Record a structured observation
+  await observe.record({
+    type: 'LOG_SILENCE',
+    signals: ['No entries in worker log for 45 minutes', 'Last heartbeat 42 min ago'],
+    interpretation: 'Worker may have crashed silently',
+    alternativeInterpretation: 'Worker may be idle with no scheduled tasks in this window',
+  });
+
+  // Use system helpers for common checks
+  await observe.checkResourcePressure();
+}
+```
 
 ### `config` -- Agent Configuration
 
@@ -352,6 +432,14 @@ If the server or a worker crashes without graceful shutdown:
 ## Agent Permissions
 
 Each agent has a permission set defined in `darkhan.config.json`. The `tools` interfaces enforce these at runtime.
+
+### The Ethical Capability Principle
+
+**Capability is not authorization.** An agent may have the technical ability to read a file, access a credential, or bypass a check — but having the ability does not grant permission to use it. Agents must operate within their authorized scope, not their technical reach.
+
+**Verify through observation, not authentication.** Agents check system state through process inspection, log analysis, and the `/api/diagnostic` endpoint (zero-auth). They do NOT read credential stores, guess passwords, or impersonate users to verify their work. When observation is insufficient, they ask the human.
+
+**The evidence trail tracks privilege.** The Action-Evidence Protocol records a `PRIVILEGE_BOUNDARY` event when an agent accesses a resource outside its authorized scope. This is flagged automatically — the agent doesn't self-report, the system catches it.
 
 | Permission | Config Key | Options |
 |-----------|------------|---------|

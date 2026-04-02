@@ -25,6 +25,13 @@
   let terminalReady = false;
   let terminalSessionKey = null;
 
+  // Split terminal state (observer on unified session)
+  let splitTerminal = null;
+  let splitTerminalSocket = null;
+  let splitFitAddon = null;
+  let splitTerminalReady = false;
+  let splitTerminalSessionKey = null;
+
   // --- DOM refs ---
   const loginScreen = document.getElementById('login-screen');
   const appScreen = document.getElementById('app-screen');
@@ -424,9 +431,32 @@
     });
 
     socket.on('new_message', (msg) => {
-      if (msg.channel_id === currentChannel && currentView === 'chat') {
-        appendMessage(msg);
-        scrollToBottom();
+      // Always update main chat feed if channel matches (even if viewing another panel)
+      if (msg.channel_id === currentChannel) {
+        const chatView = document.getElementById('chat-view');
+        if (chatView) {
+          appendMessage(msg);
+          // Only auto-scroll if chat is the active view
+          if (currentView === 'chat') scrollToBottom();
+        }
+      }
+      // Also update split-panel chat if it's showing this channel
+      if (msg.channel_id === currentChannel) {
+        const splitContainer = document.getElementById('split-message-container');
+        if (splitContainer && splitRightView === 'chat') {
+          const div = document.createElement('div');
+          div.className = 'message';
+          div.style.marginBottom = '0.75rem';
+          div.innerHTML = `
+            <div style="font-size:0.75rem;opacity:0.5;margin-bottom:2px;">
+              <strong>${escapeHtml(msg.from_user || '')}</strong>
+              <span style="margin-left:0.5rem;">${new Date(msg.created_at || Date.now()).toLocaleTimeString()}</span>
+            </div>
+            <div class="markdown-body">${typeof marked !== 'undefined' ? marked.parse(msg.body || '') : escapeHtml(msg.body || '')}</div>
+          `;
+          splitContainer.appendChild(div);
+          splitContainer.scrollTop = splitContainer.scrollHeight;
+        }
       }
     });
 
@@ -447,6 +477,17 @@
       if (currentView === 'approvals') {
         loadApprovals();
       }
+    });
+
+    // Reconnect handling — re-join channel on reconnect
+    socket.on('disconnect', (reason) => {
+      console.warn('[Darkhan] Socket disconnected:', reason);
+    });
+    socket.on('reconnect', () => {
+      console.log('[Darkhan] Socket reconnected, rejoining channel:', currentChannel);
+      socket.emit('join_channel', currentChannel);
+      // Reload messages to catch anything missed while disconnected
+      if (currentView === 'chat') loadMessages();
     });
 
     // Update status lights when any new message arrives (dynamic)
@@ -1233,7 +1274,18 @@
 
     try {
       const data = await api('GET', '/vault/tree?depth=4');
-      treeContainer.innerHTML = renderTree(data.tree, 0);
+      // Built-in entries at the top of the tree
+      const builtInHtml = `
+        <div style="margin-bottom:0.75rem;padding-bottom:0.5rem;border-bottom:1px solid var(--border);">
+          <div class="tree-file" data-path="_help" onclick="window._openHelp()" style="cursor:pointer;padding:3px 4px;border-radius:3px;display:flex;align-items:center;gap:4px;font-weight:bold;">
+            <span style="font-size:0.8rem;">?</span> Help &amp; Troubleshooting
+          </div>
+          <div class="tree-file" data-path="_activity" onclick="window._openActivityLog()" style="cursor:pointer;padding:3px 4px;border-radius:3px;display:flex;align-items:center;gap:4px;font-weight:bold;">
+            <span style="font-size:0.8rem;">&#9776;</span> Activity Log
+          </div>
+        </div>
+      `;
+      treeContainer.innerHTML = builtInHtml + renderTree(data.tree, 0);
       if (!docsCurrentPath) {
         contentContainer.innerHTML = '<p style="opacity:0.5;">Select a file from the tree to view it.</p>';
         breadcrumb.textContent = '/';
@@ -1258,6 +1310,203 @@
       });
     }
   }
+
+  // --- Help Panel ---
+  window._openHelp = function() {
+    const contentContainer = document.getElementById('docs-rendered');
+    const breadcrumb = document.getElementById('docs-breadcrumb');
+    if (!contentContainer) return;
+    docsCurrentPath = '_help';
+
+    // Highlight
+    document.querySelectorAll('.tree-file').forEach(el => el.style.background = '');
+    const el = document.querySelector('.tree-file[data-path="_help"]');
+    if (el) el.style.background = 'var(--bg-hover, rgba(255,255,255,0.1))';
+
+    breadcrumb.innerHTML = '<span style="opacity:0.6;">Help &amp; Troubleshooting</span>';
+    contentContainer.innerHTML = `
+      <div style="line-height:1.7;max-width:720px;">
+        <h1 style="margin-bottom:1rem;">Darkhan Help</h1>
+
+        <h2>Quick Start</h2>
+        <ul>
+          <li><strong>Chat</strong> — Talk to Claude or your agents in #command. Messages starting with <code>@claude</code> go to the unified Claude session.</li>
+          <li><strong>Terminal</strong> — Full Claude Code session in the browser. Click "Start Session" to spawn. Terminal and chat share the same Claude instance and context.</li>
+          <li><strong>Split View</strong> — Click the split button (&#9707;) in any channel header to open a side-by-side view. Select "Terminal" in the right panel to watch Claude's tool calls and output in real-time while chatting.</li>
+          <li><strong>Docs</strong> — Browse and edit files in your vault (knowledge base). Markdown files render automatically.</li>
+        </ul>
+
+        <h2>Slash Commands</h2>
+        <table style="width:100%;border-collapse:collapse;">
+          <tr><td style="padding:4px 8px;border-bottom:1px solid var(--border);"><code>/status</code></td><td style="padding:4px 8px;border-bottom:1px solid var(--border);">Show worker status, Claude session state, review gate status</td></tr>
+          <tr><td style="padding:4px 8px;border-bottom:1px solid var(--border);"><code>/review-gate on|off|status</code></td><td style="padding:4px 8px;border-bottom:1px solid var(--border);">Toggle the output review gate (local LLM checks Claude's responses)</td></tr>
+          <tr><td style="padding:4px 8px;border-bottom:1px solid var(--border);"><code>/help</code></td><td style="padding:4px 8px;border-bottom:1px solid var(--border);">List available commands in chat</td></tr>
+        </table>
+
+        <h2>Terminal</h2>
+        <ul>
+          <li><strong>Claude Code mode</strong> — Unified session, shared context with chat. What you discuss in chat, Claude remembers in terminal and vice versa.</li>
+          <li><strong>Shell mode</strong> — Standard bash/zsh terminal for system commands.</li>
+          <li><strong>Pop-out</strong> — Click &#8599; to open terminal in a separate window (multi-monitor).</li>
+          <li><strong>Split observer</strong> — Use split view to watch Claude's activity without leaving chat. Both panels can send input.</li>
+          <li><strong>Session persistence</strong> — 120-second grace period on page refresh. Sessions survive server restarts (up to 8 hours).</li>
+        </ul>
+
+        <h2>Security</h2>
+        <ul>
+          <li><strong>Lockdown</strong> — Triggered automatically by security events. All agent traffic stops. Unlock with your PIN in Settings.</li>
+          <li><strong>Break-glass</strong> — If locked out, run <code>node break-glass.js</code> from the server terminal (requires interactive TTY + PIN).</li>
+          <li><strong>Activity log</strong> — Every action is SHA-256 hash-chained. View it from the "Activity Log" entry in this Docs panel.</li>
+          <li><strong>Claim verification</strong> — Every agent message is automatically checked against evidence. Look for verification tags in message metadata.</li>
+        </ul>
+
+        <h2>Troubleshooting</h2>
+        <table style="width:100%;border-collapse:collapse;">
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:8px;vertical-align:top;"><strong>Terminal won't start</strong></td>
+            <td style="padding:8px;">Check that Ollama is running (<code>ollama list</code>). Check server logs for Socket.IO errors. Try refreshing the page.</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:8px;vertical-align:top;"><strong>Stream timeout</strong></td>
+            <td style="padding:8px;">Turns longer than 5 minutes are cut off. The session recovers automatically — just send your next message. If frequent, the task may be too large for a single turn.</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:8px;vertical-align:top;"><strong>Agent shows red/grey</strong></td>
+            <td style="padding:8px;">Red = heartbeat missed (agent may have crashed). Grey = no data yet. Check Workers view for details. Restart server if needed.</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:8px;vertical-align:top;"><strong>System locked down</strong></td>
+            <td style="padding:8px;">Go to Settings, enter your lockdown PIN to unlock. If you forgot your PIN, use <code>node break-glass.js</code> on the server.</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:8px;vertical-align:top;"><strong>Password forgotten</strong></td>
+            <td style="padding:8px;">An admin can generate a one-time recovery token from Settings. No email required.</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:8px;vertical-align:top;"><strong>LLM budget exceeded</strong></td>
+            <td style="padding:8px;">Check Costs view for per-agent spending. Adjust <code>rateLimits.requestsPerDay</code> in <code>darkhan.config.json</code>. Set to <code>0</code> for unlimited.</td>
+          </tr>
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:8px;vertical-align:top;"><strong>Clean install</strong></td>
+            <td style="padding:8px;">Delete <code>server/db/</code> and run <code>node setup.js</code> again. The wizard handles everything.</td>
+          </tr>
+        </table>
+
+        <h2>Architecture</h2>
+        <ul>
+          <li><strong>Server</strong> — Node.js + Express + SQLite + Socket.IO</li>
+          <li><strong>Local LLM</strong> — Ollama (Qwen 2.5 14B default, $0/day)</li>
+          <li><strong>Cloud LLM</strong> — Gemini, Anthropic Claude, OpenAI GPT (pay-per-use)</li>
+          <li><strong>Security</strong> — Two-LLM consensus on all external messages, immutable hash chain audit trail, credential isolation, identity enforcement</li>
+          <li><strong>Evidence</strong> — Action-Evidence Protocol (15-verb vocabulary), Observation-Evidence Protocol (18 observation types), automatic privilege boundary detection, cross-provider claim verification</li>
+        </ul>
+
+        <p style="margin-top:2rem;opacity:0.5;font-size:0.85rem;">For full documentation, see README.md, SETUP.md, WORKER-CONTRACT.md, and SECURITY.md in the project root.</p>
+      </div>
+    `;
+  };
+
+  // --- Activity Log Viewer ---
+  window._openActivityLog = async function() {
+    const contentContainer = document.getElementById('docs-rendered');
+    const breadcrumb = document.getElementById('docs-breadcrumb');
+    if (!contentContainer) return;
+    docsCurrentPath = '_activity';
+
+    // Highlight
+    document.querySelectorAll('.tree-file').forEach(el => el.style.background = '');
+    const el = document.querySelector('.tree-file[data-path="_activity"]');
+    if (el) el.style.background = 'var(--bg-hover, rgba(255,255,255,0.1))';
+
+    breadcrumb.innerHTML = `
+      <span style="opacity:0.6;">Activity Log</span>
+      <span style="float:right;display:flex;gap:0.5rem;">
+        <button onclick="window._openActivityLog()" style="background:var(--bg-tertiary);color:var(--text-primary);border:1px solid var(--border);padding:0.2rem 0.6rem;border-radius:var(--radius);cursor:pointer;font-size:0.8rem;">Refresh</button>
+        <button onclick="window._verifyChain()" style="background:var(--accent);color:#fff;border:none;padding:0.2rem 0.6rem;border-radius:var(--radius);cursor:pointer;font-size:0.8rem;">Verify Chain</button>
+      </span>
+    `;
+    contentContainer.innerHTML = '<p style="opacity:0.5;">Loading activity log...</p>';
+
+    try {
+      const data = await api('GET', '/activity?limit=200');
+      const events = data.events || data || [];
+
+      if (events.length === 0) {
+        contentContainer.innerHTML = '<p>No activity log entries found.</p>';
+        return;
+      }
+
+      let html = `
+        <div style="margin-bottom:1rem;">
+          <input type="text" id="activity-filter" placeholder="Filter by actor, action, or target..." oninput="window._filterActivity(this.value)"
+            style="width:100%;padding:0.4rem 0.8rem;background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius);color:var(--text-primary);font-size:0.85rem;">
+        </div>
+        <div id="activity-chain-status" style="margin-bottom:1rem;"></div>
+        <table id="activity-table" style="width:100%;border-collapse:collapse;font-size:0.82rem;">
+          <thead>
+            <tr style="border-bottom:2px solid var(--border);text-align:left;">
+              <th style="padding:6px 8px;width:140px;">Time</th>
+              <th style="padding:6px 8px;width:140px;">Actor</th>
+              <th style="padding:6px 8px;width:180px;">Action</th>
+              <th style="padding:6px 8px;">Target / Details</th>
+            </tr>
+          </thead>
+          <tbody>
+      `;
+
+      for (const e of events) {
+        const time = e.created_at ? new Date(e.created_at).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }) : '';
+        const date = e.created_at ? new Date(e.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) : '';
+        const actionColor = _activityColor(e.action);
+        const details = e.details ? e.details.substring(0, 120) : '';
+        const target = e.target || '';
+        html += `<tr class="activity-row" data-search="${(e.actor || '').toLowerCase()} ${(e.action || '').toLowerCase()} ${(target).toLowerCase()}" style="border-bottom:1px solid var(--border);">
+          <td style="padding:4px 8px;opacity:0.7;white-space:nowrap;" title="${e.created_at || ''}">${date} ${time}</td>
+          <td style="padding:4px 8px;"><code>${escapeHtml(e.actor || '')}</code></td>
+          <td style="padding:4px 8px;color:${actionColor};"><code>${escapeHtml(e.action || '')}</code></td>
+          <td style="padding:4px 8px;opacity:0.8;word-break:break-all;" title="${escapeHtml(details)}">${escapeHtml(target)}${details ? ' — ' + escapeHtml(details) : ''}</td>
+        </tr>`;
+      }
+
+      html += '</tbody></table>';
+      contentContainer.innerHTML = html;
+    } catch (err) {
+      contentContainer.innerHTML = `<p class="error">Failed to load activity log: ${err.message}</p>`;
+    }
+  };
+
+  function _activityColor(action) {
+    if (!action) return 'var(--text-primary)';
+    if (action.includes('error') || action.includes('failed') || action.includes('denied') || action.includes('injection') || action.includes('threat')) return 'var(--danger, #e74c3c)';
+    if (action.includes('completed') || action.includes('granted') || action.includes('verified')) return 'var(--success, #27ae60)';
+    if (action.includes('started') || action.includes('llm_call') || action.includes('tool_call')) return 'var(--accent, #e94560)';
+    if (action.includes('message') || action.includes('post')) return 'var(--info, #3498db)';
+    return 'var(--text-primary)';
+  }
+
+  window._filterActivity = function(query) {
+    const q = query.toLowerCase();
+    document.querySelectorAll('.activity-row').forEach(row => {
+      const search = row.getAttribute('data-search') || '';
+      row.style.display = !q || search.includes(q) ? '' : 'none';
+    });
+  };
+
+  window._verifyChain = async function() {
+    const statusEl = document.getElementById('activity-chain-status');
+    if (!statusEl) return;
+    statusEl.innerHTML = '<span style="opacity:0.5;">Verifying hash chain integrity...</span>';
+    try {
+      const result = await api('GET', '/activity/verify');
+      if (result.valid) {
+        statusEl.innerHTML = `<span style="color:var(--success, #27ae60);font-weight:bold;">Chain verified — ${result.entries || 'all'} entries, integrity intact.</span>`;
+      } else {
+        statusEl.innerHTML = `<span style="color:var(--danger, #e74c3c);font-weight:bold;">CHAIN BROKEN — ${result.error || 'integrity violation detected'}. Entry #${result.brokenAt || '?'}</span>`;
+      }
+    } catch (err) {
+      statusEl.innerHTML = `<span style="color:var(--danger);">Verification failed: ${err.message}</span>`;
+    }
+  };
 
   function renderTree(nodes, depth) {
     if (!nodes || nodes.length === 0) return '';
@@ -1464,8 +1713,21 @@
       // Exit split mode
       splitMode = false;
       main.classList.remove('split-mode');
+      cleanupSplitTerminal();
+      // Move views back out of the left panel wrapper into main-content
+      const leftPanel = document.getElementById('split-left-panel');
+      if (leftPanel) {
+        const views = Array.from(leftPanel.querySelectorAll('.view'));
+        views.forEach(v => main.appendChild(v));
+        leftPanel.remove();
+      }
       const rightPanel = document.getElementById('split-right-panel');
       if (rightPanel) rightPanel.remove();
+      // Re-fit terminal and scroll chat after layout restore
+      setTimeout(() => {
+        if (fitAddon) fitAddon.fit();
+        scrollToBottom(true);
+      }, 150);
       return;
     }
 
@@ -1522,9 +1784,18 @@
         loadSplitRightView(e.target.value);
       });
     }
+    // Re-fit terminals after split layout settles
+    setTimeout(() => {
+      if (fitAddon) fitAddon.fit();
+      if (splitFitAddon) splitFitAddon.fit();
+    }, 150);
   };
 
   function loadSplitRightView(viewName) {
+    // Clean up split terminal if switching away from it
+    if (splitRightView === 'terminal' && viewName !== 'terminal') {
+      cleanupSplitTerminal();
+    }
     splitRightView = viewName;
     const container = document.getElementById('split-right-content');
     if (!container) return;
@@ -1566,14 +1837,17 @@
         <header class="channel-header" style="display:flex;align-items:center;justify-content:space-between;">
           <h2>Terminal</h2>
           <div style="display:flex;gap:0.5rem;align-items:center;">
-            <span id="split-terminal-status" style="font-size:0.8rem;color:var(--text-muted);">Use main terminal</span>
+            <span id="split-terminal-status" style="font-size:0.8rem;color:var(--text-muted);">Disconnected</span>
+            <button id="split-terminal-connect-btn" class="view-toolbar-btn" onclick="window._connectSplitTerminal()">Connect</button>
+            <button id="split-terminal-disconnect-btn" class="view-toolbar-btn" onclick="window._disconnectSplitTerminal()" style="display:none;">Disconnect</button>
           </div>
         </header>
-        <div id="split-terminal-container" style="flex:1;background:#0d1117;padding:4px;overflow:hidden;">
-          <p style="color:#8b949e;padding:1rem;">Terminal is available in the main panel or via pop-out window. Use the &#8599; button to open it in a separate window.</p>
-        </div>
+        <div id="split-terminal-container" style="flex:1;background:#0d1117;padding:4px;overflow:hidden;"></div>
       `;
       container.appendChild(termDiv);
+      initSplitTerminal();
+      // Auto-connect to the unified session
+      setTimeout(() => window._connectSplitTerminal(), 200);
     } else {
       // Generic view — fetch data via API and render directly
       const div = document.createElement('div');
@@ -1719,6 +1993,161 @@
   setTimeout(addViewToolbarButtons, 1000);
   // Re-add after view switches
   const origShowView = showView;
+
+  // --- Split Terminal (Unified Session Observer) ---
+
+  function initSplitTerminal() {
+    if (splitTerminal) return;
+    const container = document.getElementById('split-terminal-container');
+    if (!container) return;
+
+    splitTerminal = new window.Terminal({
+      cursorBlink: true,
+      fontSize: 13,
+      fontFamily: "'SF Mono', 'Fira Code', 'Cascadia Code', Menlo, monospace",
+      theme: {
+        background: '#0d1117',
+        foreground: '#e6edf3',
+        cursor: '#e94560',
+        selectionBackground: '#264f78',
+        black: '#0d1117',
+        red: '#ff7b72',
+        green: '#7ee787',
+        yellow: '#d29922',
+        blue: '#79c0ff',
+        magenta: '#d2a8ff',
+        cyan: '#a5d6ff',
+        white: '#e6edf3',
+      },
+      allowProposedApi: true,
+    });
+
+    splitFitAddon = new window.FitAddon.FitAddon();
+    splitTerminal.loadAddon(splitFitAddon);
+    splitTerminal.loadAddon(new window.WebLinksAddon.WebLinksAddon());
+    splitTerminal.open(container);
+    splitFitAddon.fit();
+
+    splitTerminal.onData((data) => {
+      if (splitTerminalSocket && splitTerminalReady) {
+        splitTerminalSocket.emit('terminal:input', { key: splitTerminalSessionKey, data });
+      }
+    });
+
+    const resizeObserver = new ResizeObserver(() => {
+      if (splitFitAddon) {
+        splitFitAddon.fit();
+        if (splitTerminalSocket && splitTerminalReady) {
+          splitTerminalSocket.emit('terminal:resize', { key: splitTerminalSessionKey, cols: splitTerminal.cols, rows: splitTerminal.rows });
+        }
+      }
+    });
+    resizeObserver.observe(container);
+
+    splitTerminal.writeln('\x1b[1;36mDarkhan Terminal Observer\x1b[0m \u2014 Unified Claude Code session');
+    splitTerminal.writeln('\x1b[90mShares context with @claude in channels. You can type here too.\x1b[0m\r\n');
+  }
+
+  function updateSplitTerminalStatus(text, color) {
+    const el = document.getElementById('split-terminal-status');
+    if (el) { el.textContent = text; el.style.color = color; }
+  }
+
+  window._connectSplitTerminal = function() {
+    if (!splitTerminal) initSplitTerminal();
+
+    if (!splitTerminalSocket || splitTerminalSocket.disconnected) {
+      splitTerminalSocket = io('/terminal', { withCredentials: true });
+
+      splitTerminalSocket.on('connect', () => {
+        updateSplitTerminalStatus('Connecting...', 'var(--warning, #f39c12)');
+        splitTerminalSocket.emit('terminal:spawn', {
+          mode: 'claude',
+          key: (currentUser || 'admin') + '_claude_observer',
+          cols: splitTerminal.cols,
+          rows: splitTerminal.rows,
+        });
+      });
+
+      splitTerminalSocket.on('terminal:ready', ({ key, mode: m }) => {
+        splitTerminalReady = true;
+        splitTerminalSessionKey = key;
+        updateSplitTerminalStatus('Live', 'var(--success, #27ae60)');
+        document.getElementById('split-terminal-connect-btn').style.display = 'none';
+        document.getElementById('split-terminal-disconnect-btn').style.display = 'inline-block';
+        splitTerminal.focus();
+      });
+
+      splitTerminalSocket.on('terminal:restored', ({ key, mode: m }) => {
+        splitTerminalReady = true;
+        splitTerminalSessionKey = key;
+        updateSplitTerminalStatus('Live (restored)', 'var(--success, #27ae60)');
+        document.getElementById('split-terminal-connect-btn').style.display = 'none';
+        document.getElementById('split-terminal-disconnect-btn').style.display = 'inline-block';
+      });
+
+      splitTerminalSocket.on('terminal:output', ({ data }) => {
+        if (splitTerminal) splitTerminal.write(data);
+      });
+
+      splitTerminalSocket.on('terminal:exit', ({ exitCode }) => {
+        splitTerminalReady = false;
+        splitTerminalSessionKey = null;
+        updateSplitTerminalStatus('Session ended', 'var(--warning, #f39c12)');
+        document.getElementById('split-terminal-connect-btn').style.display = 'inline-block';
+        document.getElementById('split-terminal-disconnect-btn').style.display = 'none';
+        if (splitTerminal) splitTerminal.writeln(`\r\n\x1b[33m[Session ended \u2014 exit code ${exitCode}]\x1b[0m`);
+      });
+
+      splitTerminalSocket.on('terminal:error', ({ message }) => {
+        if (splitTerminal) splitTerminal.writeln(`\r\n\x1b[31m[Error: ${message}]\x1b[0m`);
+      });
+
+      splitTerminalSocket.on('connect_error', (err) => {
+        updateSplitTerminalStatus('Auth failed', 'var(--danger, #c0392b)');
+      });
+
+      splitTerminalSocket.on('disconnect', () => {
+        splitTerminalReady = false;
+        updateSplitTerminalStatus('Disconnected', 'var(--text-muted)');
+      });
+    } else {
+      splitTerminalSocket.emit('terminal:spawn', {
+        mode: 'claude',
+        key: (currentUser || 'admin') + '_claude_observer',
+        cols: splitTerminal.cols,
+        rows: splitTerminal.rows,
+      });
+    }
+  };
+
+  window._disconnectSplitTerminal = function() {
+    if (splitTerminalSocket && splitTerminalSessionKey) {
+      splitTerminalSocket.emit('terminal:kill', { key: splitTerminalSessionKey });
+    }
+    splitTerminalReady = false;
+    splitTerminalSessionKey = null;
+    updateSplitTerminalStatus('Disconnected', 'var(--text-muted)');
+    document.getElementById('split-terminal-connect-btn').style.display = 'inline-block';
+    document.getElementById('split-terminal-disconnect-btn').style.display = 'none';
+  };
+
+  function cleanupSplitTerminal() {
+    if (splitTerminalSocket) {
+      if (splitTerminalSessionKey) {
+        splitTerminalSocket.emit('terminal:kill', { key: splitTerminalSessionKey });
+      }
+      splitTerminalSocket.disconnect();
+      splitTerminalSocket = null;
+    }
+    if (splitTerminal) {
+      splitTerminal.dispose();
+      splitTerminal = null;
+    }
+    splitFitAddon = null;
+    splitTerminalReady = false;
+    splitTerminalSessionKey = null;
+  }
 
   // --- Claude Code Terminal ---
   function initTerminal() {

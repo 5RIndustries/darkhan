@@ -253,6 +253,19 @@ const ACTION_VOCABULARY = {
       return { valid: checks.every(c => c.pass), checks };
     },
   },
+
+  PRIVILEGE_BOUNDARY: {
+    verb: 'PRIVILEGE_BOUNDARY',
+    description: 'Agent accessed a resource outside its authorized scope — capability exceeded authorization',
+    required: ['resource', 'authorizedScope', 'action'],
+    verification: async (evidence) => {
+      const checks = [];
+      checks.push({ check: 'resource_identified', pass: typeof evidence.resource === 'string' });
+      checks.push({ check: 'scope_documented', pass: typeof evidence.authorizedScope === 'string' });
+      checks.push({ check: 'action_described', pass: typeof evidence.action === 'string' });
+      return { valid: checks.every(c => c.pass), checks };
+    },
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -966,6 +979,139 @@ class ActionEvidenceProtocol {
     this._cleanupTimer = setInterval(() => this._cleanup(), 15 * 60 * 1000);
     // Allow process to exit without waiting for this timer
     if (this._cleanupTimer.unref) this._cleanupTimer.unref();
+  }
+
+  /**
+   * Cross-provider consensus verification of agent claims.
+   * Submits the agent's message and evidence trail to two independent LLMs
+   * from different providers and requires agreement before marking claims verified.
+   *
+   * Patent claim 14/15: Cross-provider consensus for action verification.
+   *
+   * @param {string} traceId - The trace to verify against
+   * @param {string} messageBody - The agent's message text
+   * @param {Object} llmService - LLM service instance for making calls
+   * @param {Object} [opts] - Options
+   * @param {string} [opts.localModel] - Local model name (default: env OLLAMA_MODEL)
+   * @param {string} [opts.cloudProvider] - Cloud provider name (gemini, anthropic, openai)
+   * @param {string} [opts.cloudModel] - Cloud model name
+   * @returns {Object} { consensus, localVerdict, cloudVerdict, level }
+   */
+  async crossProviderVerify(traceId, messageBody, llmService, opts = {}) {
+    if (!llmService) return { consensus: 'unavailable', level: 'claimed' };
+
+    const trace = this.traces.get(traceId);
+    if (!trace) return { consensus: 'no_trace', level: 'claimed' };
+
+    // Build a compact evidence summary for the LLMs
+    const trailSummary = trace.trail.map(e =>
+      `[${e.verb}] ${JSON.stringify(e.evidence)} @ ${e.timestamp}`
+    ).join('\n');
+
+    const verificationPrompt = `You are an evidence verification system. An AI agent produced a message and the system captured an evidence trail of what the agent actually did. Compare the agent's claims against the evidence.
+
+EVIDENCE TRAIL (system-captured, immutable):
+${trailSummary || '(empty — no tool executions recorded)'}
+
+AGENT'S MESSAGE:
+"${messageBody.substring(0, 2000)}"
+
+Does the agent's message accurately represent what the evidence shows? Consider:
+- Does the agent claim actions (deployed, verified, completed) that the evidence doesn't support?
+- Does the evidence contradict any claims?
+- Are there claims with no corresponding evidence?
+
+Respond with EXACTLY one word: VERIFIED, PARTIAL, CLAIMED, or CONTRADICTED.`;
+
+    let localVerdict = null;
+    let cloudVerdict = null;
+
+    const localModel = opts.localModel || process.env.OLLAMA_MODEL || 'qwen2.5:14b';
+
+    // Model 1: Local LLM
+    try {
+      const result = await llmService.complete({
+        agentId: 'agent_darkhan',
+        provider: 'ollama',
+        model: localModel,
+        messages: [{ role: 'user', content: verificationPrompt }],
+        options: { temperature: 0, maxTokens: 10 },
+        requestType: 'claim_verification_local',
+      });
+      const r = result.response.trim().toUpperCase();
+      if (r.startsWith('VERIFIED')) localVerdict = 'verified';
+      else if (r.startsWith('PARTIAL')) localVerdict = 'partial';
+      else if (r.startsWith('CLAIMED')) localVerdict = 'claimed';
+      else if (r.startsWith('CONTRADICTED')) localVerdict = 'contradicted';
+    } catch (e) {
+      console.warn('[AEP] Cross-provider local verification failed:', e.message);
+    }
+
+    // Model 2: Cloud LLM (if configured)
+    const cloudProvider = opts.cloudProvider || process.env.SECURITY_ESCALATION_PROVIDER;
+    const cloudModel = opts.cloudModel || process.env.SECURITY_ESCALATION_MODEL;
+
+    if (cloudProvider) {
+      try {
+        const result = await llmService.complete({
+          agentId: 'agent_darkhan',
+          provider: cloudProvider,
+          model: cloudModel,
+          messages: [{ role: 'user', content: verificationPrompt }],
+          options: { temperature: 0, maxTokens: 10 },
+          requestType: 'claim_verification_cloud',
+        });
+        const r = result.response.trim().toUpperCase();
+        if (r.startsWith('VERIFIED')) cloudVerdict = 'verified';
+        else if (r.startsWith('PARTIAL')) cloudVerdict = 'partial';
+        else if (r.startsWith('CLAIMED')) cloudVerdict = 'claimed';
+        else if (r.startsWith('CONTRADICTED')) cloudVerdict = 'contradicted';
+      } catch (e) {
+        console.warn('[AEP] Cross-provider cloud verification failed:', e.message);
+      }
+    }
+
+    // Consensus logic
+    let consensus, level;
+
+    if (localVerdict === null && cloudVerdict === null) {
+      consensus = 'unavailable';
+      level = 'claimed'; // Fail open but mark as unverified
+    } else if (localVerdict === null || cloudVerdict === null) {
+      // Single model — use it but mark as single-model
+      const solo = localVerdict || cloudVerdict;
+      consensus = 'single_model';
+      level = solo;
+    } else if (localVerdict === cloudVerdict) {
+      // Both agree
+      consensus = 'agreement';
+      level = localVerdict;
+    } else {
+      // Disagreement — use the more conservative (lower trust) verdict
+      const hierarchy = ['contradicted', 'claimed', 'partial', 'verified'];
+      const localIdx = hierarchy.indexOf(localVerdict);
+      const cloudIdx = hierarchy.indexOf(cloudVerdict);
+      consensus = 'disagreement';
+      level = hierarchy[Math.min(localIdx, cloudIdx)];
+    }
+
+    const result = { consensus, localVerdict, cloudVerdict, level };
+
+    // Log to activity log
+    this.activityLog.append({
+      actor: 'aep',
+      action: 'cross_provider_verification',
+      target: trace.agentId,
+      details: JSON.stringify({
+        traceId,
+        consensus,
+        localVerdict,
+        cloudVerdict,
+        level,
+      }),
+    });
+
+    return result;
   }
 
   /**

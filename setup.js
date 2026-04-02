@@ -293,7 +293,7 @@ async function importConfig(configPath) {
     providerKeys.anthropic ? `ANTHROPIC_API_KEY=${providerKeys.anthropic}` : '# ANTHROPIC_API_KEY=',
     '',
     '# Claude Relay',
-    'DARYL_RELAY_MODE=cli',
+    'DARKHAN_RELAY_MODE=cli',
     '',
   ].join('\n');
 
@@ -497,7 +497,7 @@ async function main() {
     openaiKey ? `OPENAI_API_KEY=${openaiKey}` : '# OPENAI_API_KEY=',
     '',
     '# Claude Relay',
-    'DARYL_RELAY_MODE=cli',
+    'DARKHAN_RELAY_MODE=cli',
     '',
   ].join('\n');
 
