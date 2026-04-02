@@ -721,6 +721,25 @@
             <strong>Autonomous:</strong> Everything runs freely except credential access, auth changes, and admin ops.
           </div>
 
+          <h3 style="margin-top:2rem;margin-bottom:1rem;">Lead Agent Session</h3>
+          <p style="font-size:0.85rem;opacity:0.7;margin-bottom:0.75rem;">Controls how the lead agent (Claude, Codex, etc.) manages session context. These apply to any LLM connected as the primary agent.</p>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:0.75rem;max-width:400px;margin-bottom:0.5rem;">
+            <label style="font-size:0.85rem;">Session cycle (messages):</label>
+            <input type="number" id="la-cycle" min="10" max="500" style="padding:0.3rem;background:var(--bg-secondary);border:1px solid var(--border);border-radius:4px;color:var(--text-primary);width:80px;">
+            <label style="font-size:0.85rem;">Context window (messages):</label>
+            <input type="number" id="la-context" min="10" max="500" style="padding:0.3rem;background:var(--bg-secondary);border:1px solid var(--border);border-radius:4px;color:var(--text-primary);width:80px;">
+            <label style="font-size:0.85rem;">Transcript depth (days):</label>
+            <input type="number" id="la-transcript-days" min="1" max="7" style="padding:0.3rem;background:var(--bg-secondary);border:1px solid var(--border);border-radius:4px;color:var(--text-primary);width:80px;">
+            <label style="font-size:0.85rem;">State file maintenance:</label>
+            <input type="checkbox" id="la-state-maint" style="width:20px;height:20px;">
+            <label style="font-size:0.85rem;">Startup protocol:</label>
+            <input type="checkbox" id="la-startup" style="width:20px;height:20px;">
+            <label style="font-size:0.85rem;">State file path:</label>
+            <input type="text" id="la-state-file" style="padding:0.3rem;background:var(--bg-secondary);border:1px solid var(--border);border-radius:4px;color:var(--text-primary);width:180px;font-size:0.8rem;">
+          </div>
+          <button id="save-lead-agent-btn" style="padding:0.5rem 1rem;background:var(--accent);color:white;border:none;border-radius:4px;cursor:pointer;">Save</button>
+          <div id="la-status" style="font-size:0.9rem;margin-top:0.25rem;"></div>
+
           <h3 style="margin-top:2rem;margin-bottom:1rem;">Manual Lockdown</h3>
           <p style="font-size:0.85rem;opacity:0.7;margin-bottom:0.75rem;">Immediately halt all agent operations. Only you can unlock.</p>
           <button id="manual-lockdown-btn" style="padding:0.5rem 1rem;background:#c0392b;color:white;border:none;border-radius:4px;cursor:pointer;">Trigger Lockdown</button>
@@ -823,6 +842,35 @@
         try {
           await api('POST', '/auth/execution-tier', { tier });
           status.textContent = `Execution tier set to "${tier}". New Claude sessions will use this tier.`;
+          status.style.color = '#27ae60';
+        } catch (err) { status.textContent = err.message; status.style.color = '#e74c3c'; }
+      });
+
+      // Lead agent settings — load current values and wire up save
+      (async () => {
+        try {
+          const data = await api('GET', '/context/settings');
+          document.getElementById('la-cycle').value = data.sessionCycleMessages || 50;
+          document.getElementById('la-context').value = data.channelContextMessages || 100;
+          document.getElementById('la-transcript-days').value = data.transcriptReadDays || 2;
+          document.getElementById('la-state-maint').checked = data.stateMaintenance !== false;
+          document.getElementById('la-startup').checked = data.startupProtocol !== false;
+          document.getElementById('la-state-file').value = data.stateFile || '';
+        } catch (e) { console.warn('Could not load lead agent settings:', e); }
+      })();
+
+      document.getElementById('save-lead-agent-btn').addEventListener('click', async () => {
+        const status = document.getElementById('la-status');
+        try {
+          await api('POST', '/context/settings', {
+            sessionCycleMessages: parseInt(document.getElementById('la-cycle').value),
+            channelContextMessages: parseInt(document.getElementById('la-context').value),
+            transcriptReadDays: parseInt(document.getElementById('la-transcript-days').value),
+            stateMaintenance: document.getElementById('la-state-maint').checked,
+            startupProtocol: document.getElementById('la-startup').checked,
+            stateFile: document.getElementById('la-state-file').value || null,
+          });
+          status.textContent = 'Lead agent settings saved. Takes effect on next session.';
           status.style.color = '#27ae60';
         } catch (err) { status.textContent = err.message; status.style.color = '#e74c3c'; }
       });

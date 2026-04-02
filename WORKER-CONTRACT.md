@@ -608,6 +608,24 @@ Agents do not need to call the ground truth API directly for contradiction detec
 
 ---
 
+## Channel Transcripts
+
+Darkhan automatically captures all channel conversations to `docs/transcripts/` as plain-text markdown files. This is a core platform capability -- agents should be aware of it.
+
+**Key facts:**
+- **Format:** `Transcript_YYYY-MM-DD.md` -- one file per day, 24-hour blocks
+- **Update frequency:** Every 30 minutes, but only when new messages exist (no redundant writes overnight)
+- **Content:** Verbatim channel messages with code blocks stripped. Messages from `#command`, `#claude`, and `#alerts`
+- **Location:** `docs/transcripts/` in the Darkhan installation directory (not the vault)
+- **Purpose:** Session continuity. When Claude sessions cycle (every 50 messages), the new session reads today's and yesterday's transcripts to resume with full context
+- **Integrity:** Writes to `docs/` do not trigger the integrity lockdown system. The integrity monitor only watches `server/` code and `workers/`
+
+**For workers:** You do not need to write transcripts -- the server handles it automatically. If you need historical context from today's session, read the transcript file via `tools.fs.read()`. The onboarding brief includes the transcript directory path.
+
+**For human users:** You can add your own files to `docs/` (daily notes, meeting records, etc.) without triggering lockdown.
+
+---
+
 ## Federated Workers
 
 Workers can run on a remote node using the `FederatedWorkerRuntime` (via `remote-runner.js`). The worker code is identical -- the same `.worker.js` file works on both local and federated runtimes. The differences are transparent to the worker:

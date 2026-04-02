@@ -6,6 +6,27 @@ All notable changes to Darkhan are documented here.
 
 First public release. Darkhan is a self-hosted AI command center that gives you full control over your AI agents — what they can do, what they can see, and what happens when they go wrong.
 
+### Channel Transcripts (2026-04-02)
+Automatic verbatim conversation capture for session continuity. Every Darkhan instance maintains a rolling transcript of channel conversations.
+
+- **Auto-capture to `docs/transcripts/`** — Server captures all messages from `#command`, `#claude`, and `#alerts` to daily markdown files (`Transcript_YYYY-MM-DD.md`). Code blocks are stripped; everything else is verbatim.
+- **Smart 30-minute interval** — Writes every 30 minutes, but only when new messages exist since the last write. No redundant writes overnight or during idle periods.
+- **24-hour daily blocks** — One file per day. At midnight the date rolls and a new file starts. Clean separation for search and reference.
+- **Session continuity** — New Claude sessions (after cycling at 50 messages, server restarts, or fresh starts) are instructed to read today's and yesterday's transcripts as their first action. Combined with 100 recent channel messages in the system prompt, this gives fresh instances full conversational context.
+- **Outside integrity scope** — Transcripts write to `docs/` which is not monitored by the integrity system. Agents, Claude, and humans can all write to `docs/` without triggering lockdown.
+- **Agent onboarding awareness** — The onboarding service now includes transcript location and format in every agent's startup brief. Workers know where to find historical context.
+- **Human-accessible** — The `docs/` directory is a shared space. Human users can add daily notes, meeting records, or other documents alongside transcripts for everyone to reference.
+
+### Session Cycling (2026-04-02)
+Automatic session management to prevent context bloat and maintain consistent performance.
+
+- **50-message cycling threshold** — After 50 messages, the Claude session is closed and a fresh one is created. The hash-chain activity log preserves full history.
+- **Continuity on fresh sessions** — New sessions receive: 100 recent channel messages, system events from the activity log, transcript file paths, and instructions to read CLAUDE.md and session logs.
+- **Progress indicator** — During tool-heavy turns, the "thinking" message updates live with tool count, elapsed time, and current tool name (`...working (3 tools, 12s) — Bash`).
+- **Stale busy flag recovery** — If the busy flag gets stuck for >5.5 minutes, it auto-clears instead of blocking all subsequent messages.
+- **15-second resume timeout** — If resuming a stored session takes >15s (dead session on API side), falls through to create fresh instead of hanging.
+- **Local LLM escalation fix** — When local LLM escalates to Claude after a session cycle, it now routes through the unified session (auto-creates) instead of prompting for a terminal.
+
 ### Execution Tiers (2026-04-02)
 Per-user control over agent autonomy. Users choose how much freedom agents have when using tools, with an architectural security boundary that cannot be bypassed at any tier.
 

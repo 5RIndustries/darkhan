@@ -191,7 +191,7 @@ CREATE TABLE IF NOT EXISTS triage_log (
 CREATE INDEX IF NOT EXISTS idx_triage_classification ON triage_log (classification, created_at);
 
 -- [MYTHOS] Quarantine Queue — messages flagged by two-LLM consensus disagreement
--- Held for human review. Approve releases to channel; reject discards.
+-- Held for human review. Approve releases to channel, reject discards.
 -- Both decisions become training data for the classification model.
 CREATE TABLE IF NOT EXISTS quarantine_queue (
   id TEXT PRIMARY KEY,

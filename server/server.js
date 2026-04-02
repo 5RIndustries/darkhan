@@ -362,6 +362,7 @@ const taskRoutes = require('./routes/tasks');
 const healthRoutes = require('./routes/health');
 const approvalsRoutes = require('./routes/approvals');
 const quarantineRoutes = require('./routes/quarantine');
+const contextRoutes = require('./routes/context');
 
 // Auth middleware for inline route protection
 const { requireAuth: secReqAuth } = require('./middleware/auth');
@@ -372,6 +373,7 @@ app.use('/api/tasks', taskRoutes);
 app.use('/api/health', healthRoutes);
 app.use('/api/approvals', approvalsRoutes);
 app.use('/api/quarantine', quarantineRoutes);
+app.use('/api/context', contextRoutes);
 
 // Vault (Knowledge Base)
 const vaultRoutes = require('./routes/vault');
@@ -1010,6 +1012,106 @@ server.listen(PORT, BIND_HOST, () => {
   } else if (modelSizeB >= 14) {
     console.log(`[Darkhan] Local LLM: ${configuredModel} (meets minimum capability)`);
   }
+
+  // TRANSCRIPT: Capture channel conversations to docs/transcripts/ every 30 min.
+  // Runs OUTSIDE the integrity-gated block — transcript writes to docs/ never
+  // trigger lockdown (integrity only monitors server/ code and workers/).
+  // Each day gets its own file: Transcript_YYYY-MM-DD.md
+  const TRANSCRIPT_DIR = path.join(__dirname, '..', 'docs', 'transcripts');
+  const TRANSCRIPT_CHANNELS = ['chan_command', 'chan_claude', 'chan_alerts'];
+
+  async function writeTranscript() {
+    const now = new Date();
+    const dateStr = now.toISOString().substring(0, 10);
+    const transcriptFile = path.join(TRANSCRIPT_DIR, `Transcript_${dateStr}.md`);
+    const startOfDay = dateStr + ' 00:00:00';
+
+    const allMessages = [];
+    for (const ch of TRANSCRIPT_CHANNELS) {
+      try {
+        const msgs = await new Promise((resolve, reject) => {
+          db.all(
+            'SELECT from_user, body, created_at, channel_id FROM messages WHERE channel_id = ? AND created_at > ? ORDER BY created_at ASC LIMIT 2000',
+            [ch, startOfDay],
+            (err, rows) => err ? reject(err) : resolve(rows || [])
+          );
+        });
+        allMessages.push(...msgs);
+      } catch (e) { /* skip channel */ }
+    }
+
+    if (allMessages.length === 0) return;
+    allMessages.sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''));
+
+    const lines = [
+      `# Darkhan Transcript — ${dateStr}`,
+      ``,
+      `> Auto-generated every 30 minutes. Code blocks stripped for readability.`,
+      `> Channels: ${TRANSCRIPT_CHANNELS.map(c => c.replace('chan_', '#')).join(', ')}`,
+      ``,
+      `---`,
+      ``,
+    ];
+
+    let currentChannel = '';
+    for (const msg of allMessages) {
+      const ch = (msg.channel_id || '').replace('chan_', '#');
+      if (ch !== currentChannel) {
+        if (currentChannel) lines.push('');
+        lines.push(`### ${ch}`);
+        lines.push('');
+        currentChannel = ch;
+      }
+
+      const time = (msg.created_at || '').substring(11, 19) || '??:??:??';
+      const from = msg.from_user || 'unknown';
+      let body = (msg.body || '').replace(/```[\s\S]*?```/g, '[code block removed]');
+      if (body === '...thinking' || body.startsWith('...working')) continue;
+      if (body.length > 2000) body = body.substring(0, 2000) + '... [truncated]';
+
+      lines.push(`**[${time}] ${from}:** ${body}`);
+      lines.push('');
+    }
+
+    try {
+      if (!fs.existsSync(TRANSCRIPT_DIR)) fs.mkdirSync(TRANSCRIPT_DIR, { recursive: true });
+      fs.writeFileSync(transcriptFile, lines.join('\n'));
+      console.log(`[Transcript] Updated ${transcriptFile} (${allMessages.length} messages)`);
+    } catch (e) {
+      console.error(`[Transcript] Write failed: ${e.message}`);
+    }
+  }
+
+  // Track last message count to skip writes when nothing new
+  let lastTranscriptMessageCount = 0;
+
+  async function writeTranscriptIfNew() {
+    try {
+      const dateStr = new Date().toISOString().substring(0, 10);
+      const startOfDay = dateStr + ' 00:00:00';
+      const count = await new Promise((resolve, reject) => {
+        db.get(
+          'SELECT COUNT(*) as c FROM messages WHERE channel_id IN (?,?,?) AND created_at > ?',
+          ['chan_command', 'chan_claude', 'chan_alerts', startOfDay],
+          (err, row) => err ? reject(err) : resolve(row?.c || 0)
+        );
+      });
+
+      if (count === lastTranscriptMessageCount && count > 0) {
+        // No new messages since last write — skip
+        return;
+      }
+
+      lastTranscriptMessageCount = count;
+      await writeTranscript();
+    } catch (e) {
+      console.error('[Transcript] Check failed:', e.message);
+    }
+  }
+
+  // Run on startup (after 5s delay for DB readiness) and every 30 minutes
+  setTimeout(() => writeTranscriptIfNew(), 5000);
+  setInterval(() => writeTranscriptIfNew(), 30 * 60 * 1000);
 
   // Delay startup sequence to ensure DB schema is fully applied
   setTimeout(async () => {

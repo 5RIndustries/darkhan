@@ -390,6 +390,19 @@ Alternatively, use the break-glass tool from the terminal: `node break-glass.js 
 
 ---
 
+## Transcripts and Session Continuity
+
+Darkhan automatically captures all channel conversations to `docs/transcripts/` every 30 minutes. This is a baseline capability -- no configuration required.
+
+- **Daily files:** `docs/transcripts/Transcript_YYYY-MM-DD.md` -- one per day, code blocks stripped
+- **Smart writes:** Only writes when new messages exist (no redundant writes overnight)
+- **Session continuity:** When Claude sessions cycle (every 50 messages), the new session reads today's and yesterday's transcripts for full context
+- **Shared space:** You can add your own notes, meeting records, or documents to `docs/` alongside transcripts -- writes to `docs/` never trigger the integrity lockdown
+
+Transcripts are generated automatically on server startup and every 30 minutes thereafter.
+
+---
+
 ## Step 7: Using the Integrated Terminal
 
 Darkhan includes a built-in terminal directly in the web UI. Click **Terminal** in the sidebar to access it.

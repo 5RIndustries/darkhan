@@ -272,6 +272,13 @@ class OnboardingService {
       '',
       'Other agents:',
       ...otherAgents,
+      '',
+      'Channel transcripts:',
+      '  - Darkhan auto-captures all channel conversations to docs/transcripts/',
+      '  - Format: Transcript_YYYY-MM-DD.md (one file per day, updated every 30 min)',
+      '  - Code blocks are stripped; everything else is verbatim',
+      '  - Use these for session continuity — they survive restarts and session cycling',
+      `  - Path: ${path.resolve(this.config._serverDir || path.join(__dirname, '..'), '..', 'docs', 'transcripts')}/`,
     ];
 
     return lines.join('\n');

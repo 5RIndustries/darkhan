@@ -344,6 +344,15 @@ For full details, see [SECURITY.md](SECURITY.md).
 - mTLS support for inter-node encryption
 - CRISPR defense spacers propagate across federated instances
 
+**Session Continuity**
+- Automatic channel transcripts: verbatim conversation capture to `docs/transcripts/` every 30 minutes
+- One file per day (`Transcript_YYYY-MM-DD.md`), code blocks stripped, organized by channel
+- Smart writes: skips when no new messages (no redundant writes overnight)
+- New Claude sessions read today's + yesterday's transcripts for full context on startup
+- Session cycling at 50 messages keeps context lean without losing history
+- Transcripts live in `docs/` (not `server/`) -- writes never trigger integrity lockdown
+- Human users can also add notes to `docs/` for agents and team members to reference
+
 **Operational Hygiene**
 - Automatic startup cleanup: PID tracking, orphan process detection, stale heartbeat purging
 - Daily maintenance cycle: database VACUUM, expired session cleanup, activity log trimming, dead worker detection
@@ -422,6 +431,7 @@ All endpoints require authentication via session cookie or `X-API-Key` header.
 | Security | `GET /api/security`, `POST /api/security/lockdown`, `POST /api/security/unlock` |
 | Activity | `GET /api/activity`, `GET /api/activity/chain-head`, `GET /api/activity/stats` |
 | Ground Truth | `GET /api/ground-truth`, `POST /api/ground-truth`, `POST /api/ground-truth/check` |
+| Context | `GET /api/context/brief`, `GET /api/context/state`, `GET /api/context/transcript`, `GET/POST /api/context/settings` |
 | Costs | `GET /api/costs/daily`, `GET /api/costs/total` |
 
 WebSocket namespaces:

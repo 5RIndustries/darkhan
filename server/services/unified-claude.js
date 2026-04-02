@@ -112,11 +112,10 @@ function isTierApproved(tier, classification) {
   }
 }
 
-// Session cycling: max messages before starting a fresh session.
-// The hash-chain activity log preserves full history, so sessions
-// can be short without losing continuity. Claude gets recent channel
-// context in the system prompt of each new session.
-const MAX_SESSION_MESSAGES = 50;
+// Session cycling threshold — read from config.leadAgent.sessionCycleMessages.
+// Defaults to 50 if not configured. The hash-chain activity log preserves
+// full history, so sessions can be short without losing continuity.
+const DEFAULT_SESSION_CYCLE = 50;
 
 class UnifiedClaudeSession {
   constructor({ db, io, config, activityLog }) {
@@ -130,6 +129,16 @@ class UnifiedClaudeSession {
     const HOME = process.env.HOME || '';
     const vaultPath = config.vault?.path?.replace(/^~/, HOME);
     this.vaultPath = vaultPath || path.join(HOME, 'Documents', 'Feedback Loop');
+
+    // Lead agent config — platform-level settings for session management
+    const lead = config.leadAgent || {};
+    this.maxSessionMessages = lead.sessionCycleMessages || DEFAULT_SESSION_CYCLE;
+    this.channelContextMessages = lead.channelContextMessages || 100;
+    this.transcriptReadDays = lead.transcriptReadDays || 2;
+    this.stateMaintenance = lead.stateMaintenance !== false;
+    this.stateFile = lead.stateFile || null;
+    this.startupProtocol = lead.startupProtocol !== false;
+    this.transcriptDir = path.resolve(__dirname, '..', '..', 'docs', 'transcripts');
 
     // Session persistence
     this._sessionFile = path.join(HOME, '.claude', 'darkhan-unified-sessions.json');
@@ -155,7 +164,7 @@ class UnifiedClaudeSession {
     // so the new session gets the full activity digest and system prompt.
     const stored = this._storedSessions[userId];
     const MAX_AGE = 8 * 3600000;
-    const nearCycleThreshold = stored?.messageCount >= (MAX_SESSION_MESSAGES - 5);
+    const nearCycleThreshold = stored?.messageCount >= (this.maxSessionMessages - 5);
     if (stored?.sessionId && !nearCycleThreshold && (Date.now() - (stored.lastMessageAt || 0)) < MAX_AGE) {
       const promise = this._resumeSession(userId, stored.sessionId, stored.messageCount || 0);
       this._creatingSession.set(userId, promise);
@@ -176,7 +185,7 @@ class UnifiedClaudeSession {
         this._creatingSession.delete(userId);
       }
     } else if (stored && nearCycleThreshold) {
-      console.log(`[UnifiedClaude] Stored session near cycle threshold (${stored.messageCount}/${MAX_SESSION_MESSAGES}) — creating fresh`);
+      console.log(`[UnifiedClaude] Stored session near cycle threshold (${stored.messageCount}/${this.maxSessionMessages}) — creating fresh`);
       delete this._storedSessions[userId];
       this._saveStoredSessions();
     }
@@ -208,10 +217,37 @@ class UnifiedClaudeSession {
   }
 
   async _createSession(userId) {
-    // Pull last 100 channel messages — this is the actual conversation history
-    // and the richest source of context for a fresh session
+    // Pull channel context: last 3 hours (up to 200 messages).
+    // If nothing in the last 3 hours (overnight, long gap), fall back to last 100 messages.
+    // Guarantees the agent always has meaningful context to start with.
     let channelContext = '';
-    try { channelContext = await this._getRecentMessages('chan_command', 100); } catch {}
+    try {
+      channelContext = await this._getTimedChannelContext(3, 200);
+      if (!channelContext) {
+        // No messages in last 3 hours — fall back to last 100 by count
+        channelContext = await this._getRecentChannelContext(100);
+        if (channelContext) {
+          console.log(`[UnifiedClaude] No messages in last 3h — using last 100 messages as fallback`);
+        }
+      }
+    } catch (e) {
+      console.warn(`[UnifiedClaude] Channel context failed: ${e.message}`);
+    }
+
+    // Read State.md directly and inject it — don't rely on the agent to read it
+    let stateContent = '';
+    if (this.stateFile) {
+      try {
+        const statePath = path.join(this.vaultPath, this.stateFile);
+        stateContent = fs.readFileSync(statePath, 'utf8');
+        // Trim to first 3000 chars (header + current sprint section) to keep prompt manageable
+        if (stateContent.length > 3000) {
+          stateContent = stateContent.substring(0, 3000) + '\n... [truncated — read full file for details]';
+        }
+      } catch (e) {
+        stateContent = `(Could not read ${this.stateFile}: ${e.message})`;
+      }
+    }
 
     // Pull system-level events from the activity log (security, session cycles,
     // tier changes — things NOT captured in channel messages)
@@ -228,7 +264,7 @@ class UnifiedClaudeSession {
       allowedTools: this._getAllowedTools(),
       cwd: this.vaultPath,
       permissionMode: 'bypassPermissions', // We handle permissions ourselves via canUseTool
-      systemPrompt: { type: 'preset', append: this._buildSystemPrompt(channelContext, userTier, activityDigest) },
+      systemPrompt: { type: 'preset', append: this._buildSystemPrompt(channelContext, userTier, activityDigest, stateContent) },
       includePartialMessages: true,
     };
 
@@ -304,6 +340,11 @@ class UnifiedClaudeSession {
   async sendFromChat(userId, message, channelId, { onProgress } = {}) {
     const entry = await this.getOrCreateSession(userId);
 
+    // Attach any pending terminal subscribers that were waiting for session creation.
+    // This handles the case where the terminal connects before any chat message creates
+    // the session — the subscriber callback was saved but couldn't attach to a non-existent session.
+    this._attachPendingSubscribers(userId);
+
     // Wait if session is busy (previous turn still streaming)
     if (entry.busy) {
       console.log(`[UnifiedClaude] Session busy, waiting for previous turn...`);
@@ -319,9 +360,9 @@ class UnifiedClaudeSession {
       await entry.session.send(message);
       const response = await this._processStream(userId, entry, { onProgress });
 
-      // Session cycling: start fresh after MAX_SESSION_MESSAGES
+      // Session cycling: start fresh after this.maxSessionMessages
       // The hash-chain log preserves history; new session gets recent channel context
-      if (entry.messageCount >= MAX_SESSION_MESSAGES) {
+      if (entry.messageCount >= this.maxSessionMessages) {
         this._cycleSession(userId, entry);
       }
 
@@ -370,7 +411,7 @@ class UnifiedClaudeSession {
       await this._processStream(userId, entry);
 
       // Session cycling
-      if (entry.messageCount >= MAX_SESSION_MESSAGES) {
+      if (entry.messageCount >= this.maxSessionMessages) {
         this._cycleSession(userId, entry);
       }
     } catch (err) {
@@ -550,6 +591,34 @@ class UnifiedClaudeSession {
   }
 
   // --- Subscriber Management ---
+
+  /**
+   * Register a subscriber that will be attached once a session exists.
+   * Used by terminal-relay when it connects before any session is created.
+   */
+  registerPendingSubscriber(userId, subscriberId, type, callback) {
+    if (!this._pendingSubscribers) this._pendingSubscribers = new Map();
+    if (!this._pendingSubscribers.has(userId)) this._pendingSubscribers.set(userId, []);
+    this._pendingSubscribers.get(userId).push({ subscriberId, type, callback });
+  }
+
+  /**
+   * Attach any pending subscribers to the now-existing session.
+   */
+  _attachPendingSubscribers(userId) {
+    if (!this._pendingSubscribers?.has(userId)) return;
+    const entry = this.sessions.get(userId);
+    if (!entry) return;
+
+    const pending = this._pendingSubscribers.get(userId);
+    for (const { subscriberId, type, callback } of pending) {
+      if (!entry.subscribers.has(subscriberId)) {
+        entry.subscribers.set(subscriberId, { type, callback });
+        console.log(`[UnifiedClaude] Attached pending subscriber ${subscriberId} for ${userId}`);
+      }
+    }
+    this._pendingSubscribers.delete(userId);
+  }
 
   subscribe(userId, subscriberId, type, callback) {
     const entry = this.sessions.get(userId);
@@ -784,34 +853,80 @@ class UnifiedClaudeSession {
     });
   }
 
-  _buildSystemPrompt(channelContext, executionTier, activityDigest) {
+  _buildSystemPrompt(channelContext, executionTier, activityDigest, stateContent) {
     const today = new Date().toISOString().substring(0, 10);
-    return [
+    const yesterday = new Date(Date.now() - 86400000).toISOString().substring(0, 10);
+
+    const lines = [
       `DARKHAN UNIFIED SESSION — Date: ${today}`,
-      `You are Claude, Chief of Staff for 5R Industries / Outlaw Motor Company.`,
-      `Running inside the Darkhan web UI on Node 2.`,
+      `Running inside the Darkhan web UI.`,
       ``,
-      `Your vault is at: ${this.vaultPath}`,
-      `CLAUDE.md: ${this.vaultPath}/CLAUDE.md`,
-      `State.md: ${this.vaultPath}/OMC-OS/State.md`,
+      `Vault: ${this.vaultPath}`,
       `USE ABSOLUTE PATHS for all file operations.`,
       ``,
-      `Messages come from terminal (private) or chat channels (public).`,
-      `Respond directly to the user. Read files only when you need specific info.`,
-      ``,
       `EXECUTION TIER: ${executionTier || 'supervised'}`,
-      executionTier === 'supervised' ? `You are in supervised mode. Read operations are pre-approved. All writes, edits, and commands require user approval.` : '',
-      executionTier === 'operational' ? `You are in operational mode. Code edits, file writes, and commands are pre-approved. Security-sensitive operations (credentials, auth, admin actions) still require approval.` : '',
-      executionTier === 'autonomous' ? `You are in autonomous mode. All operations are pre-approved EXCEPT security-sensitive actions (credentials, auth, admin, break-glass). Those always require approval.` : '',
+      executionTier === 'supervised' ? `Supervised mode. Read operations pre-approved. All writes require user approval.` : '',
+      executionTier === 'operational' ? `Operational mode. Code edits, file writes, commands pre-approved. Security ops require approval.` : '',
+      executionTier === 'autonomous' ? `Autonomous mode. Everything pre-approved EXCEPT security-sensitive actions (credentials, auth, admin, break-glass).` : '',
       ``,
+    ];
+
+    // Startup protocol — from platform config
+    if (this.startupProtocol) {
+      lines.push(
+        `=== STARTUP PROTOCOL ===`,
+        `Context has been pre-loaded into this prompt by the Darkhan platform:`,
+        `- Last 3 hours of channel messages (below)`,
+        `- Current state file summary (below)`,
+        `- System events (below)`,
+        ``,
+        `On your FIRST turn, read your operating instructions: ${this.vaultPath}/CLAUDE.md`,
+        `(If no CLAUDE.md exists, check for agent instructions in the vault root.)`,
+        ``,
+        `For DEEPER context beyond what's in this prompt, read the full transcripts:`,
+        `- Today: ${this.transcriptDir}/Transcript_${today}.md`,
+        `- Yesterday: ${this.transcriptDir}/Transcript_${yesterday}.md`,
+        ``,
+        `After reviewing, briefly tell the user what you understand the current work to be.`,
+        `=== END STARTUP PROTOCOL ===`,
+        ``,
+      );
+    }
+
+    // State maintenance — from platform config
+    if (this.stateMaintenance && this.stateFile) {
+      lines.push(
+        `=== STATE MAINTENANCE ===`,
+        `You are responsible for maintaining ${this.stateFile} (at ${this.vaultPath}/${this.stateFile}).`,
+        `After completing any significant task, update this file to reflect the new state.`,
+        `This includes: sprint progress, completed milestones, changed priorities, new decisions.`,
+        `If you don't update it, the next agent session will have stale state.`,
+        `=== END STATE MAINTENANCE ===`,
+        ``,
+      );
+    }
+
+    lines.push(
+      `SESSION PARAMETERS (from Darkhan platform config — changeable in Settings):`,
+      `- Session cycle: ${this.maxSessionMessages} messages`,
+      `- Context window: ${this.channelContextMessages} recent messages`,
+      `- Transcript depth: ${this.transcriptReadDays} day(s)`,
       ``,
-      `SESSION CONTINUITY: This may be a fresh session after an automatic cycle (every ${MAX_SESSION_MESSAGES} messages).`,
-      `The conversation history below IS your context — read it carefully before responding.`,
-      `On your FIRST response, also read CLAUDE.md and today's session log in ${this.vaultPath}/OMC-OS/CoS/Session-Logs/ for anything before the conversation window.`,
-      `Then briefly tell the user what you understand the current work to be, so they know you're up to speed.`,
-      channelContext ? `\n--- CONVERSATION HISTORY (last 100 messages from #command) ---\n${channelContext}\n--- END CONVERSATION HISTORY ---` : '',
-      activityDigest ? `\nSYSTEM EVENTS (last 6 hours — security, session lifecycle):\n${activityDigest}` : '',
-    ].filter(Boolean).join('\n');
+      `Messages come from terminal (private) or chat channels (public).`,
+      `Respond directly to the user.`,
+    );
+
+    if (stateContent) {
+      lines.push(``, `--- CURRENT STATE (${this.stateFile}) ---`, stateContent, `--- END STATE ---`);
+    }
+    if (channelContext) {
+      lines.push(``, `--- CONVERSATION HISTORY (last 3 hours from #command, #claude, #alerts) ---`, channelContext, `--- END CONVERSATION HISTORY ---`);
+    }
+    if (activityDigest) {
+      lines.push(``, `SYSTEM EVENTS (last 6 hours):`, activityDigest);
+    }
+
+    return lines.filter(Boolean).join('\n');
   }
 
   // --- Permission Routing ---
@@ -998,11 +1113,11 @@ class UnifiedClaudeSession {
    */
   _cycleSession(userId, entry) {
     const msgCount = entry.messageCount || 0;
-    console.log(`[UnifiedClaude] Cycling session for ${userId} (${msgCount} msgs — threshold: ${MAX_SESSION_MESSAGES})`);
+    console.log(`[UnifiedClaude] Cycling session for ${userId} (${msgCount} msgs — threshold: ${this.maxSessionMessages})`);
 
     this._logActivity(userId, 'session_cycled', {
       messageCount: msgCount,
-      threshold: MAX_SESSION_MESSAGES,
+      threshold: this.maxSessionMessages,
       sessionId: entry.sessionId,
     });
 
@@ -1045,6 +1160,91 @@ class UnifiedClaudeSession {
         }
       }
     );
+  }
+
+  /**
+   * Get channel messages from the last N hours across key channels.
+   * Time-based instead of count-based — scales with actual activity.
+   * Code blocks stripped, thinking messages filtered, capped at maxMessages.
+   */
+  _getTimedChannelContext(hours = 3, maxMessages = 200) {
+    return new Promise((resolve, reject) => {
+      if (!this.db) return resolve('');
+
+      const since = new Date(Date.now() - hours * 3600000);
+      // Format to match SQLite's DATETIME format (no T, no Z)
+      const sinceStr = since.toISOString().replace('T', ' ').substring(0, 19);
+      const channels = ['chan_command', 'chan_claude', 'chan_alerts'];
+
+      this.db.all(
+        `SELECT from_user, body, created_at, channel_id FROM messages
+         WHERE channel_id IN (${channels.map(() => '?').join(',')})
+           AND created_at > ?
+         ORDER BY created_at ASC
+         LIMIT ?`,
+        [...channels, sinceStr, maxMessages],
+        (err, rows) => {
+          if (err) return reject(err);
+          if (!rows || rows.length === 0) return resolve('');
+
+          const lines = [];
+          for (const r of rows) {
+            let body = r.body || '';
+            // Strip code blocks
+            body = body.replace(/```[\s\S]*?```/g, '[code block removed]');
+            // Skip noise
+            if (body === '...thinking' || body.startsWith('...working')) continue;
+            // Truncate very long messages
+            if (body.length > 1500) body = body.substring(0, 1500) + '... [truncated]';
+
+            const time = (r.created_at || '').substring(11, 19);
+            const ch = (r.channel_id || '').replace('chan_', '#');
+            lines.push(`[${time}] [${ch}] ${r.from_user}: ${body}`);
+          }
+
+          console.log(`[UnifiedClaude] Channel context: ${lines.length} messages from last ${hours}h`);
+          resolve(lines.join('\n'));
+        }
+      );
+    });
+  }
+
+  /**
+   * Fallback: get the last N channel messages by count (when time-based returns nothing).
+   * Same formatting and filtering as _getTimedChannelContext.
+   */
+  _getRecentChannelContext(limit = 100) {
+    return new Promise((resolve, reject) => {
+      if (!this.db) return resolve('');
+      const channels = ['chan_command', 'chan_claude', 'chan_alerts'];
+
+      this.db.all(
+        `SELECT from_user, body, created_at, channel_id FROM messages
+         WHERE channel_id IN (${channels.map(() => '?').join(',')})
+         ORDER BY created_at DESC
+         LIMIT ?`,
+        [...channels, limit],
+        (err, rows) => {
+          if (err) return reject(err);
+          if (!rows || rows.length === 0) return resolve('');
+
+          const lines = [];
+          for (const r of rows.reverse()) {
+            let body = r.body || '';
+            body = body.replace(/```[\s\S]*?```/g, '[code block removed]');
+            if (body === '...thinking' || body.startsWith('...working')) continue;
+            if (body.length > 1500) body = body.substring(0, 1500) + '... [truncated]';
+
+            const time = (r.created_at || '').substring(11, 19);
+            const ch = (r.channel_id || '').replace('chan_', '#');
+            lines.push(`[${time}] [${ch}] ${r.from_user}: ${body}`);
+          }
+
+          console.log(`[UnifiedClaude] Channel context (fallback): ${lines.length} messages by count`);
+          resolve(lines.join('\n'));
+        }
+      );
+    });
   }
 
   _getRecentMessages(channelId, limit = 10) {

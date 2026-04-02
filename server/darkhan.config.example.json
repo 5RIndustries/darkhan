@@ -92,6 +92,15 @@
   "terminal": {
     "allowedTools": "Read,Write,Edit,Glob,Grep,Bash,WebSearch,WebFetch,Agent"
   },
+  "leadAgent": {
+    "sessionCycleMessages": 50,
+    "channelContextMessages": 100,
+    "transcriptReadDays": 2,
+    "stateMaintenance": true,
+    "stateFile": "OMC-OS/State.md",
+    "startupProtocol": true,
+    "executionTierDefault": "supervised"
+  },
   "telemetry": {
     "enabled": false,
     "anonymizedClassifications": false,
