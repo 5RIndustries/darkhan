@@ -321,8 +321,9 @@
       const now = Date.now();
       const lastSeen = {};
       messages.forEach(m => {
-        if (!lastSeen[m.from_user]) {
-          lastSeen[m.from_user] = new Date(m.created_at.endsWith('Z') ? m.created_at : m.created_at + 'Z').getTime();
+        const ts = new Date(m.created_at.endsWith('Z') ? m.created_at : m.created_at + 'Z').getTime();
+        if (!lastSeen[m.from_user] || ts > lastSeen[m.from_user]) {
+          lastSeen[m.from_user] = ts;
         }
       });
 
@@ -566,6 +567,11 @@
   });
 
   function showView(view) {
+    // In split mode, new views go into the left panel, not main-content directly
+    const viewParent = splitMode
+      ? (document.getElementById('split-left-panel') || document.getElementById('main-content'))
+      : document.getElementById('main-content');
+
     const chatView = document.getElementById('chat-view');
     // Lazily create dashboard/task views if they don't exist
     let dashView = document.getElementById('dashboard-view');
@@ -576,14 +582,14 @@
       dashView.id = 'dashboard-view';
       dashView.className = 'view hidden';
       dashView.innerHTML = '<header class="channel-header"><h2>Dashboard</h2></header><div id="dashboard-content" class="content-area"><p>Loading...</p></div>';
-      document.getElementById('main-content').appendChild(dashView);
+      viewParent.appendChild(dashView);
     }
     if (!taskView) {
       taskView = document.createElement('div');
       taskView.id = 'tasks-view';
       taskView.className = 'view hidden';
       taskView.innerHTML = '<header class="channel-header"><h2>Tasks</h2></header><div id="tasks-content" class="content-area"><p>Loading...</p></div>';
-      document.getElementById('main-content').appendChild(taskView);
+      viewParent.appendChild(taskView);
     }
 
     // Approvals view
@@ -593,7 +599,7 @@
       appView.id = "approvals-view";
       appView.className = "view hidden";
       appView.innerHTML = '<header class="channel-header"><h2>Approvals</h2></header><div id="approvals-content" class="content-area"><p>Loading...</p></div>';
-      document.getElementById("main-content").appendChild(appView);
+      viewParent.appendChild(appView);
     }
 
     // Workers view
@@ -603,7 +609,7 @@
       workView.id = 'workers-view';
       workView.className = 'view hidden';
       workView.innerHTML = '<header class="channel-header"><h2>Workers</h2></header><div id="workers-content" class="content-area"><p>Loading...</p></div>';
-      document.getElementById('main-content').appendChild(workView);
+      viewParent.appendChild(workView);
     }
 
     // Costs view
@@ -613,7 +619,7 @@
       costView.id = 'costs-view';
       costView.className = 'view hidden';
       costView.innerHTML = '<header class="channel-header"><h2>Costs</h2></header><div id="costs-content" class="content-area"><p>Loading...</p></div>';
-      document.getElementById('main-content').appendChild(costView);
+      viewParent.appendChild(costView);
     }
 
     // Docs view (knowledge base)
@@ -638,7 +644,7 @@
           </div>
         </div>
       `;
-      document.getElementById('main-content').appendChild(docsView);
+      viewParent.appendChild(docsView);
     }
 
     // Settings view (admin only)
@@ -693,7 +699,7 @@
           <button id="manual-lockdown-btn" style="padding:0.5rem 1rem;background:#c0392b;color:white;border:none;border-radius:4px;cursor:pointer;">Trigger Lockdown</button>
         </div>
       `;
-      document.getElementById('main-content').appendChild(settingsView);
+      viewParent.appendChild(settingsView);
 
       // Wire up settings forms
       document.getElementById('change-password-form').addEventListener('submit', async (e) => {
@@ -797,7 +803,7 @@
         </header>
         <div id="terminal-container" style="flex:1;background:#0d1117;padding:4px;overflow:hidden;"></div>
       `;
-      document.getElementById('main-content').appendChild(termView);
+      viewParent.appendChild(termView);
       document.getElementById('terminal-spawn-btn').addEventListener('click', spawnTerminal);
       document.getElementById('terminal-kill-btn').addEventListener('click', killTerminal);
       document.getElementById('terminal-popout-btn').addEventListener('click', popoutTerminal);

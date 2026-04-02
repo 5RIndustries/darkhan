@@ -189,10 +189,18 @@ class UnifiedClaudeSession {
 
     if (entry.busy) {
       this._notifySubscribers(entry, 'all', {
-        type: 'error',
-        text: '[Session is processing another request — please wait]',
+        type: 'info',
+        text: '[Session is processing another request — waiting...]',
       });
-      return;
+      try {
+        await this._waitForIdle(entry, 300000); // 5 min timeout
+      } catch (e) {
+        this._notifySubscribers(entry, 'all', {
+          type: 'error',
+          text: '[Timed out waiting for session — try again]',
+        });
+        return;
+      }
     }
 
     try {
@@ -461,6 +469,9 @@ class UnifiedClaudeSession {
     const start = Date.now();
     while (entry.busy && (Date.now() - start) < timeoutMs) {
       await new Promise(r => setTimeout(r, 500));
+    }
+    if (entry.busy) {
+      throw new Error('Timed out waiting for session to become idle');
     }
   }
 

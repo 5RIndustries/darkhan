@@ -1154,6 +1154,192 @@ class WorkerRuntime {
             return result;
           },
         },
+
+        /**
+         * Google Workspace tools — Drive and Docs access via @googleworkspace/cli.
+         * Authenticated as aoutlaw113@gmail.com via gcloud.
+         * All methods shell out to `npx @googleworkspace/cli` and parse JSON responses.
+         */
+        google: {
+          drive: {
+            /**
+             * List files in Google Drive. Accepts a search query string.
+             * Example: tools.google.drive.list("name contains 'patent'")
+             * Example: tools.google.drive.list("'FOLDER_ID' in parents")
+             */
+            async list(query) {
+              toolLimits.checkShell();
+              const args = ['@googleworkspace/cli', 'drive', 'list'];
+              if (query) args.push('--query', query);
+              args.push('--json');
+
+              const { execFileSync } = require('child_process');
+              self.activityLog?.append({
+                actor: agentId,
+                action: 'google_drive_list',
+                target: (query || '').substring(0, 200),
+              });
+
+              try {
+                const stdout = execFileSync('npx', args, {
+                  timeout: 30000,
+                  encoding: 'utf8',
+                  env: {
+                    HOME: process.env.HOME,
+                    PATH: process.env.PATH,
+                    LANG: process.env.LANG || 'en_US.UTF-8',
+                    USER: process.env.USER,
+                  },
+                });
+                return JSON.parse(stdout);
+              } catch (err) {
+                throw new Error(`Google Drive list failed: ${err.message}`);
+              }
+            },
+
+            /**
+             * Upload a local file to Google Drive.
+             * @param {string} localPath — absolute path to file on disk
+             * @param {string} name — name for the file in Drive
+             * @param {string} folderId — parent folder ID in Drive
+             */
+            async upload(localPath, name, folderId) {
+              toolLimits.checkShell();
+              const { execFileSync } = require('child_process');
+              const args = ['@googleworkspace/cli', 'drive', 'upload', localPath];
+              if (name) args.push('--name', name);
+              if (folderId) args.push('--parent', folderId);
+              args.push('--json');
+
+              self.activityLog?.append({
+                actor: agentId,
+                action: 'google_drive_upload',
+                target: localPath,
+                details: JSON.stringify({ name, folderId }),
+              });
+
+              try {
+                const stdout = execFileSync('npx', args, {
+                  timeout: 60000,
+                  encoding: 'utf8',
+                  env: {
+                    HOME: process.env.HOME,
+                    PATH: process.env.PATH,
+                    LANG: process.env.LANG || 'en_US.UTF-8',
+                    USER: process.env.USER,
+                  },
+                });
+                return JSON.parse(stdout);
+              } catch (err) {
+                throw new Error(`Google Drive upload failed: ${err.message}`);
+              }
+            },
+
+            /**
+             * Create a new Google Doc in the specified folder.
+             * @param {string} name — document title
+             * @param {string} folderId — parent folder ID in Drive
+             */
+            async createDoc(name, folderId) {
+              toolLimits.checkShell();
+              const { execFileSync } = require('child_process');
+              const args = ['@googleworkspace/cli', 'drive', 'create-doc', '--name', name];
+              if (folderId) args.push('--parent', folderId);
+              args.push('--json');
+
+              self.activityLog?.append({
+                actor: agentId,
+                action: 'google_drive_create_doc',
+                target: name,
+                details: JSON.stringify({ folderId }),
+              });
+
+              try {
+                const stdout = execFileSync('npx', args, {
+                  timeout: 30000,
+                  encoding: 'utf8',
+                  env: {
+                    HOME: process.env.HOME,
+                    PATH: process.env.PATH,
+                    LANG: process.env.LANG || 'en_US.UTF-8',
+                    USER: process.env.USER,
+                  },
+                });
+                return JSON.parse(stdout);
+              } catch (err) {
+                throw new Error(`Google Drive createDoc failed: ${err.message}`);
+              }
+            },
+          },
+
+          docs: {
+            /**
+             * Get the content of a Google Doc by document ID.
+             * @param {string} docId — the Google Doc ID
+             */
+            async get(docId) {
+              toolLimits.checkShell();
+              const { execFileSync } = require('child_process');
+              const args = ['@googleworkspace/cli', 'docs', 'get', docId, '--json'];
+
+              self.activityLog?.append({
+                actor: agentId,
+                action: 'google_docs_get',
+                target: docId,
+              });
+
+              try {
+                const stdout = execFileSync('npx', args, {
+                  timeout: 30000,
+                  encoding: 'utf8',
+                  env: {
+                    HOME: process.env.HOME,
+                    PATH: process.env.PATH,
+                    LANG: process.env.LANG || 'en_US.UTF-8',
+                    USER: process.env.USER,
+                  },
+                });
+                return JSON.parse(stdout);
+              } catch (err) {
+                throw new Error(`Google Docs get failed: ${err.message}`);
+              }
+            },
+
+            /**
+             * Update a Google Doc with new text content.
+             * @param {string} docId — the Google Doc ID
+             * @param {string} content — text content to insert
+             */
+            async update(docId, content) {
+              toolLimits.checkShell();
+              const { execFileSync } = require('child_process');
+              const args = ['@googleworkspace/cli', 'docs', 'update', docId, '--content', content, '--json'];
+
+              self.activityLog?.append({
+                actor: agentId,
+                action: 'google_docs_update',
+                target: docId,
+                details: JSON.stringify({ contentLength: content.length }),
+              });
+
+              try {
+                const stdout = execFileSync('npx', args, {
+                  timeout: 30000,
+                  encoding: 'utf8',
+                  env: {
+                    HOME: process.env.HOME,
+                    PATH: process.env.PATH,
+                    LANG: process.env.LANG || 'en_US.UTF-8',
+                    USER: process.env.USER,
+                  },
+                });
+                return JSON.parse(stdout);
+              } catch (err) {
+                throw new Error(`Google Docs update failed: ${err.message}`);
+              }
+            },
+          },
+        },
       },
 
       // Observation-Evidence Protocol — structured diagnostic observations
