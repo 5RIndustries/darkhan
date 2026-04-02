@@ -32,6 +32,28 @@
   let splitTerminalReady = false;
   let splitTerminalSessionKey = null;
 
+  // --- Clock ---
+  function startClock() {
+    const localEl = document.getElementById('clock-local');
+    const utcEl = document.getElementById('clock-utc');
+    if (!localEl || !utcEl) return;
+
+    function tick() {
+      const now = new Date();
+      localEl.textContent = now.toLocaleTimeString('en-US', {
+        hour: '2-digit', minute: '2-digit', second: '2-digit',
+        hour12: true, timeZone: userTimezone,
+      });
+      utcEl.textContent = 'UTC ' + now.toLocaleTimeString('en-US', {
+        hour: '2-digit', minute: '2-digit',
+        hour12: false, timeZone: 'UTC',
+      });
+    }
+
+    tick();
+    setInterval(tick, 1000);
+  }
+
   // --- DOM refs ---
   const loginScreen = document.getElementById('login-screen');
   const appScreen = document.getElementById('app-screen');
@@ -214,6 +236,7 @@
       }
       buildChannelList();
       buildTeamStatus();
+      startClock();
     } catch (e) {
       console.warn('Team data load failed:', e.message);
     }

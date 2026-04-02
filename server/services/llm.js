@@ -202,8 +202,7 @@ Respond with ONLY the category name, nothing else.`;
       generationConfig: {
         temperature: options.temperature ?? 0.3,
         maxOutputTokens: options.maxTokens || 8192,
-        // Disable thinking budget for Gemini 2.5 Pro to prevent it consuming all output tokens
-        thinkingConfig: { thinkingBudget: 0 },
+        thinkingConfig: { thinkingBudget: 8192 },
       },
     };
 
