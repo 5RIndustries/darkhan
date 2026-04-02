@@ -2033,7 +2033,7 @@
     splitTerminal = new window.Terminal({
       cursorBlink: true,
       fontSize: 13,
-      fontFamily: "'SF Mono', 'Fira Code', 'Cascadia Code', Menlo, monospace",
+      fontFamily: "'JetBrains Mono', 'SF Mono', 'Fira Code', Menlo, monospace",
       theme: {
         background: '#0d1117',
         foreground: '#e6edf3',
@@ -2190,7 +2190,7 @@
     terminal = new window.Terminal({
       cursorBlink: true,
       fontSize: 13,
-      fontFamily: "'SF Mono', 'Fira Code', 'Cascadia Code', Menlo, monospace",
+      fontFamily: "'JetBrains Mono', 'SF Mono', 'Fira Code', Menlo, monospace",
       theme: {
         background: '#0d1117',
         foreground: '#e6edf3',

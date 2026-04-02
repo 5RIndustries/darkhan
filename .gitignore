@@ -35,6 +35,9 @@ server/db/secrets.db
 *.pem
 *.csr
 
+# Runtime files
+server/.darkhan.pid
+
 # Logs
 *.log
 

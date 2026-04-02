@@ -22,7 +22,7 @@
 
 html, body {
   height: 100%;
-  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro', 'Segoe UI', system-ui, sans-serif;
+  font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', Menlo, monospace;
   background: var(--bg-primary);
   color: var(--text-primary);
   font-size: 14px;
@@ -477,7 +477,7 @@ html, body {
   padding: 0.15rem 0.4rem;
   border-radius: 3px;
   font-size: 0.85rem;
-  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', Menlo, monospace;
 }
 .markdown-body pre {
   background: rgba(0, 0, 0, 0.3);

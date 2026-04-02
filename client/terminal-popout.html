@@ -4,6 +4,9 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Darkhan Terminal</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5/css/xterm.min.css">
   <script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5/lib/xterm.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0/lib/addon-fit.min.js"></script>
@@ -13,7 +16,7 @@
     body {
       background: #0d1117;
       color: #e6edf3;
-      font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+      font-family: 'JetBrains Mono', 'SF Mono', 'Fira Code', Menlo, monospace;
       height: 100vh;
       display: flex;
       flex-direction: column;
@@ -86,7 +89,7 @@
     terminal = new Terminal({
       cursorBlink: true,
       fontSize: 14,
-      fontFamily: "'SF Mono', 'Fira Code', Menlo, monospace",
+      fontFamily: "'JetBrains Mono', 'SF Mono', 'Fira Code', Menlo, monospace",
       theme: {
         background: '#0d1117', foreground: '#e6edf3', cursor: '#e94560',
         selectionBackground: '#264f78',
