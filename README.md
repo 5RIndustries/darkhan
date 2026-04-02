@@ -118,7 +118,7 @@ darkhan/
 | `claim-verifier.js` | Automatic verification tagging on every agent message |
 | `ground-truth.js` | Canonical registry of verified facts; contradiction detection |
 | `onboarding.js` | Injects verified identity and rules into every agent at startup |
-| `worker-runtime.js` | Cron scheduling, task execution, listener dispatch, complete activity logging |
+| `worker-runtime.js` | Cron scheduling, task execution, listener dispatch, Google Workspace tools, complete activity logging |
 | `unified-claude.js` | Single Claude SDK session shared between terminal and chat interfaces |
 | `terminal-relay.js` | WebSocket relay for Claude Code and shell terminals in the browser |
 | `auto-responder.js` | Two-tier message routing: local LLM triage, Claude escalation, unified session bridge, slash commands |
@@ -407,17 +407,25 @@ WebSocket namespaces:
 
 ## Deployment
 
-**Single node** -- one machine runs the server and all workers:
+**Single node (local)** -- one machine runs the server and all workers:
 ```bash
 cd server && node server.js
 ```
+
+**Single node (VPS)** -- deploy on a $5 virtual server with automatic HTTPS:
+```bash
+# Behind Caddy reverse proxy (recommended)
+DARKHAN_TRUST_PROXY=true DARKHAN_HTTPS=true \
+  DARKHAN_ALLOWED_ORIGINS=https://your-domain.com \
+  node server.js
+```
+
+Darkhan detects external exposure without TLS and warns at startup. Per-IP login rate limiting, WebSocket origin validation, and secure cookie flags activate automatically. See [SECURITY.md](SECURITY.md#vps-deployment-hardening) for the full VPS hardening guide.
 
 **Multi-node (federated)** -- one hub, remote workers on other machines:
 1. Hub runs `server.js` (database, web UI, local workers)
 2. Remote nodes run `remote-runner.js` (workers post results to hub via HTTP API)
 3. Nodes connect over Tailscale or any private network (mTLS available for encryption without VPN)
-
-No public internet exposure required. Darkhan is designed for private networks.
 
 See [SETUP.md](SETUP.md) for launchd configuration, service user setup, and Keychain provisioning.
 
@@ -429,7 +437,8 @@ See [SETUP.md](SETUP.md) for launchd configuration, service user setup, and Keyc
 |----------|--------|
 | macOS (Apple Silicon) | Supported -- full feature set including native sandbox |
 | macOS (Intel) | Supported |
-| Linux | Planned -- sandbox-exec equivalent not yet implemented |
+| Linux VPS | Supported -- all features except macOS-native sandbox (sandbox-exec) |
+| Linux Desktop | Supported -- same as VPS, add Ollama for local LLM |
 | Windows | Planned |
 
 ---

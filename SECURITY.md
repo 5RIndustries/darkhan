@@ -103,6 +103,43 @@ Allowlist mode inverts this: only explicitly permitted commands are allowed. Eve
 
 Set `security.shellMode` to `allowlist` in `darkhan.config.json`. The default allowlist is: `ls`, `cat`, `head`, `tail`, `wc`, `date`, `echo`, `grep`, `find`, `sort`, `uniq`, `diff`, `pwd`, `whoami`, `uname`, `df`, `du`, `git`, `npm`, `ollama`, `pgrep`. Per-agent overrides are available via `permissions.shellAllowedCommands`.
 
+## VPS Deployment Hardening
+
+Darkhan was designed for local network deployment, but many users will deploy on virtual private servers exposed to the public internet. The following protections activate when deploying on a VPS:
+
+### Trust Proxy
+Set `DARKHAN_TRUST_PROXY=true` when behind a reverse proxy (Caddy, nginx, Cloudflare). This configures Express to read the client's real IP from `X-Forwarded-For` headers instead of seeing the proxy's IP for every request. Without this, rate limiting and brute-force protection will treat all users as the same IP.
+
+### WebSocket Origin Validation
+Socket.IO connections validate the `Origin` header against the `DARKHAN_ALLOWED_ORIGINS` environment variable (comma-separated list). Connections from unlisted origins are rejected. This prevents cross-site WebSocket hijacking where a malicious page opens a WebSocket to your Darkhan instance using the visitor's authenticated session cookies.
+
+### Per-IP Login Rate Limiting
+In addition to the existing per-username brute-force protection (exponential backoff), Darkhan now enforces a per-IP limit: 5 failed login attempts per IP address per 15 minutes, regardless of which usernames are targeted. This defends against credential stuffing attacks that rotate through username lists.
+
+### Secure Cookie Flags
+When `DARKHAN_HTTPS=true` or TLS is configured in `darkhan.config.json`, session cookies are set with:
+- `secure: true` — cookies only sent over HTTPS
+- `sameSite: strict` — cookies not sent with cross-site requests
+- `httpOnly: true` — always on, cookies inaccessible to JavaScript
+
+### Startup Safety Warning
+If Darkhan detects it is binding to `0.0.0.0` (accepting connections from any network interface) without TLS configured, it prints a prominent warning at startup with instructions for:
+1. **Caddy** — automatic HTTPS with Let's Encrypt
+2. **Tailscale** — encrypted mesh VPN (no port exposure)
+3. **Explicit acknowledgment** — set `DARKHAN_ALLOW_EXTERNAL=true` to suppress the warning (not recommended)
+
+### Recommended VPS Setup
+```
+Internet → Caddy (auto-HTTPS) → localhost:3001 (Darkhan)
+```
+
+Set these environment variables for a VPS deployment behind Caddy:
+```
+DARKHAN_TRUST_PROXY=true
+DARKHAN_HTTPS=true
+DARKHAN_ALLOWED_ORIGINS=https://your-domain.com
+```
+
 ## Security Architecture
 
 Darkhan's security is foundational, not bolted on. Key components:

@@ -49,6 +49,12 @@ try {
 
 const app = express();
 
+// --- VPS Hardening: Trust proxy for reverse proxy deployments (Caddy, nginx, Cloudflare) ---
+const TRUST_PROXY = process.env.DARKHAN_TRUST_PROXY || config.instance?.trustProxy || false;
+if (TRUST_PROXY) {
+  app.set('trust proxy', TRUST_PROXY === 'true' ? 1 : TRUST_PROXY);
+}
+
 // [DARKHAN SECURITY] mTLS: Start HTTPS server if TLS config is enabled.
 // When TLS is enabled, the server requires valid client certificates signed by our CA
 // for all federation API calls. The web UI (localhost) can still use HTTP.
@@ -73,10 +79,21 @@ if (config.tls?.enabled) {
   server = http.createServer(app);
 }
 
+// --- VPS Hardening: WebSocket origin validation ---
+const ALLOWED_ORIGINS = (process.env.DARKHAN_ALLOWED_ORIGINS || process.env.CORS_ORIGIN || `http${config.tls?.enabled ? 's' : ''}://localhost:${config.instance?.port || 3001}`).split(',').map(s => s.trim());
+
 const io = new Server(server, {
   cors: {
-    origin: process.env.CORS_ORIGIN || `http${config.tls?.enabled ? 's' : ''}://localhost:${config.instance?.port || 3001}`,
+    origin: ALLOWED_ORIGINS.length === 1 ? ALLOWED_ORIGINS[0] : ALLOWED_ORIGINS,
     credentials: true
+  },
+  allowRequest: (req, callback) => {
+    const origin = req.headers.origin;
+    // Allow requests with no origin (non-browser clients: CLI agents, API keys, curl)
+    if (!origin) return callback(null, true);
+    if (ALLOWED_ORIGINS.some(o => origin === o || o === '*')) return callback(null, true);
+    console.warn(`[Security] WebSocket connection rejected: origin "${origin}" not in allowed list [${ALLOWED_ORIGINS.join(', ')}]`);
+    callback('Origin not allowed', false);
   }
 });
 
@@ -139,9 +156,9 @@ app.use(session({
   resave: false,
   saveUninitialized: false,
   cookie: {
-    secure: process.env.NODE_ENV === 'production',
+    secure: process.env.DARKHAN_HTTPS === 'true' || config.tls?.enabled || false,
     httpOnly: true,
-    sameSite: 'lax',
+    sameSite: (process.env.DARKHAN_HTTPS === 'true' || config.tls?.enabled) ? 'strict' : 'lax',
     maxAge: 8 * 60 * 60 * 1000  // 8 hours
   }
 }));
@@ -947,6 +964,33 @@ app.get('*', (req, res) => {
 server.listen(PORT, BIND_HOST, () => {
   const brandName = config.instance?.brandName || 'Darkhan';
   console.log(`[Darkhan] ${brandName} Command Center running on ${BIND_HOST}:${PORT}${BIND_HOST === '127.0.0.1' ? ' (localhost only)' : ' (network accessible)'}`);
+
+  // --- VPS Hardening: Startup safety check ---
+  const isExternal = BIND_HOST !== '127.0.0.1' && BIND_HOST !== 'localhost' && BIND_HOST !== '::1';
+  const hasTLS = config.tls?.enabled || process.env.DARKHAN_HTTPS === 'true';
+  const allowExternal = process.env.DARKHAN_ALLOW_EXTERNAL === 'true';
+
+  if (isExternal && !hasTLS && !allowExternal) {
+    console.warn('\n' + '='.repeat(72));
+    console.warn('  ⚠  WARNING: DARKHAN IS BINDING TO AN EXTERNAL INTERFACE');
+    console.warn('='.repeat(72));
+    console.warn(`  Bind address: ${BIND_HOST}:${PORT}`);
+    console.warn('  TLS: NOT DETECTED');
+    console.warn('');
+    console.warn('  Without TLS, passwords, API keys, session cookies, and terminal');
+    console.warn('  sessions are transmitted in CLEARTEXT over the network.');
+    console.warn('');
+    console.warn('  To fix this, choose one:');
+    console.warn('    1. Use a reverse proxy (Caddy auto-HTTPS is easiest):');
+    console.warn('       Set DARKHAN_TRUST_PROXY=true and DARKHAN_HTTPS=true');
+    console.warn('    2. Use a VPN overlay (Tailscale/WireGuard):');
+    console.warn('       Bind to the VPN IP instead of 0.0.0.0');
+    console.warn('    3. Acknowledge the risk:');
+    console.warn('       Set DARKHAN_ALLOW_EXTERNAL=true');
+    console.warn('='.repeat(72) + '\n');
+  } else if (isExternal && (hasTLS || allowExternal)) {
+    console.log(`[Darkhan] External binding acknowledged${hasTLS ? ' (TLS enabled)' : ' (DARKHAN_ALLOW_EXTERNAL=true)'}`);
+  }
 
   // Health monitor
   const { startMonitor } = require('./services/monitor');

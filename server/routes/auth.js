@@ -103,6 +103,39 @@ function _recordFailedLogin(ip, username) {
     record.lastAttempt = now;
     _persistAttempt(key, record);
   }
+
+  // --- VPS Hardening: Also track per-IP across all usernames ---
+  const ipKey = `iponly:${ip}`;
+  const ipRecord = loginAttempts.get(ipKey);
+  if (!ipRecord || (now - ipRecord.firstAttempt > ATTEMPT_WINDOW_MS)) {
+    const newRecord = { count: 1, firstAttempt: now, lastAttempt: now };
+    loginAttempts.set(ipKey, newRecord);
+    _persistAttempt(ipKey, newRecord);
+  } else {
+    ipRecord.count++;
+    ipRecord.lastAttempt = now;
+    _persistAttempt(ipKey, ipRecord);
+  }
+}
+
+// --- VPS Hardening: Per-IP rate limit (5 failures per 15 min across ALL usernames) ---
+const IP_RATE_LIMIT = 5;
+function _checkIpRateLimit(ip) {
+  const ipKey = `iponly:${ip}`;
+  const record = loginAttempts.get(ipKey);
+  if (!record) return { blocked: false };
+
+  const now = Date.now();
+  if (now - record.firstAttempt > ATTEMPT_WINDOW_MS) {
+    loginAttempts.delete(ipKey);
+    return { blocked: false };
+  }
+
+  if (record.count >= IP_RATE_LIMIT) {
+    const remainingMs = ATTEMPT_WINDOW_MS - (now - record.firstAttempt);
+    return { blocked: true, remainingMinutes: Math.ceil(remainingMs / 60000) };
+  }
+  return { blocked: false };
 }
 
 function _clearLoginAttempts(ip, username) {
@@ -121,6 +154,15 @@ router.post('/login', (req, res) => {
 
   const ip = req.ip || req.connection?.remoteAddress || 'unknown';
   const activityLog = req.app.locals.activityLog;
+
+  // VPS Hardening: Per-IP rate limit — blocks credential stuffing across usernames
+  const ipCheck = _checkIpRateLimit(ip);
+  if (ipCheck.blocked) {
+    if (activityLog) {
+      activityLog.append({ actor: 'darkhan_security', action: 'login_ip_ratelimited', target: ip, details: `IP blocked: too many failed attempts` });
+    }
+    return res.status(429).json({ error: `Too many login attempts from this address. Try again in ${ipCheck.remainingMinutes} minute(s).` });
+  }
 
   // Check brute-force lockout BEFORE touching the database
   const bruteCheck = _checkBruteForce(ip, username);

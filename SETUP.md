@@ -775,9 +775,66 @@ Logs are your primary diagnostic tool:
 
 ---
 
+## Step 12: VPS Deployment (Optional)
+
+If you are deploying Darkhan on a virtual private server instead of a local machine, additional configuration is required. Darkhan was designed for trusted networks and needs a safety net for public internet exposure.
+
+### Recommended: Caddy Reverse Proxy
+
+```bash
+# Install Caddy (handles automatic HTTPS via Let's Encrypt)
+sudo apt install -y caddy    # Debian/Ubuntu
+# or: brew install caddy      # macOS
+
+# /etc/caddy/Caddyfile
+darkhan.yourdomain.com {
+    reverse_proxy localhost:3001
+}
+
+sudo systemctl reload caddy
+```
+
+### Environment Variables for VPS
+
+Add these to your `.env`:
+
+```
+# Trust proxy headers (required behind Caddy/nginx/Cloudflare)
+DARKHAN_TRUST_PROXY=true
+
+# Enable secure cookie flags
+DARKHAN_HTTPS=true
+
+# Restrict WebSocket connections to your domain
+DARKHAN_ALLOWED_ORIGINS=https://darkhan.yourdomain.com
+```
+
+### What These Enable
+
+| Protection | What It Does |
+|-----------|-------------|
+| Trust proxy | Reads client's real IP from `X-Forwarded-For` so rate limiting works correctly |
+| WebSocket origin validation | Rejects cross-site WebSocket hijacking attempts |
+| Per-IP rate limiting | 5 failed logins per IP per 15 minutes (always active, but useless without trust proxy) |
+| Secure cookies | `secure`, `sameSite: strict`, `httpOnly` flags on session cookies |
+| Startup safety warning | Alerts you if binding externally without TLS |
+
+### Alternative: Tailscale
+
+If you do not need public access, use Tailscale for encrypted private networking:
+
+```bash
+curl -fsSL https://tailscale.com/install.sh | sh
+sudo tailscale up
+# Access Darkhan via Tailscale IP: http://100.x.y.z:3001
+```
+
+See [SECURITY.md](SECURITY.md#vps-deployment-hardening) for the full threat model and VPS hardening details.
+
+---
+
 ## Next Steps
 
 - Read [README.md](README.md) for full architecture documentation
 - Read [WORKER-CONTRACT.md](WORKER-CONTRACT.md) before writing workers
 - Explore the web UI: check Health, Costs, and Vault views
-- Set up push notifications (Pushover) for critical alerts by adding keys to `.env`

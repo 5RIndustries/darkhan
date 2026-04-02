@@ -6,6 +6,31 @@ All notable changes to Darkhan are documented here.
 
 First public release. Darkhan is a self-hosted AI command center that gives you full control over your AI agents — what they can do, what they can see, and what happens when they go wrong.
 
+### VPS Deployment Hardening (2026-04-02)
+Safety net for deploying Darkhan on virtual private servers exposed to the public internet.
+- **Trust proxy support** — `DARKHAN_TRUST_PROXY` env var configures Express `trust proxy` for correct IP resolution behind reverse proxies (Caddy, nginx, Cloudflare).
+- **WebSocket origin validation** — Socket.IO connections now validate the `Origin` header against `DARKHAN_ALLOWED_ORIGINS`. Connections from unlisted origins are rejected with a security warning.
+- **Per-IP login rate limiting** — 5 failed login attempts per IP address per 15 minutes, across all usernames. Prevents credential stuffing attacks that rotate usernames against a single IP.
+- **Secure cookie flags** — When `DARKHAN_HTTPS=true` or TLS is configured, session cookies are set with `secure: true` and `sameSite: strict`. HTTP deployments use `sameSite: lax`.
+- **Startup safety warning** — Server detects when binding to `0.0.0.0` without TLS and prints a prominent warning with instructions for Caddy, Tailscale, or explicit acknowledgment via `DARKHAN_ALLOW_EXTERNAL=true`.
+
+### Split View Navigation Fix (2026-04-02)
+- **Left panel routing** — In split mode (chat left, terminal right), clicking sidebar nav items now correctly switches the left panel instead of creating a third pane. `showView()` routes lazy-created views to `split-left-panel` when in split mode.
+
+### Status Dot Fix (2026-04-02)
+- **Correct last-seen tracking** — Agent status dots now track the most recent message timestamp per user instead of the oldest, fixing a bug where status showed red despite active chatting.
+
+### Terminal Session Queuing (2026-04-02)
+- **Wait instead of drop** — Terminal messages sent while the unified Claude session is busy now queue with a 5-minute timeout instead of being silently dropped. Users see a "[Session is processing another request — waiting...]" message.
+
+### Google Workspace Tools for Workers (2026-04-02)
+- **`tools.google.drive.list()`** — List files in Google Drive folders.
+- **`tools.google.drive.upload()`** — Upload files to Google Drive.
+- **`tools.google.drive.createDoc()`** — Create Google Docs from content.
+- **`tools.google.docs.get()`** — Read Google Doc content.
+- **`tools.google.docs.update()`** — Update Google Doc content.
+- All operations use `@googleworkspace/cli` with whitelisted environment, 30s timeout (60s for uploads), rate-limited, and logged to the activity trail.
+
 ### Complete Activity Logging (2026-04-02)
 Closed the gap between the conversation record (messages table) and the immutable audit trail (hash chain). Every interaction is now SHA-256 hash-chained.
 - **Unified session logging** — User messages (chat and terminal), Claude's assistant responses, every tool call, turn completion with duration/tool count, errors, and permission decisions all logged to the activity hash chain.
@@ -247,7 +272,7 @@ Driven by internal audit after the Anthropic Claude Code source map leak. See [R
 - **Agent-to-agent scanning** — all inter-agent messages get full security pipeline
 - **Behavioral baselines** — per-agent anomaly detection on message and LLM usage patterns
 - **File integrity monitoring** — SHA-256 baseline with tamper detection and auto-lockdown
-- **Brute-force protection** — exponential backoff on failed login attempts
+- **Brute-force protection** — exponential backoff on failed login attempts + per-IP rate limiting across all usernames
 - **Lockdown system** — fail-closed, PIN-protected, human-only unlock
 - **Pre-commit secret scanner** — blocks credential commits before they happen
 - **Password recovery** — admin-generated one-time tokens, no email required
