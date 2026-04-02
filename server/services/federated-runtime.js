@@ -42,6 +42,22 @@ class FederatedWorkerRuntime extends WorkerRuntime {
     this._pollingIntervals = [];
     this._lastSeenTimestamps = {}; // channelId -> ISO timestamp of last seen message
 
+    // [HARDENING-7] Interim federation gate — require explicit peer approval.
+    // Without FEDERATION_APPROVED_PEERS, federation is disabled entirely.
+    // This prevents unauthorized nodes from connecting before the full Mokume
+    // peer approval system is implemented.
+    const approvedPeers = (process.env.FEDERATION_APPROVED_PEERS || '').split(',').map(s => s.trim()).filter(Boolean);
+    if (approvedPeers.length === 0) {
+      console.error('[FederatedRuntime] No approved federation peers configured.');
+      console.error('[FederatedRuntime] Set FEDERATION_APPROVED_PEERS=<fingerprint1,fingerprint2> to enable.');
+      console.error('[FederatedRuntime] Federation is DISABLED until peers are explicitly approved.');
+      this._federationDisabled = true;
+    } else {
+      this._approvedPeers = new Set(approvedPeers);
+      this._federationDisabled = false;
+      console.log(`[FederatedRuntime] ${approvedPeers.length} approved peer(s) configured`);
+    }
+
     // [DARKHAN SECURITY] mTLS certificate loading
     // If TLS config is provided, load CA + client cert/key for mutual authentication.
     // Both sides verify each other — the server checks the client cert, the client checks the server cert.
@@ -101,6 +117,11 @@ class FederatedWorkerRuntime extends WorkerRuntime {
    * @returns {Promise<Object>} Parsed JSON response
    */
   _httpRequest(method, urlPath, body, apiKey) {
+    // [HARDENING-7] Block all federation traffic if no peers approved
+    if (this._federationDisabled) {
+      return Promise.reject(new Error('Federation disabled: no approved peers configured (FEDERATION_APPROVED_PEERS)'));
+    }
+
     return new Promise((resolve, reject) => {
       const fullUrl = new URL(urlPath, this.remoteHost);
       const isHttps = fullUrl.protocol === 'https:';

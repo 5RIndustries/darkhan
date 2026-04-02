@@ -217,6 +217,19 @@ async function seed() {
     console.log('✓ Lockdown PIN configured.');
   }
 
+  // [HARDENING-6] Node birth certificate — record how this instance was created
+  const os = require('os');
+  const provenance = {
+    created_by: process.env.DARKHAN_CREATED_BY || (process.env.DARKHAN_SETUP_WIZARD === 'true' ? 'setup_wizard' : 'manual_seed'),
+    created_method: process.env.DARKHAN_SETUP_WIZARD === 'true' ? 'wizard' : 'seed',
+    hostname: os.hostname(),
+  };
+  await run(`INSERT OR IGNORE INTO instance_identity (key, value) VALUES ('node_created_at', ?)`, [new Date().toISOString()]);
+  await run(`INSERT OR IGNORE INTO instance_identity (key, value) VALUES ('node_created_by', ?)`, [provenance.created_by]);
+  await run(`INSERT OR IGNORE INTO instance_identity (key, value) VALUES ('node_created_method', ?)`, [provenance.created_method]);
+  await run(`INSERT OR IGNORE INTO instance_identity (key, value) VALUES ('node_hostname', ?)`, [provenance.hostname]);
+  console.log(`✓ Node provenance recorded: created_by=${provenance.created_by}, method=${provenance.created_method}`);
+
   console.log(`\n=== Seed Complete (${members.length} team members) ===\n`);
   db.close();
   secretsDb.close();

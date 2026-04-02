@@ -242,6 +242,9 @@ db.serialize(() => {
   db.run("ALTER TABLE users ADD COLUMN timezone TEXT DEFAULT 'America/New_York'", (err) => {
     if (err && !err.message.includes('duplicate column')) console.error('[Migration]', err.message);
   });
+  db.run("ALTER TABLE users ADD COLUMN execution_tier TEXT DEFAULT 'supervised'", (err) => {
+    if (err && !err.message.includes('duplicate column')) console.error('[Migration]', err.message);
+  });
   runSeedIfEmpty(db);
 });
 
@@ -907,7 +910,7 @@ function socketAuthMiddleware(socket, next) {
 io.use(socketAuthMiddleware);
 
 // Instance Identity — Ed25519 keypair for message signing and federation trust
-const instanceIdentity = new InstanceIdentity({ db, config, activityLog });
+const instanceIdentity = new InstanceIdentity({ db, secretsDb, config, activityLog });
 instanceIdentity.initialize().then(() => {
   console.log(`[Darkhan] Instance identity ready (fingerprint: ${instanceIdentity.getFingerprint()})`);
 }).catch(err => {
@@ -1018,6 +1021,77 @@ server.listen(PORT, BIND_HOST, () => {
       console.warn('[Darkhan] Rate limiter init failed (non-fatal):', e.message);
     }
 
+    // [HARDENING-4] Deploy mode: human-authorized baseline reset before startup.
+    // Usage: node server.js --deploy (requires TTY + lockdown PIN)
+    if (process.argv.includes('--deploy')) {
+      const deployOk = await (async () => {
+        // Security: refuse to run from agent terminals
+        if (process.env.CLAUDE_CODE || process.env.DARKHAN_RELAY_SESSION || process.env.DARKHAN_PTY_SESSION) {
+          console.error('[Deploy] REFUSED: Cannot run deploy mode from an agent terminal session.');
+          return false;
+        }
+        if (!process.stdin.isTTY) {
+          console.error('[Deploy] REFUSED: Deploy mode requires an interactive terminal (TTY).');
+          return false;
+        }
+        const readline = require('readline');
+        const bcrypt = require('bcrypt');
+        const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+        const askPin = () => new Promise((resolve) => {
+          process.stdout.write('[Deploy] Enter lockdown PIN to authorize baseline reset: ');
+          // Note: PIN is visible in terminal — break-glass.js has hidden echo but
+          // for simplicity here we accept visible input. Users can use break-glass for hidden.
+          rl.question('', (answer) => { resolve(answer.trim()); });
+        });
+
+        // Check if PIN is configured
+        const pinRow = await new Promise((resolve) => {
+          secretsDb.get(`SELECT value FROM secret_settings WHERE key = 'lockdown_pin_hash'`, [], (err, row) => {
+            resolve(err ? null : row);
+          });
+        });
+
+        if (!pinRow || !pinRow.value) {
+          console.warn('[Deploy] No lockdown PIN configured. Proceeding with baseline reset.');
+          console.warn('[Deploy] Set a lockdown PIN via the web UI for stronger security.');
+          rl.close();
+          await integrityService.resetBaseline();
+          activityLog.append({ actor: 'human_admin', action: 'deploy_mode_no_pin', details: '{}' });
+          return true;
+        }
+
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          const pin = await askPin();
+          const match = await bcrypt.compare(pin, pinRow.value);
+          if (match) {
+            console.log('[Deploy] PIN verified. Resetting integrity baseline...');
+            rl.close();
+            await integrityService.resetBaseline();
+            activityLog.append({
+              actor: 'human_admin',
+              action: 'deploy_mode_baseline_reset',
+              details: JSON.stringify({ authorized: true }),
+            });
+            console.log('[Deploy] Baseline reset complete. Continuing startup...');
+            return true;
+          }
+          console.error(`[Deploy] Incorrect PIN (attempt ${attempt}/3).`);
+          activityLog.append({
+            actor: 'human_admin',
+            action: 'deploy_mode_failed_auth',
+            details: JSON.stringify({ attempt }),
+          });
+        }
+        rl.close();
+        console.error('[Deploy] 3 failed attempts. Aborting.');
+        return false;
+      })();
+
+      if (!deployOk) {
+        process.exit(1);
+      }
+      // Skip normal baseline establishment — deploy mode already reset it
+    } else {
     // INTEGRITY: Establish baseline before loading workers
     try {
       await integrityService.establishBaseline();
@@ -1025,6 +1099,7 @@ server.listen(PORT, BIND_HOST, () => {
     } catch (e) {
       console.error('[Darkhan] Integrity baseline failed:', e.message);
     }
+    } // end deploy mode else
 
     // INTEGRITY: Verify BEFORE loading workers (P1-R7)
     // If any violations found, don't load workers (lockdown will be triggered by verify)

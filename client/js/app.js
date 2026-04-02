@@ -178,7 +178,7 @@
               Choose something you will remember — if the system locks down, only this PIN can unlock it.
             </p>
             <form id="force-pin-form" style="display:flex;flex-direction:column;gap:0.75rem;">
-              <input type="password" id="fpin-value" placeholder="Lockdown PIN (4+ characters)" required minlength="4"
+              <input type="password" id="fpin-value" placeholder="Lockdown PIN (8+ characters)" required minlength="8"
                 style="padding:0.6rem;background:var(--bg-primary, #1e1e1e);border:1px solid var(--border, #404040);border-radius:4px;color:var(--text-primary, #e0e0e0);font-size:1rem;">
               <button type="submit" style="padding:0.6rem 1rem;background:var(--accent, #3498db);color:white;border:none;border-radius:4px;cursor:pointer;font-size:1rem;font-weight:bold;">Set PIN</button>
               <div id="fpin-status" style="font-size:0.9rem;min-height:1.2em;"></div>
@@ -190,8 +190,8 @@
             const pinStatus = document.getElementById('fpin-status');
             const pinValue = document.getElementById('fpin-value').value;
 
-            if (pinValue.length < 4) {
-              pinStatus.textContent = 'PIN must be at least 4 characters';
+            if (pinValue.length < 8) {
+              pinStatus.textContent = 'PIN must be at least 8 characters';
               pinStatus.style.color = '#e74c3c';
               return;
             }
@@ -454,6 +454,16 @@
       }
     });
 
+    socket.on('edit_message', (data) => {
+      if (data.channel_id === currentChannel) {
+        const el = document.querySelector(`[data-message-id="${data.id}"]`);
+        if (el) {
+          const bodyEl = el.querySelector('.message-body');
+          if (bodyEl) bodyEl.textContent = data.body;
+        }
+      }
+    });
+
     socket.on('new_message', (msg) => {
       // Always update main chat feed if channel matches (even if viewing another panel)
       if (msg.channel_id === currentChannel) {
@@ -675,7 +685,7 @@
           <h3 style="margin-bottom:1rem;">Lockdown PIN</h3>
           <p style="font-size:0.85rem;opacity:0.7;margin-bottom:0.75rem;">Set a PIN that's required to unlock the system. Only you should know this — agents cannot access it.</p>
           <form id="set-pin-form" style="display:flex;flex-direction:column;gap:0.75rem;margin-bottom:2rem;">
-            <input type="password" id="pin-new" placeholder="New PIN (4+ chars)" required minlength="4" style="padding:0.5rem;background:var(--bg-secondary);border:1px solid var(--border);border-radius:4px;color:var(--text-primary);width:200px;">
+            <input type="password" id="pin-new" placeholder="New PIN (8+ chars)" required minlength="8" style="padding:0.5rem;background:var(--bg-secondary);border:1px solid var(--border);border-radius:4px;color:var(--text-primary);width:200px;">
             <input type="password" id="pin-confirm" placeholder="Confirm PIN" required style="padding:0.5rem;background:var(--bg-secondary);border:1px solid var(--border);border-radius:4px;color:var(--text-primary);width:200px;">
             <button type="submit" style="padding:0.5rem 1rem;background:var(--accent);color:white;border:none;border-radius:4px;cursor:pointer;width:fit-content;">Set Lockdown PIN</button>
             <div id="pin-status" style="font-size:0.9rem;"></div>
@@ -693,6 +703,23 @@
             <button id="generate-recovery-btn" style="padding:0.5rem 1rem;background:var(--accent);color:white;border:none;border-radius:4px;cursor:pointer;">Generate Token</button>
           </div>
           <div id="recovery-token-display" style="font-size:0.9rem;margin-top:0.5rem;"></div>
+
+          <h3 style="margin-top:2rem;margin-bottom:1rem;">Agent Execution Tier</h3>
+          <p style="font-size:0.85rem;opacity:0.7;margin-bottom:0.75rem;">Controls how much autonomy agents have when using tools. Security-sensitive actions (credentials, auth, admin) always require your approval regardless of tier.</p>
+          <div style="display:flex;gap:0.5rem;align-items:center;margin-bottom:0.5rem;">
+            <select id="execution-tier-select" style="padding:0.5rem;background:var(--bg-secondary);border:1px solid var(--border);border-radius:4px;color:var(--text-primary);min-width:200px;">
+              <option value="supervised">Supervised — approve all writes</option>
+              <option value="operational">Operational — approve security only</option>
+              <option value="autonomous">Autonomous — approve security only (max freedom)</option>
+            </select>
+            <button id="set-tier-btn" style="padding:0.5rem 1rem;background:var(--accent);color:white;border:none;border-radius:4px;cursor:pointer;">Set</button>
+          </div>
+          <div id="tier-status" style="font-size:0.9rem;margin-top:0.25rem;"></div>
+          <div style="font-size:0.8rem;opacity:0.6;margin-top:0.75rem;">
+            <strong>Supervised:</strong> Reads are free. All file writes, edits, and commands need your OK.<br>
+            <strong>Operational:</strong> Code edits, file writes, service restarts are pre-approved. Great for active dev sessions.<br>
+            <strong>Autonomous:</strong> Everything runs freely except credential access, auth changes, and admin ops.
+          </div>
 
           <h3 style="margin-top:2rem;margin-bottom:1rem;">Manual Lockdown</h3>
           <p style="font-size:0.85rem;opacity:0.7;margin-bottom:0.75rem;">Immediately halt all agent operations. Only you can unlock.</p>
@@ -778,6 +805,26 @@
           const data = await api('POST', '/auth/generate-recovery', { userId });
           display.innerHTML = `<strong style="color:#27ae60;">Token for ${data.username}:</strong><br><code style="font-size:1.1rem;user-select:all;background:var(--bg-primary);padding:0.3rem 0.6rem;border-radius:4px;">${data.token}</code><br><span style="font-size:0.8rem;opacity:0.7;">Expires: ${new Date(data.expiresAt).toLocaleString()}</span>`;
         } catch (err) { display.textContent = err.message; display.style.color = '#e74c3c'; }
+      });
+
+      // Execution tier — load current value and wire up change handler
+      (async () => {
+        try {
+          const data = await api('GET', '/auth/execution-tier');
+          const select = document.getElementById('execution-tier-select');
+          if (select && data.executionTier) select.value = data.executionTier;
+        } catch (e) { console.warn('Could not load execution tier:', e); }
+      })();
+
+      document.getElementById('set-tier-btn').addEventListener('click', async () => {
+        const select = document.getElementById('execution-tier-select');
+        const status = document.getElementById('tier-status');
+        const tier = select.value;
+        try {
+          await api('POST', '/auth/execution-tier', { tier });
+          status.textContent = `Execution tier set to "${tier}". New Claude sessions will use this tier.`;
+          status.style.color = '#27ae60';
+        } catch (err) { status.textContent = err.message; status.style.color = '#e74c3c'; }
       });
     }
 

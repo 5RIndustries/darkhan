@@ -37,10 +37,28 @@ sudo -u _darkhan /opt/homebrew/bin/node $DARKHAN_PATH/server/server.js &
 
 ```bash
 cd ~/darkhan/server
-NODE_ENV=development node server.js
+DARKHAN_DEV_MODE=true node server.js
 ```
 
 Development mode disables integrity baseline checks so code changes don't trigger lockdown. All other security remains active (injection detection, identity enforcement, credential isolation).
+
+**WARNING:** Never use `DARKHAN_DEV_MODE=true` in production or in a launchd plist. It silently disables ALL integrity monitoring. If the database has users and dev mode is active, the integrity service logs a warning at startup.
+
+### Start with deploy mode (after code changes in production)
+
+```bash
+cd ~/darkhan/server
+node server.js --deploy
+```
+
+Deploy mode is a human-authenticated baseline reset for production. It:
+1. Verifies you are in an interactive terminal (refuses Claude Code and relay sessions)
+2. Prompts for your lockdown PIN (verified via bcrypt against secrets.db)
+3. Resets the integrity baseline to match the current file state
+4. Saves a new HMAC anchor
+5. Starts the server normally
+
+Use this after deploying code changes to production. Three failed PIN attempts exit the process.
 
 ### Stop
 
@@ -75,16 +93,28 @@ cd ~/darkhan/server && node break-glass.js status
 
 This is the most common operation during active development. When you edit code files and need to restart Darkhan:
 
-### Option A: Development mode (recommended during active building)
+### Option A: Deploy mode (recommended — resets baseline with PIN authentication)
+
+```bash
+sudo kill $(pgrep -f "node server/server.js") 2>/dev/null
+cd ~/darkhan/server
+sudo -u _darkhan /opt/homebrew/bin/node server.js --deploy
+```
+
+This prompts for your lockdown PIN, resets the integrity baseline to match your code changes, and starts the server. No break-glass needed.
+
+### Option B: Development mode (for active building sessions only)
 
 ```bash
 # Start in dev mode — no integrity checks, no lockdown on code changes
 sudo kill $(pgrep -f "node server/server.js") 2>/dev/null
 cd ~/darkhan
-NODE_ENV=development sudo -u _darkhan /opt/homebrew/bin/node server/server.js &
+DARKHAN_DEV_MODE=true sudo -u _darkhan /opt/homebrew/bin/node server/server.js &
 ```
 
-### Option B: Production mode (use when you're done building for the day)
+**WARNING:** Dev mode disables ALL integrity monitoring. Never leave it enabled when you stop building. Switch to deploy mode or production mode when done.
+
+### Option C: Production mode (manual baseline reset)
 
 ```bash
 # 1. Reset the baseline to include your changes (requires Terminal + PIN)
@@ -96,7 +126,7 @@ sudo kill $(pgrep -f "node server/server.js")
 sudo -u _darkhan /opt/homebrew/bin/node $DARKHAN_PATH/server/server.js &
 ```
 
-### Option C: Git commit + production restart
+### Option D: Git commit + production restart
 
 ```bash
 # 1. Commit your changes
@@ -177,7 +207,7 @@ cd ~/darkhan/server && sudo -u _darkhan node break-glass.js status
 
 | Cause | Fix |
 |-------|-----|
-| Integrity violation (code changed) | Normal during development. Reset baseline. |
+| Integrity violation (code changed) | Normal during development. Use deploy mode (`node server.js --deploy`) or reset baseline via break-glass. |
 | Injection detected | Review the flagged message in chan_alerts. May be a false positive. |
 | Brute-force login attempt | Wait for cooldown or restart server. |
 | Quarantine overflow | Review quarantine queue in Settings. Approve safe messages, reject threats. |
@@ -388,6 +418,26 @@ curl -X POST http://localhost:3001/api/workers/agent_chief/enable -H "X-API-Key:
 ```
 
 Admin API key required. Disabled workers stop running cron tasks but remain loaded and can be re-enabled without a restart.
+
+### Changing execution tier
+
+Execution tiers control how much autonomy agents have when processing tool calls. Change via the web UI (Settings) or API:
+
+```bash
+# Check current tier
+curl -s http://localhost:3001/api/auth/execution-tier -H "Cookie: connect.sid=YOUR_SESSION"
+
+# Set tier (requires session auth — human users only)
+curl -X POST http://localhost:3001/api/auth/execution-tier \
+  -H "Content-Type: application/json" \
+  -H "Cookie: connect.sid=YOUR_SESSION" \
+  -H "X-Darkhan-Client: true" \
+  -d '{"tier": "operational"}'
+```
+
+Valid tiers: `supervised` (default), `operational`, `autonomous`. Changes take effect on the next Claude session — existing sessions continue with their original tier. To force a session refresh, restart the server.
+
+All tier changes are logged to the immutable activity trail (`execution_tier_changed`). Auto-approved tool calls under elevated tiers are logged as `tier_auto_approved`. Security-boundary prompts under autonomous tier are logged as `security_boundary_prompt`.
 
 ---
 

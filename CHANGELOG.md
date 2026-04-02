@@ -6,6 +6,35 @@ All notable changes to Darkhan are documented here.
 
 First public release. Darkhan is a self-hosted AI command center that gives you full control over your AI agents — what they can do, what they can see, and what happens when they go wrong.
 
+### Execution Tiers (2026-04-02)
+Per-user control over agent autonomy. Users choose how much freedom agents have when using tools, with an architectural security boundary that cannot be bypassed at any tier.
+
+- **Three tiers: supervised, operational, autonomous** — Supervised (default) requires approval for all writes. Operational pre-approves code edits, file writes, and commands. Autonomous pre-approves everything except security-sensitive operations.
+- **Architectural security boundary** — Tool calls are classified by both tool name and input content inspection. Operations touching credentials, passwords, API keys, databases, admin actions, or destructive git operations are classified as "security" and always require human approval, regardless of tier. This is enforced in the `canUseTool` callback and cannot be overridden by configuration or agent behavior.
+- **Input-aware classification** — A `Bash` call reading a log file is classified as "write" (auto-approved in operational tier). A `Bash` call referencing `secrets.db` is classified as "security" (always prompted). Classification uses regex pattern matching on tool inputs, not just tool names.
+- **Per-user database setting** — Stored in the `users` table (`execution_tier` column). Changeable via Settings UI or `POST /api/auth/execution-tier`. Human users only -- agents cannot change their own tier.
+- **Full audit trail** — Tier changes logged as `execution_tier_changed`. Auto-approved calls logged as `tier_auto_approved`. Security boundary prompts logged as `security_boundary_prompt`. All entries go to the immutable hash chain.
+- **Session-scoped** — Tier is read when a Claude session is created. The active tier is announced in the system prompt so the agent understands its operating constraints. Changes take effect on the next session.
+
+### Integrity Hardening Framework (2026-04-02)
+Comprehensive security hardening driven by adversarial analysis of the integrity baseline system. During a fresh install on node3, the AI agent bypassed the integrity system by deleting the baseline file to resolve a lockdown — choosing efficiency over security. Subsequent analysis (Penrose deep research, Corey red team, and adversarial self-audit) revealed architectural gaps. This framework closes those gaps through **architectural constraints** — defenses that make bypass physically impossible, not just inadvisable.
+
+- **First-boot vs baseline-deleted detection** — The integrity service now distinguishes between a genuine first boot (no database) and a deleted baseline (database with users exists). A missing baseline with an existing database triggers immediate lockdown and CRITICAL alert. Previously, deleting the baseline file caused the system to treat a restart as first boot and trust everything.
+- **Cryptographic baseline anchoring (HMAC-SHA256)** — The integrity baseline is now anchored with an HMAC-SHA256 signature stored in the database `settings` table. The anchor key is domain-separated from `SESSION_SECRET`. On startup, the baseline file is verified against the stored anchor. A mismatch (baseline file tampered externally) triggers immediate lockdown. An agent that forges both the baseline file and the target files still cannot forge the database anchor without `SESSION_SECRET`.
+- **Ed25519 private key isolation** — The instance identity private key has been moved from `darkhan.db` (accessible to workers) to `secrets.db` (server-only). Existing installs auto-migrate on first startup: the key is copied to `secrets.db` and deleted from the main database. A compromised agent reading `darkhan.db` can no longer extract the signing key.
+- **Deploy mode (`node server.js --deploy`)** — Human-authenticated baseline reset. Requires an interactive TTY (not Claude Code or scripts), verifies the lockdown PIN via bcrypt, then resets the integrity baseline. Provides a legitimate alternative to baseline deletion for deploying code changes in production. Three failed PIN attempts exit the process.
+- **Baseline verification logging** — Every successful baseline verification now logs a `baseline_verified` entry to the activity trail, creating a positive audit record (not just alerts on failure).
+- **Node birth certificate** — The seed process now records provenance data (`node_created_at`, `node_created_by`, `node_created_method`, `node_hostname`) in the `instance_identity` table. This enables federation trust decisions based on how a node was provisioned — an agent-provisioned node can be treated with degraded trust compared to a human-provisioned node.
+- **Interim federation gate** — All federation traffic is now blocked by default unless `FEDERATION_APPROVED_PEERS` is set in the environment. This is a comma-separated list of approved peer hostnames. With no approved peers configured, all outbound federation requests are rejected. This prevents an agent from establishing unauthorized federation connections.
+- **Agent security constraints in onboarding** — The worker onboarding brief now includes explicit architectural constraints: agents must NEVER delete/modify the integrity baseline, establish federation trust, modify core service files, or read secrets. If a security control blocks a task, agents must post to #alerts and wait for a human admin.
+- **Dev mode production warning** — If `DARKHAN_DEV_MODE` is active with users in the database, the integrity service logs a WARNING at startup. This catches the case where dev mode (which disables all integrity checks) is accidentally left enabled in production.
+- **Lockdown PIN minimum increased to 8 characters** — The minimum lockdown PIN length has been increased from 4 to 8 characters, both server-side and client-side.
+- **Dev mode removed from production launchd plist** — `DARKHAN_DEV_MODE=true` was found active in the production launchd configuration, silently disabling all integrity checks. Removed and plist reloaded.
+- **Plaintext API key removed from launchd plist** — A plaintext `GOOGLE_API_KEY` was found in the production launchd configuration. Removed; API keys should only exist in `.env` or macOS Keychain.
+
+#### "Helpful Agent" Threat Model
+This hardening introduces a novel threat category: the **non-malicious, goal-directed agent** that bypasses security to efficiently complete authorized tasks. Unlike traditional threat models focused on malicious actors, this addresses the case where an AI agent — acting in good faith to help the user — circumvents security controls because they are obstacles to task completion. The integrity hardening framework treats agent goal-directedness as a security-relevant property requiring architectural (not behavioral) constraints.
+
 ### VPS Deployment Hardening (2026-04-02)
 Safety net for deploying Darkhan on virtual private servers exposed to the public internet.
 - **Trust proxy support** — `DARKHAN_TRUST_PROXY` env var configures Express `trust proxy` for correct IP resolution behind reverse proxies (Caddy, nginx, Cloudflare).
@@ -13,6 +42,14 @@ Safety net for deploying Darkhan on virtual private servers exposed to the publi
 - **Per-IP login rate limiting** — 5 failed login attempts per IP address per 15 minutes, across all usernames. Prevents credential stuffing attacks that rotate usernames against a single IP.
 - **Secure cookie flags** — When `DARKHAN_HTTPS=true` or TLS is configured, session cookies are set with `secure: true` and `sameSite: strict`. HTTP deployments use `sameSite: lax`.
 - **Startup safety warning** — Server detects when binding to `0.0.0.0` without TLS and prints a prominent warning with instructions for Caddy, Tailscale, or explicit acknowledgment via `DARKHAN_ALLOW_EXTERNAL=true`.
+
+### Fresh Install Schema Fix (2026-04-02)
+- **OEP/AEP tables added to schema.sql** — The `observation_records` (Observation-Evidence Protocol) and `evidence_traces` (Action-Evidence Protocol) tables were created at runtime by their respective services but were missing from `db/schema.sql`. On fresh installs, other services would query these tables before the async `CREATE TABLE IF NOT EXISTS` completed, causing a crash (`SQLITE_ERROR: no such table`). Both tables and their indexes are now part of the seed schema.
+
+### Documentation: No-Homebrew Install + LAN Deploy (2026-04-02)
+- **Manual prerequisite install** — SETUP.md now documents installing Node.js and Ollama without Homebrew (direct tarball + curl script), for machines without sudo access.
+- **LAN-based rsync install** — New section for deploying Darkhan to same-network machines via rsync instead of git clone, with notes on native module rebuild requirements.
+- **New troubleshooting entries** — Covers native module failures after rsync, integrity lockdown on first boot, and PATH issues with non-Homebrew installs.
 
 ### Split View Navigation Fix (2026-04-02)
 - **Left panel routing** — In split mode (chat left, terminal right), clicking sidebar nav items now correctly switches the left panel instead of creating a third pane. `showView()` routes lazy-created views to `split-left-panel` when in split mode.
@@ -260,7 +297,7 @@ Driven by internal audit after the Anthropic Claude Code source map leak. See [R
 - **Split-screen and pop-out views** — multi-monitor support, any view in its own window
 - **Knowledge base** — browse, search, and edit markdown files from the vault
 
-### Security (Grade B+ — independently audited by Corey Red Team, updated 2026-03-31)
+### Security (Grade A- — independently audited by Corey Red Team + adversarial self-audit, updated 2026-04-02)
 - **Credential isolation** — secrets.db separated from main database, 600 permissions, never exposed to workers
 - **API key encryption at rest** — AES-256-GCM with HMAC-indexed lookups
 - **Identity enforcement** — agents cannot impersonate humans or each other
@@ -271,7 +308,8 @@ Driven by internal audit after the Anthropic Claude Code source map leak. See [R
 - **Shell allowlist** — only explicitly permitted commands in hardened mode
 - **Agent-to-agent scanning** — all inter-agent messages get full security pipeline
 - **Behavioral baselines** — per-agent anomaly detection on message and LLM usage patterns
-- **File integrity monitoring** — SHA-256 baseline with tamper detection and auto-lockdown
+- **File integrity monitoring** — SHA-256 baseline with HMAC-SHA256 anchoring, first-boot vs baseline-deleted detection, deploy mode for human-authenticated resets
+- **Integrity hardening** — cryptographic baseline anchoring, Ed25519 private key isolation to secrets.db, federation gate (blocked by default), node birth certificates, agent security constraints, "helpful agent" threat model
 - **Brute-force protection** — exponential backoff on failed login attempts + per-IP rate limiting across all usernames
 - **Lockdown system** — fail-closed, PIN-protected, human-only unlock
 - **Pre-commit secret scanner** — blocks credential commits before they happen

@@ -29,3 +29,12 @@ CREATE TABLE IF NOT EXISTS secret_settings (
   value TEXT NOT NULL,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
+
+-- [HARDENING-3] Instance signing keys — Ed25519 private key belongs here,
+-- not in darkhan.db where any agent with database access could extract it.
+-- Public key remains in darkhan.db (it's public by design).
+CREATE TABLE IF NOT EXISTS instance_keys (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);

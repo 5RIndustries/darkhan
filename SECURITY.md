@@ -52,6 +52,9 @@ Darkhan is designed to operate in an environment where AI agents may be manipula
 | **Model poisoning** | Tampered Ollama model files | SHA-256 model file verification at startup |
 | **Database tampering** | Direct modification of lockdown state or audit trail | HMAC-signed lockdown state, hash chain with SQLite delete/update triggers |
 | **Frontier-model injection (Mythos-class)** | Injection crafted by a model more capable than any single classifier | Two-LLM consensus (local + cloud must agree); disagreement quarantines for human review |
+| **Helpful agent bypass** | Non-malicious, goal-directed agent circumvents security to complete authorized tasks efficiently | Architectural constraints (HMAC anchoring, deploy mode, federation gate) that cannot be bypassed regardless of intent. First-boot vs baseline-deleted detection prevents the most common bypass pattern (baseline deletion). |
+| **Rogue node federation** | Agent provisions a new node with weakened security, federates back to parent | Federation gate (FEDERATION_APPROVED_PEERS required), node birth certificates, bilateral human authorization for federation trust |
+| **Integrity baseline deletion** | Deleting `~/.darkhan-integrity-baseline.json` to force first-boot state | Database user count check — populated DB with missing baseline triggers lockdown. HMAC anchor in DB detects baseline replacement. |
 
 ### What Darkhan Does NOT Defend Against
 
@@ -144,6 +147,26 @@ DARKHAN_ALLOWED_ORIGINS=https://your-domain.com
 
 Darkhan's security is foundational, not bolted on. Key components:
 
+### Execution Tiers
+
+Per-user execution tiers control how much autonomy agents have when using tools (file edits, shell commands, searches, etc.). Three tiers are available, configurable at any time from the Settings UI or via `POST /api/auth/execution-tier`:
+
+- **Supervised** (default): Read-only operations (file reads, searches, web lookups) are pre-approved. All writes, edits, and commands require interactive approval from the user.
+- **Operational**: Code edits, file writes, service restarts, and commands are pre-approved. Security-sensitive operations still require approval. Designed for active development sessions where an agent is fixing bugs or building features.
+- **Autonomous**: Everything is pre-approved except security-sensitive operations. Maximum agent freedom with hard security guardrails.
+
+**Hard security boundary:** Regardless of tier, operations classified as "security" always require human approval. Classification is based on both tool name and input content inspection. The following patterns escalate any tool call to security classification:
+- Commands referencing credentials, passwords, API keys, tokens, or PINs
+- Admin operations (lockdown, break-glass, unlock, PIN changes)
+- Destructive git operations (`push --force`, `reset --hard`, `clean -f`)
+- Direct database access (`sqlite3`, `secrets.db`)
+- Credential/certificate files (`.env`, `.pem`, `.key`)
+- Privilege escalation (`sudo`, service user access)
+
+This boundary is architectural -- it is enforced in the `canUseTool` callback inside `unified-claude.js` and cannot be overridden by agent behavior or configuration. Even a user in autonomous mode will be prompted before any security-classified operation executes.
+
+All tier changes and auto-approved tool calls are logged to the immutable activity hash chain.
+
 ### Identity Enforcement
 Agents cannot impersonate humans or each other. Every message carries a verified sender identity backed by the authentication layer.
 
@@ -199,13 +222,27 @@ Security events (injection attempts, lockdown triggers, exfiltration attempts) a
 ### Credential Isolation
 Passwords, API keys, and PINs are stored in a separate `secrets.db` database (mode 600) that workers never receive access to. The relay session file (`~/.claude/darkhan-relay-sessions.json`) is written with mode 600 (owner-only) and permissions are applied after atomic rename to prevent race conditions.
 
+**Ed25519 private key isolation (2026-04-02):** The instance identity Ed25519 private key has been moved from `darkhan.db` (readable by workers via the `instance_identity` table) to `secrets.db` (server-only). Existing installs auto-migrate on first startup: the key is copied to the `instance_keys` table in `secrets.db` and deleted from the main database. The public key remains in `darkhan.db` for verification. A compromised worker reading `darkhan.db` can no longer extract the signing key.
+
 **Terminal environment filtering (P0 fix, 2026-03-31):** Shell terminal PTY sessions receive only a whitelist of environment variables: `HOME`, `PATH`, `LANG`, `USER`, `TERM`, `SHELL`, `TMPDIR`. Claude Code terminal mode additionally receives `ANTHROPIC_API_KEY` (required for Claude Code to function). All other environment variables — including `SESSION_SECRET`, `GOOGLE_API_KEY`, and any other secrets from `.env` — are stripped from the terminal environment. This prevents credential exfiltration via `printenv`, `env`, or `echo $VAR` from interactive terminal sessions.
+
+### Federation Gate
+All federation traffic is blocked by default. The `FEDERATION_APPROVED_PEERS` environment variable must be set with a comma-separated list of approved peer hostnames for any federation communication to occur. This prevents agents from establishing unauthorized federation connections to rogue nodes. Combined with **node birth certificates** (provenance data recorded at seed time: `node_created_at`, `node_created_by`, `node_created_method`, `node_hostname`), federation trust decisions can be based on how a node was provisioned — agent-provisioned nodes receive degraded trust.
+
+### Agent Security Constraints
+The worker onboarding brief includes explicit architectural constraints injected into every agent's context at startup. Agents are instructed to NEVER: delete or modify the integrity baseline, establish federation trust, modify core service files (`services/`, `routes/`, `middleware/`, `db/`), or read secrets (`.env`, `secrets.db`, `sessions.db`). If a security control blocks a task, agents must post to #alerts and wait for a human admin. These are behavioral rules — they complement but do not replace the architectural constraints above. A malicious agent that ignores these rules still cannot forge the HMAC anchor, access secrets.db, or bypass the federation gate.
 
 ### Fail-Closed Lockdown
 Security events trigger automatic lockdown. All agent traffic is blocked until a human admin unlocks with a PIN via the web UI. Lockdown state is signed to prevent tampering.
 
 ### File Integrity Monitoring
-Critical server files are SHA-256 hashed at startup and verified against an external baseline. Modified files trigger automatic lockdown.
+Critical server files are SHA-256 hashed at startup and verified against an external baseline every 5 minutes. Modified files trigger automatic lockdown.
+
+**Integrity Hardening (2026-04-02):**
+- **First-boot vs baseline-deleted detection:** The system distinguishes between a genuine first boot (no database) and a deleted baseline (database with users). A missing baseline with an existing populated database triggers immediate lockdown — the system fails closed rather than trusting a fresh baseline.
+- **Cryptographic baseline anchoring (HMAC-SHA256):** The baseline file is anchored with an HMAC-SHA256 signature stored in the `settings` table. The anchor key is domain-separated from `SESSION_SECRET`. On startup, the baseline is verified against the stored anchor. A tampered baseline triggers lockdown even if the file hashes look correct.
+- **Deploy mode (`node server.js --deploy`):** Human-authenticated baseline reset for production deployments. Requires interactive TTY + lockdown PIN via bcrypt. Refuses to run from agent terminals (Claude Code, relay sessions, PTY sessions). Three failed PIN attempts terminate the process.
+- **Baseline verification audit trail:** Every successful baseline verification logs a `baseline_verified` entry to the immutable activity trail, creating a positive audit record.
 
 ### LLM Model Verification
 At startup, `model-verifier.js` computes SHA-256 digests of Ollama model files and compares them against the digests stored in the Ollama manifest. This detects tampered or corrupted model downloads before they are used for inference. Uses streaming hash computation to handle multi-GB files efficiently.

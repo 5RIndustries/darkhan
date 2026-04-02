@@ -1217,7 +1217,7 @@ Respond with EXACTLY one word: SAFE, SUSPICIOUS, or MALICIOUS.`;
     );
     this.db.run(
       'INSERT INTO messages (id, channel_id, from_user, body, priority, type) VALUES (?, ?, ?, ?, ?, ?)',
-      [uuidv4(), 'chan_command', 'agent_darkhan', body, 'critical', 'alert']
+      [crypto.randomUUID(), 'chan_command', 'agent_darkhan', body, 'critical', 'alert']
     );
   }
 

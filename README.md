@@ -157,6 +157,7 @@ Darkhan is designed to defend against:
 5. **Trust level spoofing** -- client-supplied headers attempting to escalate message trust classification
 6. **Tool abuse** -- runaway or manipulated agents exhausting resources, deleting files, or making unauthorized network connections
 7. **Frontier-model adversaries** -- agents more capable than either of our individual classifiers, crafting injection that fools a single LLM
+8. **Helpful agent bypass** -- non-malicious, goal-directed agents that circumvent security controls to efficiently complete authorized tasks. This is a novel threat category: the agent is not attacking the system, it is helping the user by routing around obstacles — and the security system is the obstacle. Darkhan addresses this with architectural constraints (HMAC anchoring, deploy mode, federation gate) that cannot be bypassed regardless of intent.
 
 We do NOT claim to defend against:
 - A human attacker with shell access to the host machine and knowledge of the service user password
@@ -235,6 +236,15 @@ All scanning flows through a single `sanitizeMessage()` entry point. There are n
 - 3x deviation triggers anomaly alert
 - Baselines update daily at 0200 ET; require 3+ days of data before considered reliable
 
+**Integrity Hardening**
+- Cryptographic baseline anchoring (HMAC-SHA256) — baseline file tamper detection backed by database anchor
+- First-boot vs baseline-deleted detection — deleting the baseline file triggers lockdown, not re-trust
+- Deploy mode (`node server.js --deploy`) — human-authenticated baseline reset with lockdown PIN
+- Ed25519 private key isolation — signing keys in `secrets.db`, inaccessible to workers
+- Federation gate — all federation traffic blocked by default unless `FEDERATION_APPROVED_PEERS` is explicitly set
+- Node birth certificates — provenance data recorded at provisioning time for federation trust decisions
+- Agent security constraints injected at onboarding — architectural limits on what agents can modify
+
 **Audit and Recovery**
 - Complete activity logging: every user message, Claude response, tool call, LLM request, file read/write, shell command, and permission decision logged to the immutable hash chain
 - Immutable hash chain with CRISPR defense spacers marking security events
@@ -256,6 +266,20 @@ All scanning flows through a single `sanitizeMessage()` entry point. There are n
 | 1 | Break-glass recovery requires interactive TTY -- blocks scripted or automated access |
 | 2 | `_darkhan` service user owns sensitive files; application code runs under a separate account |
 | 3 | macOS Keychain stores secrets outside the filesystem entirely |
+
+### Execution Tiers
+
+Users control how much autonomy agents get through three execution tiers, changeable at any time from Settings:
+
+| Tier | Pre-Approved | Requires Approval |
+|------|-------------|-------------------|
+| **Supervised** (default) | Read operations | All writes, edits, commands |
+| **Operational** | Reads + code edits, file writes, commands | Security-sensitive operations |
+| **Autonomous** | Everything except security | Credential access, auth, admin ops |
+
+**The security boundary is architectural, not policy.** Operations touching credentials, authentication, admin actions, or direct database access always require human approval -- even in autonomous mode. Tool calls are classified by both tool name and input content: a `Bash` call that reads a log is a "write," but a `Bash` call that touches `secrets.db` is "security."
+
+Changes take effect on the next Claude session. All tier changes and auto-approvals are logged to the immutable audit trail.
 
 ### Lockdown
 
@@ -287,6 +311,7 @@ For full details, see [SECURITY.md](SECURITY.md).
 - Claude's terminal work is bridged to channels so agents and humans see what's happening
 - Split terminal observer: watch the running Claude session in real-time in a side-by-side panel while chatting
 - Pop-out window support for multi-monitor setups (drag terminal to second screen)
+- Per-user execution tiers (supervised/operational/autonomous) with hard security boundary
 - Configurable permission mode with smart routing (terminal prompts if open, chat notifications if not)
 - Session persistence with 120-second grace period on page refresh
 - All terminal session events and interactions logged to the immutable hash chain audit trail
@@ -309,7 +334,7 @@ For full details, see [SECURITY.md](SECURITY.md).
 - Vanilla JS SPA, dark theme, no framework dependencies
 - Channels, tasks, agent health dashboard, vault browser, cost reporting
 - Integrated Claude Code and shell terminals with pop-out window support
-- Admin settings: lockdown control, password management, PIN setup
+- Admin settings: lockdown control, password management, PIN setup, execution tier control
 - PWA with service worker
 
 **Federation**
@@ -388,7 +413,7 @@ All endpoints require authentication via session cookie or `X-API-Key` header.
 
 | Area | Key Endpoints |
 |------|--------------|
-| Auth | `POST /api/auth/login`, `/logout`, `/change-password`, `/set-lockdown-pin` |
+| Auth | `POST /api/auth/login`, `/logout`, `/change-password`, `/set-lockdown-pin`, `GET/POST /api/auth/execution-tier` |
 | Messages | `GET /api/messages`, `POST /api/messages` |
 | Tasks | `GET /api/tasks`, `POST /api/tasks`, `PATCH /api/tasks/:id` |
 | Health | `GET /api/health/status`, `POST /api/health/ping`, `GET /api/workers`, `POST /api/health/maintenance` (admin), `GET /api/health/maintenance` |

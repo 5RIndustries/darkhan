@@ -108,6 +108,50 @@ ollama pull qwen2.5:14b
 - **Ollama** -- `brew install ollama` then `brew services start ollama`
 - **Git** -- included with macOS Xcode Command Line Tools (prompted automatically on first use), or `brew install git`
 
+### No Homebrew / No sudo? (Manual Install)
+
+If you cannot install Homebrew (e.g., no admin/sudo password on the machine), you can install Node.js and Ollama manually:
+
+```bash
+# Create a local install directory
+mkdir -p ~/local/bin
+
+# Node.js — download the official binary tarball (Apple Silicon example)
+curl -fsSL https://nodejs.org/dist/v22.14.0/node-v22.14.0-darwin-arm64.tar.xz | tar xJ -C ~/local/
+
+# Ollama — install via the official script (installs to /usr/local/bin by default)
+curl -fsSL https://ollama.com/install.sh | sh
+# If it fails to write to /usr/local/bin, symlink manually:
+ln -sf $(which ollama 2>/dev/null || echo /opt/homebrew/opt/ollama/bin/ollama) ~/local/bin/ollama
+
+# Add both to your PATH (add to ~/.zprofile for persistence)
+echo 'export PATH="$HOME/local/node-v22.14.0-darwin-arm64/bin:$HOME/local/bin:$PATH"' >> ~/.zprofile
+source ~/.zprofile
+
+# Verify
+node --version   # Should show v22.x
+ollama --version # Should show v0.x
+```
+
+### LAN Install (No GitHub Access Needed)
+
+If the target machine is on the same network as an existing Darkhan install, you can rsync the repo instead of cloning from GitHub:
+
+```bash
+# From the machine that already has the repo:
+rsync -az --exclude node_modules --exclude 'server/db/*.db*' \
+  --exclude 'server/.env' --exclude 'server/darkhan.config.json' \
+  --exclude 'server/workers/*.worker.js' \
+  ~/darkhan/ user@TARGET_IP:~/darkhan/
+
+# IMPORTANT: On the target machine, you MUST run npm install.
+# Native modules (better-sqlite3) are compiled for a specific OS/arch
+# and will not work if copied from a different machine.
+cd ~/darkhan/server && npm install
+```
+
+Then continue from [Step 2](#step-2-configure-environment) to create your own `.env`, config, and database.
+
 ### Optional (recommended for full capability)
 - **Claude Code CLI** -- for integrated Claude terminal sessions. Install: `curl -fsSL https://claude.ai/install.sh | bash`. Requires a Claude Pro/Max/Team plan or an Anthropic API key.
 - **Google API key** -- for Gemini-powered agents. Get one at [aistudio.google.com](https://aistudio.google.com)
@@ -171,6 +215,8 @@ Edit `.env` with your values:
 | `GOOGLE_API_KEY` | If using Gemini agents | Your Google AI Studio API key |
 | `ANTHROPIC_API_KEY` | If using security escalation | Your Anthropic API key |
 | `OPENAI_API_KEY` | If using GPT consensus model | Your OpenAI API key |
+| `FEDERATION_APPROVED_PEERS` | If using federation | Comma-separated list of approved peer hostnames. Federation is blocked unless this is set. |
+| `DARKHAN_DEV_MODE` | No | Set to `true` to disable integrity checks during development. **Never enable in production** — all integrity monitoring is silently disabled. |
 
 See `.env.example` for the full list of supported variables with comments.
 
@@ -307,12 +353,26 @@ You should see output confirming:
 2. Log in with your username (lowercase, from your config's `name` field) and the default password `changeme`
 3. **Darkhan handles the rest automatically with a gated first-login flow:**
    - A **forced password change overlay** appears immediately -- you must set a strong password (minimum 8 characters). This overlay cannot be dismissed.
-   - After changing your password, a **forced lockdown PIN setup overlay** appears -- you must set a PIN (minimum 4 characters). This overlay cannot be dismissed either.
+   - After changing your password, a **forced lockdown PIN setup overlay** appears -- you must set a PIN (minimum 8 characters). This overlay cannot be dismissed either.
    - You cannot access any part of the app until both steps are complete.
 
 **No need to find Settings manually.** The gated flow ensures every new user completes security setup before they can do anything else.
 
 **Why the lockdown PIN matters:** If a security event triggers automatic lockdown, agents cannot unlock the system. You (the human admin) must authenticate via the web UI and provide the PIN to restore agent operations. The PIN hash is stored in `secrets.db` (not the main database), so even a worker with full database access to `darkhan.db` cannot read it.
+
+### Execution Tier
+
+After first-login setup, visit **Settings** to configure your **execution tier**. This controls how much autonomy agents have when using tools:
+
+| Tier | Agent Can Do Without Asking | Still Requires Your OK |
+|------|---------------------------|----------------------|
+| **Supervised** (default) | Read files, search, browse | All writes, edits, commands |
+| **Operational** | Code edits, file writes, commands, restarts | Credential access, auth changes, admin ops |
+| **Autonomous** | Everything except security actions | Credential access, auth changes, admin ops |
+
+**Security-sensitive operations always require approval regardless of tier.** This includes anything touching credentials, passwords, API keys, databases, admin actions, or destructive git operations. The boundary is enforced architecturally in the tool approval callback -- it cannot be bypassed by configuration or agent behavior.
+
+Changes take effect on the next Claude session. You can change your tier at any time from Settings.
 
 ### Password Recovery
 
@@ -669,7 +729,7 @@ After setup, verify everything works:
 - [ ] `http://localhost:3001` loads the login page
 - [ ] Login works with default password `changeme`
 - [ ] First-login gated flow forced you to change your password (minimum 8 characters)
-- [ ] First-login gated flow forced you to set a lockdown PIN (minimum 4 characters)
+- [ ] First-login gated flow forced you to set a lockdown PIN (minimum 8 characters)
 - [ ] Messages appear in the #command channel
 - [ ] Workers show as loaded: `curl -s http://localhost:3001/api/workers -H "X-API-Key: YOUR_KEY"`
 - [ ] Agent status dots show green in the Health view
@@ -689,6 +749,14 @@ After setup, verify everything works:
 - [ ] Consensus works: post a test message from an agent and check the activity log for `two_llm_consensus` entries: `curl -s "http://localhost:3001/api/activity?action=two_llm_consensus&limit=5" -H "X-API-Key: YOUR_KEY"`
 - [ ] Shell allowlist mode (if enabled): verify a blocked command is rejected: have an agent attempt `curl https://example.com` and confirm it is blocked with "not in allowlist"
 - [ ] Agent-to-agent scanning: verify agent messages show `origin: "agent"` in their security metadata
+
+### Integrity Hardening
+- [ ] Baseline anchor stored: `sqlite3 server/db/darkhan.db "SELECT key FROM settings WHERE key='baseline_anchor';"` returns a row
+- [ ] Ed25519 private key in secrets.db: `sqlite3 server/db/secrets.db "SELECT key FROM instance_keys;"` shows `ed25519_private`
+- [ ] Private key removed from main DB: `sqlite3 server/db/darkhan.db "SELECT key FROM instance_identity;"` shows only `ed25519_public` (no `ed25519_private`)
+- [ ] Federation gate active: check server startup logs for `Federation disabled: no approved peers configured` (unless you have set `FEDERATION_APPROVED_PEERS`)
+- [ ] Node provenance recorded: `sqlite3 server/db/darkhan.db "SELECT key, value FROM instance_identity WHERE key LIKE 'node_%';"` shows birth certificate data
+- [ ] Deploy mode available: `node server.js --deploy` prompts for lockdown PIN (exit with Ctrl+C after verifying)
 
 ### Security Hardening (if completed Step 8)
 - [ ] Service user exists: `id _darkhan` succeeds
@@ -728,11 +796,20 @@ After setup, verify everything works:
 | "401 Unauthorized" from remote | Bad API key | Verify the API key in remote `.env` matches what `seed.js` generated |
 | Remote workers post but no listener responses | Polling not started | Check remote runner logs for startup confirmation |
 
+### Installation Issues
+
+| Symptom | Likely Cause | Fix |
+|---------|-------------|-----|
+| `better_sqlite3.node` not found after rsync | Native modules copied from different OS/arch | Run `npm install` on the target machine — native modules must be compiled locally |
+| Lockdown triggers immediately on first boot | Integrity baseline from a previous install detects schema changes | Delete `~/.darkhan-integrity-baseline.json` and restart. First boot after deletion creates a clean baseline |
+| Homebrew install fails (needs sudo) | No admin password on the machine | See [No Homebrew / No sudo?](#no-homebrew--no-sudo-manual-install) for manual Node.js and Ollama installation |
+| `ollama` not found after install | Not on PATH | Add `~/local/bin` to PATH in `~/.zprofile`, or symlink: `ln -sf /path/to/ollama ~/local/bin/ollama` |
+
 ### Ollama Issues
 
 | Symptom | Likely Cause | Fix |
 |---------|-------------|-----|
-| "connection refused" on 11434 | Ollama not running | `brew services start ollama` |
+| "connection refused" on 11434 | Ollama not running | `brew services start ollama` or `ollama serve &` (if installed without Homebrew) |
 | Model not found | Not pulled | `ollama pull qwen2.5:14b` |
 | Slow responses | Insufficient RAM | Use a smaller model: `ollama pull qwen2.5:7b` |
 

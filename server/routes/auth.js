@@ -441,8 +441,9 @@ router.post('/set-lockdown-pin', requireAuth, async (req, res) => {
   }
 
   const { pin } = req.body;
-  if (!pin || pin.length < 4) {
-    return res.status(400).json({ error: 'PIN must be at least 4 characters' });
+  // [HARDENING-0d] Increased from 4 to 8 — 4-char PINs are brute-forceable against bcrypt
+  if (!pin || pin.length < 8) {
+    return res.status(400).json({ error: 'PIN must be at least 8 characters' });
   }
 
   const db = req.app.locals.db;
@@ -603,6 +604,61 @@ router.post('/reset-with-token', async (req, res) => {
 
   console.log(`[Auth] Password reset via recovery token for ${user.id}`);
   res.json({ ok: true, message: 'Password reset successfully. You can now log in.' });
+});
+
+// === EXECUTION TIER ===
+// Per-user control over how much autonomy agents have.
+// Three tiers:
+//   supervised   — read-only without approval; all writes, restarts, external calls require approval
+//   operational  — code edits, service restarts, file writes pre-approved; security actions still require approval
+//   autonomous   — everything except hard security boundaries (credentials, auth, break-glass, admin ops)
+
+const VALID_TIERS = ['supervised', 'operational', 'autonomous'];
+
+// GET /api/auth/execution-tier — get current user's execution tier
+router.get('/execution-tier', requireAuth, (req, res) => {
+  const userId = getCurrentUserId(req);
+  if (!userId) return res.status(401).json({ error: 'Not authenticated' });
+
+  const db = req.app.locals.db;
+  db.get('SELECT execution_tier FROM users WHERE id = ?', [userId], (err, row) => {
+    if (err) return res.status(500).json({ error: err.message });
+    if (!row) return res.status(404).json({ error: 'User not found' });
+    res.json({ executionTier: row.execution_tier || 'supervised' });
+  });
+});
+
+// POST /api/auth/execution-tier — set execution tier (human users only, for themselves)
+router.post('/execution-tier', requireAuth, (req, res) => {
+  // Only session-authenticated humans can change their own tier
+  if (!req.session?.userId || req.session.userType !== 'human') {
+    return res.status(403).json({ error: 'Only human users can set execution tier' });
+  }
+
+  const { tier } = req.body;
+  if (!tier || !VALID_TIERS.includes(tier)) {
+    return res.status(400).json({ error: `Invalid tier. Must be one of: ${VALID_TIERS.join(', ')}` });
+  }
+
+  const db = req.app.locals.db;
+  const activityLog = req.app.locals.activityLog;
+  const userId = req.session.userId;
+
+  db.run('UPDATE users SET execution_tier = ? WHERE id = ?', [tier, userId], function (err) {
+    if (err) return res.status(500).json({ error: err.message });
+
+    if (activityLog) {
+      activityLog.append({
+        actor: userId,
+        action: 'execution_tier_changed',
+        target: userId,
+        details: JSON.stringify({ tier }),
+      });
+    }
+
+    console.log(`[Auth] Execution tier set to "${tier}" for ${userId}`);
+    res.json({ ok: true, executionTier: tier });
+  });
 });
 
 module.exports = router;

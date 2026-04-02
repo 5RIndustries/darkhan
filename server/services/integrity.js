@@ -72,7 +72,26 @@ class IntegrityService {
     if (this.devMode) {
       console.log('[Integrity] *** DEVELOPMENT MODE — integrity baseline checks DISABLED ***');
       console.log('[Integrity] File tampering will not trigger lockdown. All other security is active.');
-      console.log('[Integrity] Set NODE_ENV=production for full integrity enforcement.');
+      console.log('[Integrity] Set DARKHAN_DEV_MODE=false for full integrity enforcement.');
+
+      // [HARDENING-10]: Warn loudly if dev mode is active with real users in DB.
+      // This catches accidental production deployments with dev mode enabled.
+      try {
+        const dbPath = path.join(path.join(__dirname, '..'), 'db', 'darkhan.db');
+        if (fs.existsSync(dbPath)) {
+          db.get('SELECT COUNT(*) as count FROM users', [], (err, row) => {
+            if (!err && row && row.count > 0) {
+              console.error(`[Integrity] *** WARNING: DEV MODE active with ${row.count} user(s) in database ***`);
+              console.error('[Integrity] *** All integrity checks are DISABLED. This is NOT safe for production. ***');
+              activityLog.append({
+                actor: 'darkhan_integrity',
+                action: 'DEV_MODE_WITH_USERS_WARNING',
+                details: JSON.stringify({ userCount: row.count, severity: 'CRITICAL' }),
+              });
+            }
+          });
+        }
+      } catch (e) { /* DB may not be ready yet — checked again in establishBaseline */ }
     }
 
     console.log('[Integrity] Service initializing...');
@@ -147,7 +166,35 @@ class IntegrityService {
     // must NOT become the new known-good baseline.
     if (fs.existsSync(this.externalBaselinePath)) {
       try {
-        const external = JSON.parse(fs.readFileSync(this.externalBaselinePath, 'utf8'));
+        const externalRaw = fs.readFileSync(this.externalBaselinePath, 'utf8');
+        const external = JSON.parse(externalRaw);
+
+        // [HARDENING-2] Verify baseline file against cryptographic anchor in DB.
+        // If someone modified the baseline file (e.g., forged hashes), the HMAC won't match.
+        const storedAnchor = await this._getBaselineAnchor();
+        if (storedAnchor) {
+          const currentAnchor = this._computeBaselineAnchor(externalRaw);
+          if (currentAnchor !== storedAnchor) {
+            console.error('[Integrity] *** BASELINE ANCHOR MISMATCH — baseline file has been tampered with ***');
+            this.activityLog.append({
+              actor: 'darkhan_integrity',
+              action: 'BASELINE_ANCHOR_TAMPER',
+              details: JSON.stringify({ severity: 'CRITICAL' }),
+            });
+            if (this.securityService) {
+              this.securityService.triggerLockdown(
+                'CRITICAL: Integrity baseline file modified externally — HMAC anchor mismatch. Possible baseline forgery attack.',
+                'darkhan_integrity'
+              );
+            }
+            this._enforcePermissions();
+            return { files: Object.keys(this.baselineHashes).length, users: this.baselineUserCount, anchorTamper: true };
+          }
+          console.log('[Integrity] Baseline anchor (HMAC) verified — file is authentic');
+        }
+        // If no anchor stored yet (pre-hardening install), skip anchor check — it will be
+        // created on this boot when _saveExternalBaseline() runs after successful verification.
+
         const extHashes = external.hashes || {};
         const tampered = [];
 
@@ -211,11 +258,68 @@ class IntegrityService {
 
         // All hashes match — safe to proceed and update the baseline
         console.log('[Integrity] External baseline verification passed — all files match');
+        this.activityLog.append({
+          actor: 'darkhan_integrity',
+          action: 'baseline_verified',
+          details: JSON.stringify({
+            files: Object.keys(this.baselineHashes).length,
+            users: this.baselineUserCount,
+          }),
+        });
       } catch (e) {
         console.warn('[Integrity] Could not read external baseline:', e.message);
       }
     } else {
+      // SECURITY [HARDENING-1]: Distinguish "first boot" from "baseline deleted".
+      // If the database exists and has users, this is NOT a first boot — someone
+      // (or some agent) deleted the baseline file. Fail closed.
+      const dbPath = path.join(this.serverDir, 'db', 'darkhan.db');
+      const dbExists = fs.existsSync(dbPath);
+      // Also check if a baseline anchor exists in the DB. If no anchor has ever been stored,
+      // this is a genuine first boot (seed ran before server started). Only treat as deletion
+      // attack if an anchor exists (meaning a baseline was previously established and then deleted).
+      const existingAnchor = await this._getBaselineAnchor();
+      if (dbExists && this.baselineUserCount > 0 && existingAnchor) {
+        console.error('[Integrity] *** BASELINE FILE MISSING — but database has users AND a stored anchor. This is NOT a first boot. ***');
+        console.error('[Integrity] Possible baseline tampering. System locked.');
+        console.error('[Integrity] Recovery: node break-glass.js reset-baseline (requires lockdown PIN)');
+
+        this.activityLog.append({
+          actor: 'darkhan_integrity',
+          action: 'BASELINE_MISSING_LOCKDOWN',
+          details: JSON.stringify({
+            userCount: this.baselineUserCount,
+            dbExists: true,
+            baselinePath: this.externalBaselinePath,
+            severity: 'CRITICAL',
+          }),
+        });
+
+        if (this.securityService) {
+          this.securityService.triggerLockdown(
+            `CRITICAL: Integrity baseline file missing but database contains ${this.baselineUserCount} user(s). Possible baseline deletion attack. Recovery: node break-glass.js reset-baseline`,
+            'darkhan_integrity'
+          );
+        }
+
+        this._enforcePermissions();
+        return {
+          files: Object.keys(this.baselineHashes).length,
+          users: this.baselineUserCount,
+          baselineMissing: true,
+        };
+      }
+
+      // Genuine first boot — no database or no users
       console.log('[Integrity] No external baseline found — first boot, creating initial baseline');
+      this.activityLog.append({
+        actor: 'darkhan_integrity',
+        action: 'baseline_first_boot',
+        details: JSON.stringify({
+          files: Object.keys(this.baselineHashes).length,
+          users: this.baselineUserCount,
+        }),
+      });
     }
 
     // Save/update external baseline (only reached if verification passed or first boot)
@@ -231,6 +335,40 @@ class IntegrityService {
   }
 
   /**
+   * [HARDENING-2] Compute HMAC anchor for baseline data.
+   * Uses SESSION_SECRET with domain separation so the anchor can't be
+   * confused with other HMAC uses (lockdown signing, etc).
+   */
+  _computeBaselineAnchor(baselineJson) {
+    const secret = process.env.SESSION_SECRET;
+    if (!secret) return null;
+    const anchorKey = crypto.createHmac('sha256', secret).update('darkhan-baseline-v1').digest();
+    return crypto.createHmac('sha256', anchorKey).update(baselineJson).digest('hex');
+  }
+
+  /**
+   * [HARDENING-2] Save baseline anchor HMAC to the settings table.
+   */
+  _saveBaselineAnchor(anchor) {
+    if (!anchor) return;
+    this.db.run(
+      `INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('baseline_anchor', ?, datetime('now'))`,
+      [anchor]
+    );
+  }
+
+  /**
+   * [HARDENING-2] Read baseline anchor HMAC from the settings table.
+   */
+  _getBaselineAnchor() {
+    return new Promise((resolve) => {
+      this.db.get(`SELECT value FROM settings WHERE key = 'baseline_anchor'`, [], (err, row) => {
+        resolve(err || !row ? null : row.value);
+      });
+    });
+  }
+
+  /**
    * Save external baseline to disk.
    * Only called when: (a) first boot, (b) verification passed, or (c) admin reset.
    */
@@ -242,8 +380,16 @@ class IntegrityService {
         userHash: this.baselineUserHash,
         createdAt: new Date().toISOString(),
       };
-      fs.writeFileSync(this.externalBaselinePath, JSON.stringify(baselineData, null, 2), { mode: 0o600 });
+      const baselineJson = JSON.stringify(baselineData, null, 2);
+      fs.writeFileSync(this.externalBaselinePath, baselineJson, { mode: 0o600 });
       console.log(`[Integrity] External baseline saved to ${this.externalBaselinePath}`);
+
+      // [HARDENING-2] Compute and store cryptographic anchor
+      const anchor = this._computeBaselineAnchor(baselineJson);
+      if (anchor) {
+        this._saveBaselineAnchor(anchor);
+        console.log('[Integrity] Baseline anchor (HMAC) saved to settings table');
+      }
     } catch (e) {
       console.warn('[Integrity] Could not save external baseline:', e.message);
     }

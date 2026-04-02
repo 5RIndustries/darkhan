@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS users (
   status TEXT DEFAULT 'offline',        -- [DARKHAN] 'online', 'away', 'dnd', 'offline'
   last_seen_at DATETIME,               -- [DARKHAN] Last activity timestamp
   timezone TEXT DEFAULT 'America/New_York', -- [DARKHAN] IANA timezone for display
+  execution_tier TEXT DEFAULT 'supervised', -- [DARKHAN] 'supervised', 'operational', 'autonomous' — controls agent tool approval
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   -- SECURITY: password_hash and api_key are stored ONLY in secrets.db (credential isolation)
 );
@@ -233,3 +234,41 @@ CREATE TABLE IF NOT EXISTS instance_identity (
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS idx_triage_model ON triage_log (model_name, created_at);
+
+-- [DARKHAN] Observation-Evidence Protocol (OEP) — structured observation records
+-- Agents record observations with confidence levels and alternative interpretations.
+-- Human reviewers can verify and select alternatives for training feedback.
+CREATE TABLE IF NOT EXISTS observation_records (
+  id TEXT PRIMARY KEY,
+  trace_id TEXT,
+  agent_id TEXT NOT NULL,
+  observation_type TEXT NOT NULL,
+  category TEXT,
+  signals TEXT,
+  interpretation TEXT,
+  confidence REAL,
+  confidence_basis TEXT,
+  alternative_interpretation TEXT,
+  timestamp TEXT NOT NULL,
+  hash TEXT,
+  verified_by_human INTEGER DEFAULT 0,
+  human_selected_alternative TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_observations_agent ON observation_records(agent_id);
+CREATE INDEX IF NOT EXISTS idx_observations_type ON observation_records(observation_type);
+CREATE INDEX IF NOT EXISTS idx_observations_trace ON observation_records(trace_id);
+
+-- [DARKHAN] Action-Evidence Protocol (AEP) — execution trace records
+-- Tracks task execution with full evidence trails and evaluations.
+CREATE TABLE IF NOT EXISTS evidence_traces (
+  trace_id TEXT PRIMARY KEY,
+  agent_id TEXT NOT NULL,
+  task_name TEXT NOT NULL,
+  started_at TEXT NOT NULL,
+  completed_at TEXT,
+  evidence_trail TEXT NOT NULL DEFAULT '[]',
+  evaluation TEXT,
+  status TEXT NOT NULL DEFAULT 'active'
+);
+CREATE INDEX IF NOT EXISTS idx_evidence_traces_agent ON evidence_traces(agent_id);
+CREATE INDEX IF NOT EXISTS idx_evidence_traces_status ON evidence_traces(status);

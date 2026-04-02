@@ -39,6 +39,7 @@ ENV_FILE="$SERVER_DIR/.env"
 BASELINE_FILE="$HOME/.darkhan-integrity-baseline.json"
 CERTS_DIR="$HOME/.darkhan-certs"
 OWNER_USER="${DARKHAN_OWNER:-$(whoami)}"
+NODE_BIN="$(which node 2>/dev/null || echo '/opt/homebrew/bin/node')"
 
 echo "=== Darkhan Service User Setup (Layer 2) ==="
 echo ""
@@ -175,13 +176,15 @@ cat > "$PLIST_PATH" << PLIST
   <string>$DARKHAN_DIR</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/local/bin/node</string>
+    <string>$NODE_BIN</string>
     <string>$SERVER_DIR/server.js</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
     <key>HOME</key>
     <string>/Users/$OWNER_USER</string>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
     <key>NODE_ENV</key>
     <string>production</string>
   </dict>

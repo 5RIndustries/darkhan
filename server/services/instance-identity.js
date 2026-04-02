@@ -23,8 +23,9 @@
 const crypto = require('crypto');
 
 class InstanceIdentity {
-  constructor({ db, config, activityLog }) {
+  constructor({ db, secretsDb, config, activityLog }) {
     this.db = db;
+    this.secretsDb = secretsDb || null; // [HARDENING-3] Private key stored here
     this.config = config;
     this.activityLog = activityLog;
     this.publicKey = null;
@@ -34,32 +35,38 @@ class InstanceIdentity {
 
   /**
    * Initialize: load or generate the Ed25519 keypair.
-   * Call this at server startup.
+   * [HARDENING-3] Private key is read from secrets.db first, with
+   * backward-compatible fallback to main DB + auto-migration.
    */
   async initialize() {
     return new Promise((resolve, reject) => {
-      // Ensure the table exists
+      // Ensure tables exist
       this.db.run(`CREATE TABLE IF NOT EXISTS instance_identity (
         key TEXT PRIMARY KEY, value TEXT NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP
       )`, (err) => {
         if (err) return reject(err);
 
-        // Try to load existing keypair
+        if (this.secretsDb) {
+          this.secretsDb.run(`CREATE TABLE IF NOT EXISTS instance_keys (
+            key TEXT PRIMARY KEY, value TEXT NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+          )`, () => {});
+        }
+
+        // Try to load existing public key
         this.db.get('SELECT value FROM instance_identity WHERE key = ?', ['ed25519_public'], (err, pubRow) => {
           if (err) return reject(err);
 
           if (pubRow) {
-            // Keypair exists — load it
             this.publicKey = pubRow.value;
-            this.db.get('SELECT value FROM instance_identity WHERE key = ?', ['ed25519_private'], (err2, privRow) => {
-              if (err2 || !privRow) return reject(new Error('Public key exists but private key missing'));
-              this.privateKey = privRow.value;
+            // [HARDENING-3] Try secrets.db first for private key
+            this._loadPrivateKey().then((privKey) => {
+              if (!privKey) return reject(new Error('Public key exists but private key missing from both databases'));
+              this.privateKey = privKey;
               console.log(`[Identity] Ed25519 keypair loaded (instance: ${this.instanceId})`);
               console.log(`[Identity] Public key: ${this.publicKey.substring(0, 20)}...`);
-              resolve();
-            });
+              this._loadProvenance().then(() => resolve()).catch(() => resolve());
+            }).catch(reject);
           } else {
-            // Generate new keypair
             this._generateKeypair()
               .then(() => resolve())
               .catch(reject);
@@ -70,7 +77,56 @@ class InstanceIdentity {
   }
 
   /**
+   * [HARDENING-3] Load private key — try secrets.db first, fall back to main DB.
+   * If found only in main DB, auto-migrate to secrets.db and delete from main DB.
+   */
+  async _loadPrivateKey() {
+    // Try secrets.db first
+    if (this.secretsDb) {
+      const fromSecrets = await new Promise((resolve) => {
+        this.secretsDb.get('SELECT value FROM instance_keys WHERE key = ?', ['ed25519_private'], (err, row) => {
+          resolve(err || !row ? null : row.value);
+        });
+      });
+      if (fromSecrets) return fromSecrets;
+    }
+
+    // Fall back to main DB (pre-hardening installs)
+    const fromMain = await new Promise((resolve) => {
+      this.db.get('SELECT value FROM instance_identity WHERE key = ?', ['ed25519_private'], (err, row) => {
+        resolve(err || !row ? null : row.value);
+      });
+    });
+
+    if (fromMain && this.secretsDb) {
+      // Auto-migrate: copy to secrets.db, delete from main DB
+      console.log('[Identity] Migrating private key from darkhan.db to secrets.db...');
+      await new Promise((resolve, reject) => {
+        this.secretsDb.run('INSERT OR REPLACE INTO instance_keys (key, value) VALUES (?, ?)',
+          ['ed25519_private', fromMain], (err) => {
+            if (err) return reject(err);
+            this.db.run('DELETE FROM instance_identity WHERE key = ?', ['ed25519_private'], (err2) => {
+              if (err2) console.warn('[Identity] Could not delete private key from main DB:', err2.message);
+              console.log('[Identity] Private key migrated to secrets.db successfully');
+              if (this.activityLog) {
+                this.activityLog.append({
+                  actor: 'system',
+                  action: 'private_key_migrated_to_secrets',
+                  details: JSON.stringify({ from: 'darkhan.db', to: 'secrets.db' }),
+                });
+              }
+              resolve();
+            });
+          });
+      });
+    }
+
+    return fromMain;
+  }
+
+  /**
    * Generate a new Ed25519 keypair and store it.
+   * [HARDENING-3] Public key → main DB, private key → secrets.db.
    */
   async _generateKeypair() {
     return new Promise((resolve, reject) => {
@@ -82,15 +138,20 @@ class InstanceIdentity {
       this.publicKey = publicKey;
       this.privateKey = privateKey;
 
-      // Store in database
+      // Public key → main DB (shared, public by design)
       this.db.run('INSERT INTO instance_identity (key, value) VALUES (?, ?)',
         ['ed25519_public', publicKey], (err) => {
           if (err) return reject(err);
-          this.db.run('INSERT INTO instance_identity (key, value) VALUES (?, ?)',
+
+          // [HARDENING-3] Private key → secrets.db (isolated)
+          const privDb = this.secretsDb || this.db;
+          const privTable = this.secretsDb ? 'instance_keys' : 'instance_identity';
+          privDb.run(`INSERT INTO ${privTable} (key, value) VALUES (?, ?)`,
             ['ed25519_private', privateKey], (err2) => {
               if (err2) return reject(err2);
 
               console.log(`[Identity] Ed25519 keypair GENERATED (instance: ${this.instanceId})`);
+              console.log(`[Identity] Private key stored in ${this.secretsDb ? 'secrets.db' : 'darkhan.db'}`);
               console.log(`[Identity] Public key: ${publicKey.substring(0, 40)}...`);
 
               if (this.activityLog) {
@@ -100,6 +161,7 @@ class InstanceIdentity {
                   details: JSON.stringify({
                     instanceId: this.instanceId,
                     algorithm: 'ed25519',
+                    privateKeyLocation: this.secretsDb ? 'secrets.db' : 'darkhan.db',
                     publicKeyFingerprint: crypto.createHash('sha256')
                       .update(publicKey).digest('hex').substring(0, 16),
                   }),
@@ -182,6 +244,7 @@ class InstanceIdentity {
 
   /**
    * Get instance identity info for API responses.
+   * [HARDENING-6] Includes node provenance for federation trust decisions.
    */
   getInfo() {
     return {
@@ -189,7 +252,28 @@ class InstanceIdentity {
       algorithm: 'ed25519',
       publicKey: this.publicKey,
       fingerprint: this.getFingerprint(),
+      provenance: this._provenance || null,
     };
+  }
+
+  /**
+   * [HARDENING-6] Load node provenance from instance_identity table.
+   * Called during initialize() to cache provenance for getInfo().
+   */
+  _loadProvenance() {
+    return new Promise((resolve) => {
+      this.db.all(
+        `SELECT key, value FROM instance_identity WHERE key LIKE 'node_%'`,
+        [],
+        (err, rows) => {
+          if (err || !rows) return resolve(null);
+          const prov = {};
+          for (const row of rows) prov[row.key] = row.value;
+          this._provenance = Object.keys(prov).length > 0 ? prov : null;
+          resolve(this._provenance);
+        }
+      );
+    });
   }
 }
 

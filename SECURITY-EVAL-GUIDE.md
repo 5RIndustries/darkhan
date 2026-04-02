@@ -88,7 +88,7 @@ You should see:
 1. Open http://localhost:3001
 2. Log in with your username and password `changeme`
 3. **Immediately change your password** (Settings → Change Password)
-4. **Set a lockdown PIN** (Settings → Set Lockdown PIN) — minimum 4 characters, remember it
+4. **Set a lockdown PIN** (Settings → Set Lockdown PIN) — minimum 8 characters, remember it
 
 ### Step 6: Verify It Works
 - Post "comms check" in #command — workers should respond

@@ -163,7 +163,7 @@ class TerminalRelay {
           case 'result':
             stopSpinner();
             socket.emit('terminal:output', { key,
-              data: `\r\n\r\n\x1b[32m> \x1b[0m` });
+              data: `\r\n\x1b[32m> \x1b[0m` });
             lastEventType = 'result';
             break;
           case 'error':

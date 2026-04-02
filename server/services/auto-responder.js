@@ -591,8 +591,8 @@ async function processMessage(channelId, fromUser, messageBody, context) {
     return;
   }
 
-  // Post "thinking" indicator
-  postToChannel(db, io, channelId, '...thinking', 'agent_darkhan');
+  // Post "thinking" indicator and track its ID for live progress updates
+  activeThinkingMessageId = postToChannel(db, io, channelId, '...thinking', 'agent_darkhan');
 
   try {
     // HEARTBEAT LOG — no AI call, just acknowledge
@@ -620,9 +620,19 @@ async function processMessage(channelId, fromUser, messageBody, context) {
         if (llmResponse.includes('[NEEDS_CLAUDE]')) {
           markTriageEscalation(db, messageBody);
           console.log(`[Router] Local LLM requested escalation to Claude`);
-          // Prompt user to start a Claude session via the terminal tab
-          promptForClaudeSession(db, io, channelId, fromUser, cleanBody);
-          return;
+
+          // Route through unified session (auto-creates if needed) instead of
+          // prompting user to open terminal. This handles the case where a session
+          // was just cycled and the local LLM gets the first message.
+          if (context.unifiedClaude) {
+            console.log(`[Router] Escalating to unified Claude session for ${fromUser}`);
+            // Re-post thinking indicator for the Claude relay phase
+            activeThinkingMessageId = postToChannel(db, io, channelId, '...thinking', 'agent_darkhan');
+            // Fall through to Claude relay below (don't return)
+          } else {
+            promptForClaudeSession(db, io, channelId, fromUser, cleanBody);
+            return;
+          }
         } else {
           // Local LLM handled it
           postToChannel(db, io, channelId, llmResponse, 'agent_darkhan');
@@ -649,7 +659,14 @@ async function processMessage(channelId, fromUser, messageBody, context) {
       // Route through unified session — creates one if none exists (shared context with terminal)
       console.log(`[Router] Using unified Claude session for ${fromUser} (exists: ${unifiedClaude.sessions.has(sessionUser)})`);
       const chatMessage = `[Chat message from ${fromUser} in ${channelId}]: ${cleanBody}`;
-      trimmedResponse = await unifiedClaude.sendFromChat(sessionUser, chatMessage, channelId);
+
+      // Progress callback — updates the "thinking" indicator as Claude works
+      const onProgress = ({ toolName, toolCount, elapsed }) => {
+        const progressText = `...working (${toolCount} tool${toolCount !== 1 ? 's' : ''}, ${elapsed}s) — ${toolName}`;
+        updateThinkingMessage(db, io, channelId, progressText);
+      };
+
+      trimmedResponse = await unifiedClaude.sendFromChat(sessionUser, chatMessage, channelId, { onProgress });
     } else if (RELAY_MODE === 'sdk') {
       const darylContext = await buildDarylContext(db, channelId);
       const sdkPrompt = `Recent Darkhan conversation:\n${darylContext}\n\n---\n${fromUser}: ${cleanBody}`;
@@ -745,12 +762,46 @@ function postToChannel(db, io, channelId, body, fromUser = 'agent_claude') {
   return id;
 }
 
+// Track the current thinking message ID so we can update it with progress
+let activeThinkingMessageId = null;
+
 /**
- * Delete the "thinking" indicator
+ * Update the thinking indicator with progress info (tool name, count, elapsed time).
+ * Uses Socket.IO edit_message to update the UI in real-time without a full round-trip.
+ */
+function updateThinkingMessage(db, io, channelId, progressText) {
+  const msgId = activeThinkingMessageId;
+  if (!msgId) return;
+  db.run('UPDATE messages SET body = ? WHERE id = ?', [progressText, msgId], (err) => {
+    if (!err && io) {
+      io.to(channelId).emit('edit_message', {
+        id: msgId,
+        channel_id: channelId,
+        body: progressText,
+      });
+    }
+  });
+}
+
+/**
+ * Delete the thinking indicator (by tracked ID, or fallback to body match).
  */
 function deleteThinkingMessage(db, io, channelId) {
+  const msgId = activeThinkingMessageId;
+  activeThinkingMessageId = null;
+
+  if (msgId) {
+    db.run('DELETE FROM messages WHERE id = ?', [msgId], (delErr) => {
+      if (!delErr && io) {
+        io.to(channelId).emit('delete_message', { id: msgId, channel_id: channelId });
+      }
+    });
+    return;
+  }
+
+  // Fallback: find by body match (for messages posted before tracking was added)
   db.get(
-    `SELECT id FROM messages WHERE channel_id = ? AND from_user = 'agent_darkhan' AND body = '...thinking' ORDER BY created_at DESC LIMIT 1`,
+    `SELECT id FROM messages WHERE channel_id = ? AND from_user = 'agent_darkhan' AND body LIKE '...%' ORDER BY created_at DESC LIMIT 1`,
     [channelId],
     (err, row) => {
       if (err || !row) return;

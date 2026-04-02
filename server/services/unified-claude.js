@@ -22,6 +22,102 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
+// --- Execution Tier: Tool Classification ---
+// Tools are grouped by risk level. The user's execution tier determines
+// which groups are pre-approved vs require interactive approval.
+//
+// HARD SECURITY BOUNDARY: These tools ALWAYS require approval regardless of tier.
+// This is architectural, not policy — even 'autonomous' tier cannot bypass this.
+const SECURITY_BOUNDARY_PATTERNS = [
+  // No tool patterns here — security is enforced by input inspection, not tool name.
+  // The boundary is about WHAT you do, not WHICH tool you use.
+];
+
+// Tool risk classification:
+//   read    — passive observation, no side effects
+//   write   — modifies files, runs commands, makes changes
+//   security — touches credentials, auth, admin operations
+const TOOL_CLASSIFICATION = {
+  // Read-only tools
+  Read: 'read',
+  Glob: 'read',
+  Grep: 'read',
+  WebSearch: 'read',
+  WebFetch: 'read',
+
+  // Write tools — modifiable side effects
+  Write: 'write',
+  Edit: 'write',
+  Bash: 'write',   // Classified as write; security-sensitive commands caught by input inspection
+  Agent: 'write',
+  NotebookEdit: 'write',
+};
+
+// Input patterns that escalate ANY tool to 'security' classification.
+// These catch dangerous operations regardless of which tool is used.
+const SECURITY_INPUT_PATTERNS = [
+  // Credential/auth keywords in bash commands
+  /\b(password|passwd|secret|credential|api.key|token|pin)\b/i,
+  // Admin operations
+  /\b(lockdown|break.glass|unlock|set.pin)\b/i,
+  // Destructive git operations
+  /\bgit\s+(push\s+--force|reset\s+--hard|clean\s+-f)/i,
+  // Direct database access
+  /\b(sqlite3|\.db\b|secrets\.db)/i,
+  // Env/credential files
+  /\.(env|pem|key|cert)\b/,
+  // Service user / sudo operations
+  /\b(sudo|su\s|_darkhan)\b/i,
+];
+
+/**
+ * Classify a tool call by risk level, considering both tool name and input.
+ * Returns: 'read', 'write', or 'security'
+ */
+function classifyToolCall(toolName, input) {
+  let level = TOOL_CLASSIFICATION[toolName] || 'write'; // Unknown tools default to write
+
+  // Escalate to security if input matches sensitive patterns
+  if (level !== 'security' && input) {
+    const inputStr = typeof input === 'string' ? input : JSON.stringify(input);
+    for (const pattern of SECURITY_INPUT_PATTERNS) {
+      if (pattern.test(inputStr)) {
+        return 'security';
+      }
+    }
+  }
+
+  return level;
+}
+
+/**
+ * Check if a tool call is pre-approved under the given execution tier.
+ *
+ * Tiers:
+ *   supervised  — only 'read' tools are pre-approved
+ *   operational — 'read' and 'write' tools are pre-approved
+ *   autonomous  — everything EXCEPT 'security' is pre-approved
+ *
+ * 'security' classification ALWAYS requires approval. This is the hard boundary.
+ */
+function isTierApproved(tier, classification) {
+  switch (tier) {
+    case 'autonomous':
+      return classification !== 'security';
+    case 'operational':
+      return classification === 'read' || classification === 'write';
+    case 'supervised':
+    default:
+      return classification === 'read';
+  }
+}
+
+// Session cycling: max messages before starting a fresh session.
+// The hash-chain activity log preserves full history, so sessions
+// can be short without losing continuity. Claude gets recent channel
+// context in the system prompt of each new session.
+const MAX_SESSION_MESSAGES = 50;
+
 class UnifiedClaudeSession {
   constructor({ db, io, config, activityLog }) {
     this.db = db;
@@ -55,19 +151,34 @@ class UnifiedClaudeSession {
     }
 
     // 2. Try resume from stored session (survives server restart)
+    // Skip resume if session is near the cycling threshold — create fresh instead
+    // so the new session gets the full activity digest and system prompt.
     const stored = this._storedSessions[userId];
     const MAX_AGE = 8 * 3600000;
-    if (stored?.sessionId && (Date.now() - (stored.lastMessageAt || 0)) < MAX_AGE) {
+    const nearCycleThreshold = stored?.messageCount >= (MAX_SESSION_MESSAGES - 5);
+    if (stored?.sessionId && !nearCycleThreshold && (Date.now() - (stored.lastMessageAt || 0)) < MAX_AGE) {
       const promise = this._resumeSession(userId, stored.sessionId, stored.messageCount || 0);
       this._creatingSession.set(userId, promise);
       try {
-        entry = await promise;
+        // Timeout resume attempts — if the SDK session is dead, don't hang forever
+        const RESUME_TIMEOUT = 15000;
+        entry = await Promise.race([
+          promise,
+          new Promise((_, reject) => setTimeout(() => reject(new Error('Resume timeout (15s)')), RESUME_TIMEOUT)),
+        ]);
         if (entry) return entry;
       } catch (e) {
-        console.log(`[UnifiedClaude] Resume failed: ${e.message}`);
+        console.log(`[UnifiedClaude] Resume failed: ${e.message} — creating fresh session`);
+        // Clean up the dead stored session
+        delete this._storedSessions[userId];
+        this._saveStoredSessions();
       } finally {
         this._creatingSession.delete(userId);
       }
+    } else if (stored && nearCycleThreshold) {
+      console.log(`[UnifiedClaude] Stored session near cycle threshold (${stored.messageCount}/${MAX_SESSION_MESSAGES}) — creating fresh`);
+      delete this._storedSessions[userId];
+      this._saveStoredSessions();
     }
 
     // 3. Create fresh
@@ -97,35 +208,71 @@ class UnifiedClaudeSession {
   }
 
   async _createSession(userId) {
+    // Pull last 100 channel messages — this is the actual conversation history
+    // and the richest source of context for a fresh session
     let channelContext = '';
-    try { channelContext = await this._getRecentMessages('chan_command', 15); } catch {}
+    try { channelContext = await this._getRecentMessages('chan_command', 100); } catch {}
 
-    const permMode = this.config.terminal?.permissionMode || 'bypassPermissions';
+    // Pull system-level events from the activity log (security, session cycles,
+    // tier changes — things NOT captured in channel messages)
+    let activityDigest = '';
+    try { activityDigest = await this._getActivityDigest(6); } catch (e) {
+      console.warn(`[UnifiedClaude] Activity digest failed: ${e.message}`);
+    }
+
+    const userTier = await this._getUserExecutionTier(userId);
     const self = this;
 
     const sessionOpts = {
       model: 'opus',
       allowedTools: this._getAllowedTools(),
       cwd: this.vaultPath,
-      permissionMode: permMode,
-      systemPrompt: { type: 'preset', append: this._buildSystemPrompt(channelContext) },
+      permissionMode: 'bypassPermissions', // We handle permissions ourselves via canUseTool
+      systemPrompt: { type: 'preset', append: this._buildSystemPrompt(channelContext, userTier, activityDigest) },
       includePartialMessages: true,
     };
 
-    // If not bypassing permissions, add the approval callback
-    if (permMode !== 'bypassPermissions') {
+    // Execution tier callback — classifies each tool call and decides approval
+    // 'supervised' users get prompted for writes; 'operational' for security only; etc.
+    // Even in 'autonomous' mode, security-classified operations require approval.
+    if (userTier !== 'autonomous') {
       sessionOpts.canUseTool = async (toolName, input, options) => {
+        const classification = classifyToolCall(toolName, input);
+        if (isTierApproved(userTier, classification)) {
+          // Pre-approved by tier — log and allow silently
+          self._logActivity(userId, 'tier_auto_approved', {
+            tool: toolName, tier: userTier, classification,
+          });
+          return { behavior: 'allow', updatedInput: undefined, toolUseID: options.toolUseID };
+        }
+        // Not pre-approved — prompt the user
         return await self._handlePermissionRequest(userId, toolName, input, options);
+      };
+    }
+    // autonomous tier: canUseTool is still needed for security boundary
+    if (userTier === 'autonomous') {
+      sessionOpts.canUseTool = async (toolName, input, options) => {
+        const classification = classifyToolCall(toolName, input);
+        if (classification === 'security') {
+          // Hard security boundary — always prompt even in autonomous mode
+          self._logActivity(userId, 'security_boundary_prompt', {
+            tool: toolName, tier: userTier, classification,
+          });
+          return await self._handlePermissionRequest(userId, toolName, input, options);
+        }
+        // Everything else is pre-approved
+        return { behavior: 'allow', updatedInput: undefined, toolUseID: options.toolUseID };
       };
     }
 
     const session = unstable_v2_createSession(sessionOpts);
 
     const entry = this._buildEntry(session, userId, null, 0);
+    entry.executionTier = userTier;
     this.sessions.set(userId, entry);
 
-    this._postToChannel('chan_claude', `[Unified Session] Session created for ${userId} (permissions: ${permMode})`);
-    console.log(`[UnifiedClaude] Created for ${userId} (cwd: ${this.vaultPath}, permissions: ${permMode})`);
+    this._postToChannel('chan_claude', `[Unified Session] Session created for ${userId} (tier: ${userTier})`);
+    console.log(`[UnifiedClaude] Created for ${userId} (cwd: ${this.vaultPath}, tier: ${userTier})`);
     return entry;
   }
 
@@ -138,6 +285,7 @@ class UnifiedClaudeSession {
       createdAt: Date.now(),
       messageCount: messageCount || 0,
       busy: false, // prevents concurrent send/stream
+      busySince: null, // timestamp when busy was set — used for stale detection
     };
   }
 
@@ -153,7 +301,7 @@ class UnifiedClaudeSession {
    * Send from chat. Returns the response text (auto-responder posts to channel).
    * Terminal subscriber will also see it — that's fine, shared brain.
    */
-  async sendFromChat(userId, message, channelId) {
+  async sendFromChat(userId, message, channelId, { onProgress } = {}) {
     const entry = await this.getOrCreateSession(userId);
 
     // Wait if session is busy (previous turn still streaming)
@@ -164,11 +312,19 @@ class UnifiedClaudeSession {
 
     try {
       entry.busy = true;
+      entry.busySince = Date.now();
       this._logActivity(userId, 'unified_user_message', {
         source: 'chat', channelId, message: message.substring(0, 500),
       });
       await entry.session.send(message);
-      const response = await this._processStream(userId, entry);
+      const response = await this._processStream(userId, entry, { onProgress });
+
+      // Session cycling: start fresh after MAX_SESSION_MESSAGES
+      // The hash-chain log preserves history; new session gets recent channel context
+      if (entry.messageCount >= MAX_SESSION_MESSAGES) {
+        this._cycleSession(userId, entry);
+      }
+
       return response || '[No response]';
     } catch (err) {
       console.error(`[UnifiedClaude] Chat send failed:`, err.message);
@@ -178,6 +334,7 @@ class UnifiedClaudeSession {
       return `[Error: ${err.message}]`;
     } finally {
       entry.busy = false;
+      entry.busySince = null;
     }
   }
 
@@ -205,11 +362,17 @@ class UnifiedClaudeSession {
 
     try {
       entry.busy = true;
+      entry.busySince = Date.now();
       this._logActivity(userId, 'unified_user_message', {
         source: 'terminal', message: message.substring(0, 500),
       });
       await entry.session.send(message);
       await this._processStream(userId, entry);
+
+      // Session cycling
+      if (entry.messageCount >= MAX_SESSION_MESSAGES) {
+        this._cycleSession(userId, entry);
+      }
     } catch (err) {
       console.error(`[UnifiedClaude] Terminal send failed:`, err.message);
       if (this._isSessionDead(err)) {
@@ -222,6 +385,7 @@ class UnifiedClaudeSession {
       });
     } finally {
       entry.busy = false;
+      entry.busySince = null;
     }
   }
 
@@ -245,13 +409,16 @@ class UnifiedClaudeSession {
 
     try {
       entry.busy = true;
+      entry.busySince = Date.now();
       await entry.session.send(message);
       const response = await this._processStream(userId, entry);
       entry.busy = false;
+      entry.busySince = null;
 
       if (source === 'chat') return response || '[No response]';
     } catch (retryErr) {
       entry.busy = false;
+      entry.busySince = null;
       const errText = `[Error after retry: ${retryErr.message}]`;
       if (source === 'terminal') {
         this._notifySubscribers(entry, 'all', { type: 'error', text: errText });
@@ -270,7 +437,7 @@ class UnifiedClaudeSession {
    *
    * ALL events go to ALL subscribers. Callers decide visibility.
    */
-  async _processStream(userId, entry) {
+  async _processStream(userId, entry, { onProgress } = {}) {
     let fullText = '';
     let toolsUsed = [];
     const turnStart = Date.now();
@@ -317,6 +484,17 @@ class UnifiedClaudeSession {
                   tool: tool.name,
                   input: toolInput,
                 });
+
+                // Progress callback — lets the caller update UI (e.g., thinking indicator)
+                if (onProgress) {
+                  try {
+                    onProgress({
+                      toolName: tool.name,
+                      toolCount: toolsUsed.length,
+                      elapsed: Math.round((Date.now() - turnStart) / 1000),
+                    });
+                  } catch {}
+                }
               }
               break;
             }
@@ -466,16 +644,147 @@ class UnifiedClaudeSession {
   }
 
   async _waitForIdle(entry, timeoutMs) {
+    // Safety valve: if busy flag has been set for longer than the stream timeout (5 min)
+    // plus a 30s grace period, it's stale — force-clear it
+    const STALE_THRESHOLD_MS = 330000; // 5.5 min
+    if (entry.busy && entry.busySince && (Date.now() - entry.busySince) > STALE_THRESHOLD_MS) {
+      console.warn(`[UnifiedClaude] Stale busy flag detected (${Math.round((Date.now() - entry.busySince) / 1000)}s) — force-clearing`);
+      entry.busy = false;
+      entry.busySince = null;
+      return;
+    }
+
     const start = Date.now();
     while (entry.busy && (Date.now() - start) < timeoutMs) {
       await new Promise(r => setTimeout(r, 500));
     }
     if (entry.busy) {
-      throw new Error('Timed out waiting for session to become idle');
+      console.warn(`[UnifiedClaude] Wait timeout (${timeoutMs}ms) — force-clearing busy flag`);
+      entry.busy = false;
+      entry.busySince = null;
     }
   }
 
-  _buildSystemPrompt(channelContext) {
+  /**
+   * Fetch the user's execution tier from the database.
+   * Returns 'supervised' if not set or user not found.
+   */
+  /**
+   * Build a condensed digest of the last N hours of activity log entries.
+   * Focuses on meaningful actions (user messages, tool calls, session events,
+   * security events) and skips noise (heartbeats, rate limit events).
+   *
+   * This gives a fresh session real continuity from the immutable hash chain —
+   * not reconstructed summaries, but actual records of what happened.
+   */
+  _getActivityDigest(hours = 6) {
+    return new Promise((resolve, reject) => {
+      if (!this.db) return resolve('');
+
+      const since = new Date(Date.now() - hours * 3600000).toISOString();
+
+      // Query ONLY system-level events — conversation content is already in the
+      // channel messages context. This covers security events, session lifecycle,
+      // tier changes, and other infrastructure events not visible in chat.
+      this.db.all(
+        `SELECT actor, action, target, details, created_at FROM activity_log
+         WHERE created_at > ?
+           AND action IN (
+             'session_cycled', 'execution_tier_changed',
+             'lockdown_activated', 'lockdown_lifted', 'integrity_violation',
+             'server_started', 'baseline_established',
+             'login_failed', 'login_rate_limited',
+             'recovery_token_generated', 'password_reset_via_token',
+             'security_boundary_prompt', 'unified_permission_denied'
+           )
+           AND entry_type = 'event'
+         ORDER BY created_at ASC
+         LIMIT 50`,
+        [since],
+        (err, rows) => {
+          if (err) return reject(err);
+          if (!rows || rows.length === 0) return resolve('(No activity in the last 6 hours)');
+
+          // Group into a readable digest
+          const lines = [];
+          let lastAction = '';
+
+          for (const row of rows) {
+            const time = row.created_at?.substring(11, 19) || '??:??:??';
+            const actor = row.actor || 'unknown';
+            const action = row.action || 'unknown';
+
+            // Collapse consecutive identical actions (e.g., many tier_auto_approved)
+            if (action === lastAction && action === 'tier_auto_approved') continue;
+            lastAction = action;
+
+            // Format based on action type
+            let line;
+            switch (action) {
+              case 'unified_user_message': {
+                const d = this._safeParseJSON(row.details);
+                line = `[${time}] USER (${d.source || 'chat'}): ${d.message || '(no content)'}`;
+                break;
+              }
+              case 'unified_assistant_message': {
+                const d = this._safeParseJSON(row.details);
+                line = `[${time}] CLAUDE: ${d.preview || `(${d.length} chars)`}`;
+                break;
+              }
+              case 'unified_tool_call': {
+                const d = this._safeParseJSON(row.details);
+                line = `[${time}] TOOL: ${d.tool} — ${d.input || ''}`;
+                break;
+              }
+              case 'unified_turn_complete': {
+                const d = this._safeParseJSON(row.details);
+                line = `[${time}] TURN #${d.messageNumber}: ${d.responseLength} chars, ${d.toolCount} tools, ${d.durationMs}ms`;
+                break;
+              }
+              case 'session_cycled': {
+                const d = this._safeParseJSON(row.details);
+                line = `[${time}] SESSION CYCLED after ${d.messageCount} messages`;
+                break;
+              }
+              case 'execution_tier_changed': {
+                const d = this._safeParseJSON(row.details);
+                line = `[${time}] TIER CHANGED to ${d.tier} by ${actor}`;
+                break;
+              }
+              case 'lockdown_activated':
+              case 'lockdown_lifted':
+              case 'integrity_violation':
+                line = `[${time}] SECURITY: ${action} — ${row.details || ''}`;
+                break;
+              default:
+                // Include but keep concise
+                line = `[${time}] ${actor}/${action}: ${(row.details || '').substring(0, 120)}`;
+            }
+
+            if (line) lines.push(line);
+          }
+
+          resolve(lines.join('\n'));
+        }
+      );
+    });
+  }
+
+  _safeParseJSON(str) {
+    try { return JSON.parse(str || '{}'); } catch { return {}; }
+  }
+
+  _getUserExecutionTier(userId) {
+    return new Promise((resolve) => {
+      if (!this.db) return resolve('supervised');
+      this.db.get('SELECT execution_tier FROM users WHERE id = ?', [userId], (err, row) => {
+        if (err || !row) return resolve('supervised');
+        resolve(row.execution_tier || 'supervised');
+      });
+    });
+  }
+
+  _buildSystemPrompt(channelContext, executionTier, activityDigest) {
     const today = new Date().toISOString().substring(0, 10);
     return [
       `DARKHAN UNIFIED SESSION — Date: ${today}`,
@@ -489,7 +798,19 @@ class UnifiedClaudeSession {
       ``,
       `Messages come from terminal (private) or chat channels (public).`,
       `Respond directly to the user. Read files only when you need specific info.`,
-      channelContext ? `\nRecent #command messages:\n${channelContext}` : '',
+      ``,
+      `EXECUTION TIER: ${executionTier || 'supervised'}`,
+      executionTier === 'supervised' ? `You are in supervised mode. Read operations are pre-approved. All writes, edits, and commands require user approval.` : '',
+      executionTier === 'operational' ? `You are in operational mode. Code edits, file writes, and commands are pre-approved. Security-sensitive operations (credentials, auth, admin actions) still require approval.` : '',
+      executionTier === 'autonomous' ? `You are in autonomous mode. All operations are pre-approved EXCEPT security-sensitive actions (credentials, auth, admin, break-glass). Those always require approval.` : '',
+      ``,
+      ``,
+      `SESSION CONTINUITY: This may be a fresh session after an automatic cycle (every ${MAX_SESSION_MESSAGES} messages).`,
+      `The conversation history below IS your context — read it carefully before responding.`,
+      `On your FIRST response, also read CLAUDE.md and today's session log in ${this.vaultPath}/OMC-OS/CoS/Session-Logs/ for anything before the conversation window.`,
+      `Then briefly tell the user what you understand the current work to be, so they know you're up to speed.`,
+      channelContext ? `\n--- CONVERSATION HISTORY (last 100 messages from #command) ---\n${channelContext}\n--- END CONVERSATION HISTORY ---` : '',
+      activityDigest ? `\nSYSTEM EVENTS (last 6 hours — security, session lifecycle):\n${activityDigest}` : '',
     ].filter(Boolean).join('\n');
   }
 
@@ -669,6 +990,32 @@ class UnifiedClaudeSession {
     return !!(entry && entry.pendingPermission);
   }
 
+  /**
+   * Cycle a session — close the current one and clear stored state so
+   * the next message creates a fresh session. The hash-chain activity log
+   * preserves full history; the new session gets recent channel context
+   * in its system prompt for continuity.
+   */
+  _cycleSession(userId, entry) {
+    const msgCount = entry.messageCount || 0;
+    console.log(`[UnifiedClaude] Cycling session for ${userId} (${msgCount} msgs — threshold: ${MAX_SESSION_MESSAGES})`);
+
+    this._logActivity(userId, 'session_cycled', {
+      messageCount: msgCount,
+      threshold: MAX_SESSION_MESSAGES,
+      sessionId: entry.sessionId,
+    });
+
+    // Post a notice so the user knows what happened
+    this._postToChannel('chan_claude', `[Session cycled for ${userId} after ${msgCount} messages. Next message starts a fresh session with recent context.]`);
+
+    // Close and clear — next getOrCreateSession() will build fresh
+    try { entry.session.close(); } catch {}
+    this.sessions.delete(userId);
+    delete this._storedSessions[userId];
+    this._saveStoredSessions();
+  }
+
   async closeSession(userId, { clearStored = false } = {}) {
     const entry = this.sessions.get(userId);
     if (!entry) return;
@@ -725,6 +1072,7 @@ class UnifiedClaudeSession {
         subscriberCount: entry.subscribers.size,
         messageCount: entry.messageCount || 0,
         busy: entry.busy || false,
+        executionTier: entry.executionTier || 'supervised',
       });
     }
     return { activeSessions: active.length, sessions: active, storedSessions: Object.keys(this._storedSessions).length };
@@ -735,4 +1083,4 @@ class UnifiedClaudeSession {
   }
 }
 
-module.exports = { UnifiedClaudeSession };
+module.exports = { UnifiedClaudeSession, classifyToolCall, isTierApproved, TOOL_CLASSIFICATION };
