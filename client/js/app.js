@@ -1457,7 +1457,7 @@
           <li><strong>Chat</strong> — Talk to Claude or your agents in #command. Messages starting with <code>@claude</code> go to the unified Claude session.</li>
           <li><strong>Terminal</strong> — Full Claude Code session in the browser. Click "Start Session" to spawn. Terminal and chat share the same Claude instance and context.</li>
           <li><strong>Split View</strong> — Click the split button (&#9707;) in any channel header to open a side-by-side view. Select "Terminal" in the right panel to watch Claude's tool calls and output in real-time while chatting.</li>
-          <li><strong>Docs</strong> — Browse and edit files in your vault (knowledge base). Markdown files render automatically.</li>
+          <li><strong>Docs</strong> — Browse and edit files in your Folio (knowledge base). Markdown files render automatically.</li>
         </ul>
 
         <h2>Slash Commands</h2>

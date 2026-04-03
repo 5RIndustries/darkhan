@@ -62,7 +62,7 @@ For manual setup, Ollama configuration, launchd auto-start, and multi-node feder
                      ┌───────────────────────────────────────────┐
                      │            Darkhan Web UI                 │
                      ├──────────┬──────────┬─────────────────────┤
-                     │ Channels │ Terminal │ Dashboard/Vault/... │
+                     │ Channels │ Terminal │ Dashboard/Folio/... │
                      └────┬─────┴────┬─────┴─────────────────────┘
                           │          │
                      Socket.IO   Socket.IO /terminal
@@ -192,7 +192,7 @@ Message arrives
          │     AND decoded base64 content. Critical match → block.
          │
          ├─ 3. Two-LLM consensus classification
-         │     Local Ollama AND cloud Gemini/Anthropic both classify the
+         │     Local Ollama AND cloud Gemini/Anthropic/OpenAI both classify the
          │     message independently. Both must agree SAFE.
          │     Disagreement → quarantine for human review.
          │
@@ -326,13 +326,14 @@ For full details, see [SECURITY.md](SECURITY.md).
 - Ollama (local, $0): Qwen 2.5 3B by default (runs on 8GB Macs), 14B for 16GB+ machines, or any Ollama model
 - Google Gemini: pay-per-use for agent workers
 - Anthropic Claude: pay-per-use for strategic tasks
+- OpenAI ChatGPT: pay-per-use for agent workers and consensus
 - Per-agent rate limits are user-configurable (set `requestsPerDay: 0` for unlimited)
 - Two-level rate limiting: per-provider global limits and per-agent limits
 - Cost tracking with per-agent breakdowns
 
-**Knowledge Base (Vault)**
+**Knowledge Base (Folio)**
 - File browser with markdown rendering
-- Full-text search across the vault
+- Full-text search across the Folio
 - File create, edit, delete via API and web UI
 - Per-agent write permissions
 
@@ -433,7 +434,7 @@ All endpoints require authentication via session cookie or `X-API-Key` header.
 | Tasks | `GET /api/tasks`, `POST /api/tasks`, `PATCH /api/tasks/:id` |
 | Health | `GET /api/health/status`, `POST /api/health/ping`, `GET /api/workers`, `POST /api/health/maintenance` (admin), `GET /api/health/maintenance` |
 | Terminal | `GET /api/terminal` (active session status) |
-| Vault | `GET /api/vault/tree`, `GET /api/vault/file`, `PUT /api/vault/file`, `GET /api/vault/search` |
+| Folio | `GET /api/vault/tree`, `GET /api/vault/file`, `PUT /api/vault/file`, `GET /api/vault/search` |
 | Security | `GET /api/security`, `POST /api/security/lockdown`, `POST /api/security/unlock` |
 | Activity | `GET /api/activity`, `GET /api/activity/chain-head`, `GET /api/activity/stats` |
 | Ground Truth | `GET /api/ground-truth`, `POST /api/ground-truth`, `POST /api/ground-truth/check` |
@@ -500,7 +501,7 @@ Darkhan is licensed under the [Business Source License 1.1](LICENSE).
 - **Production use** requires a commercial license from the licensor
 - The licensed code converts to a fully open-source license (Apache 2.0) on the change date specified in the license file
 
-Enterprise federation for connecting multiple Darkhan instances across an organization is planned as a separate product.
+Enterprise federation for connecting multiple Darkhan instances across an organization is planned as a separate product called Mokume.
 
 ---
 
