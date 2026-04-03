@@ -52,7 +52,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   created_by TEXT NOT NULL,
   status TEXT DEFAULT 'queued',         -- 'queued', 'in_progress', 'complete', 'promoted'
   priority INTEGER DEFAULT 3,           -- 1=critical, 2=high, 3=normal, 4=low
-  vault_path TEXT,
+  folio_path TEXT,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );

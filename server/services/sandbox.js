@@ -137,14 +137,14 @@ class WorkerSandbox {
    * Derived from the agent's permissions config.
    */
   getAllowedPaths(agentConfig) {
-    const vaultPath = (this.config.vault?.path || '~/darkhan-vault').replace('~', process.env.HOME);
+    const folioPath = (this.config.folio?.path || '~/darkhan-folio').replace('~', process.env.HOME);
     const writePaths = (agentConfig.permissions?.fsWrite || []).map(p =>
-      path.resolve(vaultPath, p)
+      path.resolve(folioPath, p)
     );
 
     return {
       read: [
-        vaultPath,                               // Full vault read access
+        folioPath,                               // Full folio read access
         path.join(__dirname, '..'),               // Server code (read-only)
       ],
       write: writePaths,
@@ -236,7 +236,7 @@ class WorkerSandbox {
     if (os.platform() !== 'darwin') return null;
 
     const paths = this.getAllowedPaths(agentConfig);
-    const vaultPath = (this.config.vault?.path || '~/darkhan-vault').replace('~', process.env.HOME);
+    const folioPath = (this.config.folio?.path || '~/darkhan-folio').replace('~', process.env.HOME);
 
     // Build SBPL (Seatbelt Profile Language) profile
     const profile = `
@@ -269,12 +269,12 @@ class WorkerSandbox {
   (subpath "${path.join(__dirname, '..')}")
 )
 
-;; Allow reading the vault
+;; Allow reading the folio
 (allow file-read*
-  (subpath "${vaultPath}")
+  (subpath "${folioPath}")
 )
 
-;; Allow writing to permitted vault paths only
+;; Allow writing to permitted folio paths only
 ${paths.write.map(p => `(allow file-write*\n  (subpath "${p}")\n)`).join('\n')}
 
 ;; Allow temp files

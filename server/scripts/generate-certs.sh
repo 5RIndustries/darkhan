@@ -82,8 +82,8 @@ DNS.2 = $NODE_NAME
 DNS.3 = *.local
 IP.1 = 127.0.0.1
 # Add your node IPs here (e.g., Tailscale IPs)
-# IP.2 = <node-2-ip>
-# IP.3 = <node-1-ip>
+# IP.2 = <remote-worker-ip>
+# IP.3 = <additional-node-ip>
 CONF
 
 openssl req -new -key "$CERT_DIR/$NODE_NAME.key" \

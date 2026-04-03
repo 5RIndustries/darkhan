@@ -260,7 +260,7 @@
     try {
       const config = await api('GET', '/team');
       // Server exposes channels via config — pull from darkhan.config.json
-      const configRes = await fetch('/api/vault/tree?depth=0').catch(() => null);
+      const configRes = await fetch('/api/folio/tree?depth=0').catch(() => null);
       // Fallback: read channels from database
       // Fallback: load channels from database via API
       const chanRes = await api('GET', '/channels').catch(() => null);
@@ -1397,7 +1397,7 @@
     if (!treeContainer) return;
 
     try {
-      const data = await api('GET', '/vault/tree?depth=4');
+      const data = await api('GET', '/folio/tree?depth=4');
       // Built-in entries at the top of the tree
       const builtInHtml = `
         <div style="margin-bottom:0.75rem;padding-bottom:0.5rem;border-bottom:1px solid var(--border);">
@@ -1430,7 +1430,7 @@
           loadDocs(); // Reset to tree
           return;
         }
-        searchTimeout = setTimeout(() => searchVault(q), 300);
+        searchTimeout = setTimeout(() => searchFolio(q), 300);
       });
     }
   }
@@ -1677,7 +1677,7 @@
     if (activeEl) activeEl.style.background = 'var(--bg-hover, rgba(255,255,255,0.1))';
 
     try {
-      const data = await api('GET', `/vault/file?path=${encodeURIComponent(filePath)}`);
+      const data = await api('GET', `/folio/file?path=${encodeURIComponent(filePath)}`);
       docsRawContent = data.content;
 
       // Build breadcrumb with edit/save buttons
@@ -1700,7 +1700,7 @@
   function _renderDocContent(content, ext) {
     const contentContainer = document.getElementById('docs-rendered');
     if (ext === '.md' && typeof marked !== 'undefined') {
-      // SECURITY: Sanitize rendered markdown to prevent XSS from vault content.
+      // SECURITY: Sanitize rendered markdown to prevent XSS from folio content.
       // Strip dangerous tags/attributes after markdown parsing.
       let rendered = marked.parse(content);
       rendered = rendered
@@ -1763,7 +1763,7 @@
     saveStatus.style.color = 'var(--text-muted)';
 
     try {
-      await api('PUT', `/vault/file?path=${encodeURIComponent(docsCurrentPath)}`, {
+      await api('PUT', `/folio/file?path=${encodeURIComponent(docsCurrentPath)}`, {
         content: docsRawContent
       });
       saveStatus.textContent = 'saved';
@@ -1776,12 +1776,12 @@
     }
   };
 
-  async function searchVault(query) {
+  async function searchFolio(query) {
     const treeContainer = document.getElementById('docs-tree');
     if (!treeContainer) return;
 
     try {
-      const data = await api('GET', `/vault/search?q=${encodeURIComponent(query)}&limit=30`);
+      const data = await api('GET', `/folio/search?q=${encodeURIComponent(query)}&limit=30`);
 
       if (data.results.length === 0) {
         treeContainer.innerHTML = `<p style="opacity:0.5;padding:0.5rem;">No results for "${escapeHtml(query)}"</p>`;
@@ -1997,7 +1997,7 @@
       workers: '/workers',
       costs: '/costs/daily',
       approvals: '/tasks?type=approval',
-      docs: '/vault/tree',
+      docs: '/folio/tree',
     };
 
     const endpoint = endpoints[viewName];
@@ -2063,7 +2063,7 @@
     const el = document.getElementById('split-generic-content');
     if (!el) return;
     try {
-      const data = await api('GET', '/vault/file?path=' + encodeURIComponent(path));
+      const data = await api('GET', '/folio/file?path=' + encodeURIComponent(path));
       el.innerHTML = '<div style="margin-bottom:0.5rem;"><button class="view-toolbar-btn" onclick="loadSplitRightView(\'docs\')">Back</button> <span style="font-size:0.8rem;opacity:0.6;">' + escapeHtml(path) + '</span></div>' +
         '<div class="markdown-body" style="line-height:1.6;">' +
         (typeof marked !== 'undefined' ? marked.parse(data.content || '') : '<pre>' + escapeHtml(data.content || '') + '</pre>') + '</div>';

@@ -2,14 +2,14 @@
  * Adversary Worker — "Siege"
  *
  * A persistent adversarial agent that actively tries to break Darkhan.
- * This agent is NOT friendly. It does not care about 5RI, Darkhan, or any
+ * This agent is NOT friendly. It does not care about Darkhan or any
  * mission. Its sole purpose is to find vulnerabilities and report them.
  *
  * DESIGN CONSTRAINTS:
  *   - PROBES and REPORTS only — never executes destructive actions
  *   - Tests against the LIVE instance's API surface (same instance it runs on)
  *   - Researches attack techniques from public sources daily
- *   - Publishes findings to chan_alerts + vault file
+ *   - Publishes findings to chan_alerts + folio file
  *   - Does NOT have elevated permissions — it attacks with normal agent access
  *   - Does NOT modify files, delete data, or corrupt state
  *
@@ -177,7 +177,7 @@ Be specific and actionable. Think like someone who wants to break this system, n
           options: { temperature: 0.7 },
         });
 
-        // Save research to vault
+        // Save research to folio
         const date = new Date().toISOString().split('T')[0];
         const reportPath = `Intel/${date}_Siege-Research-Sweep.md`;
         try {
@@ -526,13 +526,13 @@ async function probeIdentitySpoofing(darkhan, evidence, log) {
 async function probeInfoDisclosure(darkhan, evidence, log) {
   const findings = [];
 
-  // Test: Can we read .env via vault API?
+  // Test: Can we read .env via folio API?
   findings.push(await evidence.check({
-    claim: 'Vault API blocks access to .env file',
-    method: 'Request .env via vault file endpoint',
-    target: '/api/vault/file',
+    claim: 'Folio API blocks access to .env file',
+    method: 'Request .env via folio file endpoint',
+    target: '/api/folio/file',
     check: async () => {
-      const result = await httpGet('http://localhost:3001/api/vault/file?path=../.env');
+      const result = await httpGet('http://localhost:3001/api/folio/file?path=../.env');
       return {
         pass: result !== 200,
         actual: `HTTP ${result} (${result === 200 ? 'EXPOSED' : 'blocked'})`
@@ -540,13 +540,13 @@ async function probeInfoDisclosure(darkhan, evidence, log) {
     },
   }));
 
-  // Test: Can we read secrets.db via vault API?
+  // Test: Can we read secrets.db via folio API?
   findings.push(await evidence.check({
-    claim: 'Vault API blocks access to secrets.db',
-    method: 'Request secrets.db via vault file endpoint',
-    target: '/api/vault/file',
+    claim: 'Folio API blocks access to secrets.db',
+    method: 'Request secrets.db via folio file endpoint',
+    target: '/api/folio/file',
     check: async () => {
-      const result = await httpGet('http://localhost:3001/api/vault/file?path=../db/secrets.db');
+      const result = await httpGet('http://localhost:3001/api/folio/file?path=../db/secrets.db');
       return {
         pass: result !== 200,
         actual: `HTTP ${result} (${result === 200 ? 'EXPOSED' : 'blocked'})`
@@ -560,7 +560,7 @@ async function probeInfoDisclosure(darkhan, evidence, log) {
     method: 'Trigger errors and check response bodies',
     target: 'Error handling',
     check: async () => {
-      const result = await httpGetBody('http://localhost:3001/api/vault/file?path=../../etc/passwd');
+      const result = await httpGetBody('http://localhost:3001/api/folio/file?path=../../etc/passwd');
       const leaks = result && (
         result.includes('/Users/') ||
         result.includes('/home/') ||

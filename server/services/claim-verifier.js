@@ -16,8 +16,8 @@ const fs = require('fs');
 const path = require('path');
 
 class ClaimVerifierService {
-  constructor({ vaultPath, db, activityLog, groundTruth = null }) {
-    this.vaultPath = vaultPath;
+  constructor({ folioPath, db, activityLog, groundTruth = null }) {
+    this.folioPath = folioPath;
     this.db = db;
     this.activityLog = activityLog;
     this.groundTruth = groundTruth; // Set after GroundTruthRegistry initializes
@@ -32,7 +32,7 @@ class ClaimVerifierService {
       { regex: /writ(?:ten|e|ing)\s+to\s+([A-Za-z0-9_\-/.]+\.(?:md|txt|json|csv|pdf|py|js|yaml|yml))/gi, type: 'file_exists' },
       // "created path/filename.md" or "created file ..."
       { regex: /created\s+(?:file\s+)?([A-Za-z0-9_\-/.]+\.(?:md|txt|json|csv|pdf|py|js|yaml|yml))/gi, type: 'file_exists' },
-      // Explicit vault-relative path references
+      // Explicit folio-relative path references
       { regex: /(?:DRAFT|Intel|Sprints|Decisions|Pipeline|output|drafts)\/[A-Za-z0-9_\-]+\.(?:md|txt|json)/g, type: 'file_exists' },
     ];
 
@@ -232,7 +232,7 @@ class ClaimVerifierService {
 
   /**
    * Verify all file_exists claims by checking the filesystem.
-   * Resolves relative paths against the vault root.
+   * Resolves relative paths against the folio root.
    */
   async _verifyFileClaims(claims) {
     for (const claim of claims) {
@@ -267,9 +267,9 @@ class ClaimVerifierService {
 
   /**
    * Resolve a file path reference to an absolute path.
-   * Handles common vault-relative patterns:
-   *   - "DRAFT/filename.md" → vaultPath/project/drafts/filename.md
-   *   - "Intel/filename.md" → vaultPath/project/output/filename.md
+   * Handles common folio-relative patterns:
+   *   - "DRAFT/filename.md" → folioPath/project/drafts/filename.md
+   *   - "Intel/filename.md" → folioPath/project/output/filename.md
    *   - Absolute paths pass through
    */
   _resolveFilePath(filePath) {
@@ -283,12 +283,12 @@ class ClaimVerifierService {
       return filePath.replace('~', process.env.HOME);
     }
 
-    // Common vault-relative prefixes
+    // Common folio-relative prefixes
     // Load custom prefix map from config if available
     let configPrefixMap;
     try {
       const cfg = require('../darkhan.config.json');
-      configPrefixMap = cfg.vault?.pathAliases;
+      configPrefixMap = cfg.folio?.pathAliases;
     } catch (e) { /* not loaded yet */ }
     const prefixMap = configPrefixMap || {
       'DRAFT/': 'project/drafts/',
@@ -300,12 +300,12 @@ class ClaimVerifierService {
 
     for (const [prefix, expanded] of Object.entries(prefixMap)) {
       if (filePath.startsWith(prefix)) {
-        return path.join(this.vaultPath, expanded, filePath.substring(prefix.length));
+        return path.join(this.folioPath, expanded, filePath.substring(prefix.length));
       }
     }
 
-    // Already a vault-relative path
-    return path.join(this.vaultPath, filePath);
+    // Already a folio-relative path
+    return path.join(this.folioPath, filePath);
   }
 
   /**

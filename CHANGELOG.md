@@ -153,7 +153,7 @@ Extension of two-LLM consensus from injection detection to claim verification.
 ### Unified Claude Session v3 (2026-04-01)
 Complete rewrite of the Claude integration layer. Claude Code now runs as a persistent SDK session shared between the terminal and chat interfaces.
 - **Per-turn streaming** — SDK v2's `session.stream()` is per-turn (yields events for one `send()`, then completes). Session stays alive for subsequent turns. Previous architecture assumed a persistent stream, causing session death after each message.
-- **No heavy preamble** — System prompt gives Claude identity, vault path, and operating rules. Claude reads files when it needs them, not upfront. Eliminates 30-60s cold-start delays.
+- **No heavy preamble** — System prompt gives Claude identity, folio path, and operating rules. Claude reads files when it needs them, not upfront. Eliminates 30-60s cold-start delays.
 - **Session persistence** — Session IDs saved to disk (`~/.claude/darkhan-unified-sessions.json`). On server restart, sessions resume via `unstable_v2_resumeSession` instead of creating a fresh session. Context is preserved.
 - **Concurrency guard** — `busy` flag prevents concurrent send/stream calls. Chat waits if terminal is processing, and vice versa.
 - **Dead session recovery** — Detects EPIPE/closed errors and automatically recreates the session (resume first, fresh fallback).
@@ -330,7 +330,7 @@ Driven by internal audit after the Anthropic Claude Code source map leak. See [R
 - **Web UI** — dark-themed command center with chat, dashboard, task board, worker status, cost tracking, docs browser
 - **Integrated terminal** — Claude Code and shell terminals directly in the web UI with shared context
 - **Split-screen and pop-out views** — multi-monitor support, any view in its own window
-- **Knowledge base** — browse, search, and edit markdown files from the vault
+- **Knowledge base** — browse, search, and edit markdown files from the Folio
 
 ### Security (Grade A- — independently audited by red team + adversarial self-audit, updated 2026-04-02)
 - **Credential isolation** — secrets.db separated from main database, 600 permissions, never exposed to workers

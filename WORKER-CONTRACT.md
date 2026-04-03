@@ -208,7 +208,7 @@ Verification results are stored in the message's `metadata.claimVerification` fi
 ### `tools` -- External Tool Access
 
 ```
-tools.fs.read(path)         -> Read a file from the vault
+tools.fs.read(path)         -> Read a file from the folio
 tools.fs.write(path, data)  -> Write a file (respects agent write permissions)
 tools.fs.exists(path)       -> Check if a file exists
 tools.fs.readdir(path)      -> List directory contents
@@ -443,7 +443,7 @@ Each agent has a permission set defined in `darkhan.config.json`. The `tools` in
 
 | Permission | Config Key | Options |
 |-----------|------------|---------|
-| File read | (implicit) | All agents can read the full vault |
+| File read | (implicit) | All agents can read the full folio |
 | File write | `permissions.fsWrite` | Array of permitted directory prefixes |
 | Shell access | `permissions.shell` | `full`, `restricted`, `none` |
 | LLM providers | `model.provider` + `rateLimits` | Provider and daily/per-minute budgets |
@@ -602,7 +602,7 @@ async run({ darkhan, tools, log }) {
 }
 ```
 
-**What happens automatically:** The Claim Verifier checks every agent message against the ground truth registry before storage. If an agent claims "Node 2 has 16GB RAM" but the registry says "Node 2 has 24GB RAM", the contradiction is flagged in the message's `metadata.claimVerification` field.
+**What happens automatically:** The Claim Verifier checks every agent message against the ground truth registry before storage. If an agent claims "the server has 16GB RAM" but the registry says "the server has 24GB RAM", the contradiction is flagged in the message's `metadata.claimVerification` field.
 
 Agents do not need to call the ground truth API directly for contradiction detection -- it happens transparently on every `darkhan.post()`. However, proactively including the brief in LLM prompts prevents contradictions from being generated in the first place.
 
@@ -616,7 +616,7 @@ Darkhan automatically captures all channel conversations to `docs/transcripts/` 
 - **Format:** `Transcript_YYYY-MM-DD.md` -- one file per day, 24-hour blocks
 - **Update frequency:** Every 30 minutes, but only when new messages exist (no redundant writes overnight)
 - **Content:** Verbatim channel messages with code blocks stripped. Messages from `#command`, `#claude`, and `#alerts`
-- **Location:** `docs/transcripts/` in the Darkhan installation directory (not the vault)
+- **Location:** `docs/transcripts/` in the Darkhan installation directory (not the folio)
 - **Purpose:** Session continuity. When Claude sessions cycle (every 50 messages), the new session reads today's and yesterday's transcripts to resume with full context
 - **Integrity:** Writes to `docs/` do not trigger the integrity lockdown system. The integrity monitor only watches `server/` code and `workers/`
 
@@ -635,7 +635,7 @@ Workers can run on a remote node using the `FederatedWorkerRuntime` (via `remote
 | `darkhan.post()` | Direct database insert + WebSocket | HTTP POST to hub API |
 | `darkhan.getMessages()` | Direct database query | HTTP GET from hub API |
 | `darkhan.ping()` | Direct database update | HTTP POST to hub API |
-| `tools.fs.read()` | Local filesystem | HTTP GET from hub's vault API |
+| `tools.fs.read()` | Local filesystem | HTTP GET from hub's folio API |
 | Listener triggering | WebSocket event | 5-second polling against hub |
 | Rate limiting | Local enforcement | Hub-side enforcement via API key |
 

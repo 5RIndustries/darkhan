@@ -123,53 +123,53 @@ async function createTask(input, context) {
 
 /**
  * read_file(path)
- * Read a file from the vault
+ * Read a file from the folio
  */
 async function readFile(input, context) {
-  const { path: vaultPath } = input;
+  const { path: folioPath } = input;
 
-  if (!vaultPath) {
+  if (!folioPath) {
     return { success: false, error: 'path is required' };
   }
 
   // Check permission
-  const perm = checkPermission('file_read', vaultPath);
+  const perm = checkPermission('file_read', folioPath);
   if (perm.status === 'denied') {
     return { success: false, error: `Permission denied: ${perm.reason}` };
   }
 
   // Read file
   try {
-    const fullPath = normalizePath(vaultPath);
+    const fullPath = normalizePath(folioPath);
     if (!fullPath) {
       return { success: false, error: 'Invalid path' };
     }
 
     const content = fs.readFileSync(fullPath, 'utf8');
-    console.log(`[read_file] Read ${vaultPath} (${content.length} bytes)`);
+    console.log(`[read_file] Read ${folioPath} (${content.length} bytes)`);
     return { success: true, result: { content } };
   } catch (err) {
-    console.error(`[read_file] Error reading ${vaultPath}:`, err.message);
+    console.error(`[read_file] Error reading ${folioPath}:`, err.message);
     return { success: false, error: `Failed to read file: ${err.message}` };
   }
 }
 
 /**
  * write_file(path, content)
- * Write a file to the vault
+ * Write a file to the folio
  * If outside allowlist, queue for approval; return "queued" status
  */
 async function writeFile(input, context) {
-  const { path: vaultPath, content } = input;
+  const { path: folioPath, content } = input;
   const { db } = context;
 
-  if (!vaultPath || content === undefined) {
+  if (!folioPath || content === undefined) {
     return { success: false, error: 'path and content are required' };
   }
 
   // Check permission
-  const perm = checkPermission('file_write', vaultPath);
-  
+  const perm = checkPermission('file_write', folioPath);
+
   if (perm.status === 'denied') {
     return { success: false, error: `Permission denied: ${perm.reason}` };
   }
@@ -178,7 +178,7 @@ async function writeFile(input, context) {
     // Queue for approval
     return new Promise((resolve) => {
       const id = crypto.randomUUID();
-      const actionDetail = JSON.stringify({ path: vaultPath, contentLength: content.length });
+      const actionDetail = JSON.stringify({ path: folioPath, contentLength: content.length });
 
       db.run(
         `INSERT INTO approval_queue (id, requested_by, action_type, action_detail)
@@ -189,12 +189,12 @@ async function writeFile(input, context) {
             console.error('[write_file] Queue error:', err.message);
             return resolve({ success: false, error: err.message });
           }
-          console.log(`[write_file] Queued for approval: ${vaultPath} (id: ${id})`);
+          console.log(`[write_file] Queued for approval: ${folioPath} (id: ${id})`);
           resolve({
             success: true,
             queued: true,
             approval_id: id,
-            message: `Write to ${vaultPath} queued for admin approval`
+            message: `Write to ${folioPath} queued for admin approval`
           });
         }
       );
@@ -203,7 +203,7 @@ async function writeFile(input, context) {
 
   // Allowed — write directly
   try {
-    const fullPath = normalizePath(vaultPath);
+    const fullPath = normalizePath(folioPath);
     if (!fullPath) {
       return { success: false, error: 'Invalid path' };
     }
@@ -215,10 +215,10 @@ async function writeFile(input, context) {
     }
 
     fs.writeFileSync(fullPath, content, { mode: 0o644 });
-    console.log(`[write_file] Wrote ${vaultPath} (${content.length} bytes)`);
-    return { success: true, result: { path: vaultPath } };
+    console.log(`[write_file] Wrote ${folioPath} (${content.length} bytes)`);
+    return { success: true, result: { path: folioPath } };
   } catch (err) {
-    console.error(`[write_file] Error writing ${vaultPath}:`, err.message);
+    console.error(`[write_file] Error writing ${folioPath}:`, err.message);
     return { success: false, error: `Failed to write file: ${err.message}` };
   }
 }

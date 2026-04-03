@@ -927,4 +927,4 @@ See [SECURITY.md](SECURITY.md#vps-deployment-hardening) for the full threat mode
 
 - Read [README.md](README.md) for full architecture documentation
 - Read [WORKER-CONTRACT.md](WORKER-CONTRACT.md) before writing workers
-- Explore the web UI: check Health, Costs, and Vault views
+- Explore the web UI: check Health, Costs, and Folio views

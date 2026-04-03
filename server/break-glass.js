@@ -381,7 +381,7 @@ async function resetBaseline() {
     'services/security.js', 'services/integrity.js', 'services/auto-responder.js',
     'services/worker-runtime.js', 'services/llm.js', 'services/activity-log.js',
     'services/ground-truth.js', 'services/claim-verifier.js', 'services/sandbox.js',
-    'routes/messages.js', 'routes/auth.js', 'routes/vault.js',
+    'routes/messages.js', 'routes/auth.js', 'routes/folio.js',
     'db/schema.sql', 'db/secrets-schema.sql', 'db/seed.js',
   ];
 

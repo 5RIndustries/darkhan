@@ -77,7 +77,7 @@ router.post('/', (req, res) => {
     description = null,
     assignee,
     priority = 3,
-    vault_path = null
+    folio_path = null
   } = req.body;
 
   if (!title || !assignee) {
@@ -87,9 +87,9 @@ router.post('/', (req, res) => {
   const id = crypto.randomUUID();
 
   db.run(
-    `INSERT INTO tasks (id, title, description, assignee, created_by, priority, vault_path)
+    `INSERT INTO tasks (id, title, description, assignee, created_by, priority, folio_path)
      VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    [id, title, description, assignee, userId, priority, vault_path],
+    [id, title, description, assignee, userId, priority, folio_path],
     function (err) {
       if (err) {
         console.error('Task POST error:', err.message);
@@ -104,7 +104,7 @@ router.post('/', (req, res) => {
         created_by: userId,
         status: 'queued',
         priority,
-        vault_path,
+        folio_path,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString()
       };
@@ -122,7 +122,7 @@ router.patch('/:id', (req, res) => {
   const db = req.app.locals.db;
   const io = req.app.locals.io;
 
-  const allowedFields = ['status', 'priority', 'assignee', 'description', 'vault_path'];
+  const allowedFields = ['status', 'priority', 'assignee', 'description', 'folio_path'];
   const updates = [];
   const params = [];
 

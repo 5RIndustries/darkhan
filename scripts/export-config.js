@@ -16,7 +16,7 @@
  *   - API keys, passwords, PINs, session secrets
  *   - Ed25519 keypair (new node generates its own)
  *   - Database contents (messages, activity logs, secrets)
- *   - File paths that are node-specific (vault, TLS certs)
+ *   - File paths that are node-specific (folio, TLS certs)
  *   - Worker file contents (code stays in the repo)
  *
  * The exported config is signed with this instance's Ed25519 key so the
@@ -178,7 +178,7 @@ const humanCount = cleanJSON.team.members.filter(m => m.type === 'human').length
 const channelCount = cleanJSON.channels.length;
 
 info(`Exporting: ${humanCount} human(s), ${agentCount} agent(s), ${channelCount} channel(s)`);
-info('Stripped: API keys, passwords, keypairs, vault paths, TLS certs');
+info('Stripped: API keys, passwords, keypairs, folio paths, TLS certs');
 
 // Output
 const output = JSON.stringify(cleanJSON, null, 2);

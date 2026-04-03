@@ -46,10 +46,10 @@ router.get('/brief', requireAuth, async (req, res) => {
   const format = req.query.format || 'text';
 
   const HOME = process.env.HOME || '';
-  const vaultPath = (config.vault?.path || '~/darkhan-vault').replace(/^~/, HOME);
+  const folioPath = (config.folio?.path || '~/darkhan-folio').replace(/^~/, HOME);
   const transcriptDir = path.resolve(__dirname, '..', '..', 'docs', 'transcripts');
   const stateFilePath = leadConfig.stateFile
-    ? path.join(vaultPath, leadConfig.stateFile)
+    ? path.join(folioPath, leadConfig.stateFile)
     : null;
 
   // 1. Read state file
@@ -81,7 +81,7 @@ router.get('/brief', requireAuth, async (req, res) => {
     channelMessages = await new Promise((resolve, reject) => {
       db.all(
         `SELECT from_user, body, created_at, channel_id FROM messages
-         WHERE channel_id IN ('chan_command', 'chan_claude', 'chan_alerts')
+         WHERE channel_id IN ('chan_command', 'chan_system', 'chan_alerts')
          ORDER BY created_at DESC LIMIT ?`,
         [msgLimit],
         (err, rows) => err ? reject(err) : resolve((rows || []).reverse())
@@ -112,7 +112,7 @@ router.get('/brief', requireAuth, async (req, res) => {
 
   // 5. Operating instructions
   const today = new Date().toISOString().substring(0, 10);
-  const instructions = _buildOperatingInstructions(leadConfig, vaultPath, transcriptDir, today);
+  const instructions = _buildOperatingInstructions(leadConfig, folioPath, transcriptDir, today);
 
   if (format === 'json') {
     return res.json({
@@ -181,13 +181,13 @@ router.get('/state', requireAuth, (req, res) => {
   const config = req.app.locals.config;
   const leadConfig = config.leadAgent || {};
   const HOME = process.env.HOME || '';
-  const vaultPath = (config.vault?.path || '~/darkhan-vault').replace(/^~/, HOME);
+  const folioPath = (config.folio?.path || '~/darkhan-folio').replace(/^~/, HOME);
 
   if (!leadConfig.stateFile) {
     return res.status(404).json({ error: 'No state file configured' });
   }
 
-  const stateFilePath = path.join(vaultPath, leadConfig.stateFile);
+  const stateFilePath = path.join(folioPath, leadConfig.stateFile);
   try {
     const content = fs.readFileSync(stateFilePath, 'utf8');
     res.type('text/markdown').send(content);
@@ -313,7 +313,7 @@ router.post('/settings', requireAuth, async (req, res) => {
  * These are agent-agnostic — they describe what the platform expects,
  * not how a specific LLM should behave.
  */
-function _buildOperatingInstructions(leadConfig, vaultPath, transcriptDir, today) {
+function _buildOperatingInstructions(leadConfig, folioPath, transcriptDir, today) {
   const lines = [
     'OPERATING INSTRUCTIONS (from Darkhan platform):',
     '',
@@ -326,8 +326,8 @@ function _buildOperatingInstructions(leadConfig, vaultPath, transcriptDir, today
       'On your first turn, you MUST read the following files before responding to the user:',
       `1. Today's transcript: ${path.join(transcriptDir, 'Transcript_' + today + '.md')}`,
       `2. Yesterday's transcript: ${path.join(transcriptDir, 'Transcript_' + yesterday + '.md')}`,
-      `3. Operating instructions: ${vaultPath}/CLAUDE.md (or equivalent agent instructions)`,
-      `4. Current state: ${vaultPath}/${leadConfig.stateFile || 'State.md'}`,
+      `3. Operating instructions: ${folioPath}/CLAUDE.md (or equivalent agent instructions)`,
+      `4. Current state: ${folioPath}/${leadConfig.stateFile || 'State.md'}`,
       '',
       'After reading, briefly tell the user what you understand the current work to be.',
       'If you skip these reads, you will give the user stale or wrong context.',
@@ -353,7 +353,7 @@ function _buildOperatingInstructions(leadConfig, vaultPath, transcriptDir, today
     `- Session cycle threshold: ${leadConfig.sessionCycleMessages || 50} messages`,
     `- Context window: ${leadConfig.channelContextMessages || 100} recent channel messages`,
     `- Transcript depth: ${leadConfig.transcriptReadDays || 2} day(s)`,
-    `- Vault path: ${vaultPath}`,
+    `- Folio path: ${folioPath}`,
     `- Use absolute paths for all file operations.`,
   );
 

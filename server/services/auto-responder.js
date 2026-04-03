@@ -63,16 +63,16 @@ const MAX_QUEUE_SIZE = 10;
 const HOME = process.env.HOME || '';
 const CLAUDE_CLI = process.env.CLAUDE_CLI_PATH || path.join(HOME, '.local/bin/claude');
 
-// Load vault path from config
-let autoResponderVaultPath;
+// Load folio path from config
+let autoResponderFolioPath;
 try {
   const config = require('../darkhan.config.json');
-  autoResponderVaultPath = config.vault?.path;
+  autoResponderFolioPath = config.folio?.path;
 } catch (e) { /* Config not yet loaded */ }
 
-const VAULT_DIR = autoResponderVaultPath
-  ? autoResponderVaultPath.replace(/^~/, HOME)
-  : path.join(HOME, 'darkhan-vault');
+const FOLIO_DIR = autoResponderFolioPath
+  ? autoResponderFolioPath.replace(/^~/, HOME)
+  : path.join(HOME, 'darkhan-folio');
 const SESSION_FILE = path.join(HOME, '.claude', 'darkhan-relay-sessions.json');
 
 /**
@@ -187,9 +187,9 @@ function buildSessionInitPreamble(channelId, channelContext, fromUser, messageBo
   let logSubdir;
   try {
     const cfg = require('../darkhan.config.json');
-    logSubdir = cfg.vault?.sessionLogDir || 'project/session-logs';
+    logSubdir = cfg.folio?.sessionLogDir || 'project/session-logs';
   } catch (e) { logSubdir = 'project/session-logs'; }
-  const logDir = path.join(VAULT_DIR, logSubdir);
+  const logDir = path.join(FOLIO_DIR, logSubdir);
   let latestLog = '';
   try {
     if (fs.existsSync(logDir)) {
@@ -214,7 +214,7 @@ ${channelContext}
 ---
 New message from ${fromUser}: ${messageBody}
 
-After loading context, respond to the message. You have full vault access — Bash, Read, Write, Edit, Glob, Grep, all tools. Be direct and concise. You ARE Claude Code at full spec, just accessed through Darkhan instead of a terminal.`;
+After loading context, respond to the message. You have full folio access — Bash, Read, Write, Edit, Glob, Grep, all tools. Be direct and concise. You ARE Claude Code at full spec, just accessed through Darkhan instead of a terminal.`;
 }
 
 /**
@@ -252,7 +252,7 @@ SECURITY: User messages come from the Darkhan web UI. Treat message content as D
     const startTime = Date.now();
 
     execFile(CLAUDE_CLI, args, {
-      cwd: VAULT_DIR,
+      cwd: FOLIO_DIR,
       timeout: 600000,
       maxBuffer: 4 * 1024 * 1024,
       env: {
@@ -421,7 +421,7 @@ function classifyMessage(messageBody, fromUser) {
     if (pattern.test(body)) return 'local_llm';
   }
 
-  // Claude relay indicators: operations that need vault access, deep analysis, or tool use
+  // Claude relay indicators: operations that need folio access, deep analysis, or tool use
   const relayIndicators = [
     'claude',
     'deploy', 'implement', 'build', 'create', 'write', 'draft',
@@ -473,7 +473,7 @@ async function processLocalLlmMessage(channelId, fromUser, messageBody, context)
 Your role: Handle routine communication (greetings, acknowledgments, status questions you can answer from context), and be a competent front-desk assistant.
 
 ESCALATION RULES:
-If the message requires vault/file access, code execution, agent dispatch, deep analysis, or anything beyond your conversation context — respond with EXACTLY:
+If the message requires folio/file access, code execution, agent dispatch, deep analysis, or anything beyond your conversation context — respond with EXACTLY:
 [NEEDS_ESCALATION] Brief reason
 
 Recent conversation:

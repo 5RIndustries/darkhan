@@ -292,7 +292,7 @@ class GroundTruthRegistry {
 
       // Find numbers in the window. Pattern captures number + optional unit.
       // Match "47%", "47 %", "47 percent", "12 patents", "5x", etc.
-      // Negative lookbehind: exclude numbers that are part of alphanumeric tokens (e.g., "LR8", "P5")
+      // Negative lookbehind: exclude numbers that are part of alphanumeric tokens (e.g., "X25", "P5")
       const numberPattern = /(?<![A-Za-z])(\d+\.?\d*)\s*(%|percent|patents?|x|g\s*(?:H2)?\/L|kW|MW|°C|deg\s*C|hours?|days?|workers?|K\s*USD)?/gi;
       let numMatch;
       const candidates = [];

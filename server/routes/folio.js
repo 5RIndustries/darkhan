@@ -1,19 +1,19 @@
 /**
- * Darkhan — Vault Routes (Knowledge Base)
+ * Darkhan — Folio Routes (Knowledge Base)
  *
  * File system access for the team's knowledge base.
  * Provides: directory listing, file read/write/create/delete, full-text search.
  *
- * The vault is a directory of markdown files on the server's file system.
- * Path is configured in darkhan.config.json under vault.path.
+ * The folio is a directory of markdown files on the server's file system.
+ * Path is configured in darkhan.config.json under folio.path.
  * Agents and humans read/write the same files — Darkhan provides the UI.
  *
- * GET    /api/vault/tree          — recursive directory listing
- * GET    /api/vault/file?path=    — read file contents
- * PUT    /api/vault/file?path=    — update existing file
- * POST   /api/vault/file?path=    — create new file
- * DELETE /api/vault/file?path=    — delete file
- * GET    /api/vault/search?q=     — full-text search across all files
+ * GET    /api/folio/tree          — recursive directory listing
+ * GET    /api/folio/file?path=    — read file contents
+ * PUT    /api/folio/file?path=    — update existing file
+ * POST   /api/folio/file?path=    — create new file
+ * DELETE /api/folio/file?path=    — delete file
+ * GET    /api/folio/search?q=     — full-text search across all files
  */
 
 const express = require('express');
@@ -25,37 +25,37 @@ const { requireAuth } = require('../middleware/auth');
 router.use(requireAuth);
 
 /**
- * Resolve the vault root path from config.
+ * Resolve the folio root path from config.
  */
-function getVaultPath(req) {
+function getFolioPath(req) {
   const config = req.app.locals.config;
-  const raw = config?.vault?.path || '~/darkhan-vault';
+  const raw = config?.folio?.path || '~/darkhan-folio';
   return raw.replace('~', process.env.HOME);
 }
 
 /**
- * Ensure a requested path is inside the vault (prevent directory traversal).
+ * Ensure a requested path is inside the folio (prevent directory traversal).
  */
-function safePath(vaultRoot, requestedPath) {
-  const resolved = path.resolve(vaultRoot, requestedPath);
-  if (!resolved.startsWith(vaultRoot)) {
+function safePath(folioRoot, requestedPath) {
+  const resolved = path.resolve(folioRoot, requestedPath);
+  if (!resolved.startsWith(folioRoot)) {
     return null; // Traversal attempt
   }
   return resolved;
 }
 
 /**
- * GET /api/vault/tree — recursive directory listing
+ * GET /api/folio/tree — recursive directory listing
  * Query params:
- *   dir (optional) — subdirectory to list (default: vault root)
+ *   dir (optional) — subdirectory to list (default: folio root)
  *   depth (optional) — max recursion depth (default: 3)
  */
 router.get('/tree', (req, res) => {
-  const vaultRoot = getVaultPath(req);
+  const folioRoot = getFolioPath(req);
   const subDir = req.query.dir || '';
   const maxDepth = Math.min(parseInt(req.query.depth) || 3, 10);
 
-  const targetDir = safePath(vaultRoot, subDir);
+  const targetDir = safePath(folioRoot, subDir);
   if (!targetDir) {
     return res.status(400).json({ error: 'Invalid path' });
   }
@@ -65,14 +65,14 @@ router.get('/tree', (req, res) => {
   }
 
   try {
-    const tree = buildTree(targetDir, vaultRoot, 0, maxDepth);
+    const tree = buildTree(targetDir, folioRoot, 0, maxDepth);
     res.json({ root: subDir || '/', tree });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
-function buildTree(dirPath, vaultRoot, depth, maxDepth) {
+function buildTree(dirPath, folioRoot, depth, maxDepth) {
   if (depth >= maxDepth) return [];
 
   const entries = fs.readdirSync(dirPath, { withFileTypes: true })
@@ -86,14 +86,14 @@ function buildTree(dirPath, vaultRoot, depth, maxDepth) {
 
   return entries.map(entry => {
     const fullPath = path.join(dirPath, entry.name);
-    const relativePath = path.relative(vaultRoot, fullPath);
+    const relativePath = path.relative(folioRoot, fullPath);
 
     if (entry.isDirectory()) {
       return {
         name: entry.name,
         path: relativePath,
         type: 'directory',
-        children: buildTree(fullPath, vaultRoot, depth + 1, maxDepth),
+        children: buildTree(fullPath, folioRoot, depth + 1, maxDepth),
       };
     } else {
       const stats = fs.statSync(fullPath);
@@ -110,17 +110,17 @@ function buildTree(dirPath, vaultRoot, depth, maxDepth) {
 }
 
 /**
- * GET /api/vault/file?path= — read file contents
+ * GET /api/folio/file?path= — read file contents
  */
 router.get('/file', (req, res) => {
-  const vaultRoot = getVaultPath(req);
+  const folioRoot = getFolioPath(req);
   const filePath = req.query.path;
 
   if (!filePath) {
     return res.status(400).json({ error: 'path parameter required' });
   }
 
-  const fullPath = safePath(vaultRoot, filePath);
+  const fullPath = safePath(folioRoot, filePath);
   if (!fullPath) {
     return res.status(400).json({ error: 'Invalid path' });
   }
@@ -145,11 +145,11 @@ router.get('/file', (req, res) => {
 });
 
 /**
- * PUT /api/vault/file?path= — update existing file
+ * PUT /api/folio/file?path= — update existing file
  * Body: { content: "file contents" }
  */
 router.put('/file', (req, res) => {
-  const vaultRoot = getVaultPath(req);
+  const folioRoot = getFolioPath(req);
   const filePath = req.query.path;
   const { content } = req.body;
 
@@ -157,7 +157,7 @@ router.put('/file', (req, res) => {
     return res.status(400).json({ error: 'path parameter and content body required' });
   }
 
-  const fullPath = safePath(vaultRoot, filePath);
+  const fullPath = safePath(folioRoot, filePath);
   if (!fullPath) {
     return res.status(400).json({ error: 'Invalid path' });
   }
@@ -188,11 +188,11 @@ router.put('/file', (req, res) => {
 });
 
 /**
- * POST /api/vault/file?path= — create new file
+ * POST /api/folio/file?path= — create new file
  * Body: { content: "file contents" }
  */
 router.post('/file', (req, res) => {
-  const vaultRoot = getVaultPath(req);
+  const folioRoot = getFolioPath(req);
   const filePath = req.query.path;
   const { content = '' } = req.body;
 
@@ -200,7 +200,7 @@ router.post('/file', (req, res) => {
     return res.status(400).json({ error: 'path parameter required' });
   }
 
-  const fullPath = safePath(vaultRoot, filePath);
+  const fullPath = safePath(folioRoot, filePath);
   if (!fullPath) {
     return res.status(400).json({ error: 'Invalid path' });
   }
@@ -236,17 +236,17 @@ router.post('/file', (req, res) => {
 });
 
 /**
- * DELETE /api/vault/file?path= — delete a file
+ * DELETE /api/folio/file?path= — delete a file
  */
 router.delete('/file', (req, res) => {
-  const vaultRoot = getVaultPath(req);
+  const folioRoot = getFolioPath(req);
   const filePath = req.query.path;
 
   if (!filePath) {
     return res.status(400).json({ error: 'path parameter required' });
   }
 
-  const fullPath = safePath(vaultRoot, filePath);
+  const fullPath = safePath(folioRoot, filePath);
   if (!fullPath) {
     return res.status(400).json({ error: 'Invalid path' });
   }
@@ -280,15 +280,15 @@ router.delete('/file', (req, res) => {
 });
 
 /**
- * GET /api/vault/search?q= — full-text search across vault files
+ * GET /api/folio/search?q= — full-text search across folio files
  * Query params:
  *   q — search query (required)
- *   dir — subdirectory to search (optional, default: vault root)
+ *   dir — subdirectory to search (optional, default: folio root)
  *   ext — file extension filter (optional, default: .md)
  *   limit — max results (optional, default: 50)
  */
 router.get('/search', (req, res) => {
-  const vaultRoot = getVaultPath(req);
+  const folioRoot = getFolioPath(req);
   const query = req.query.q;
   const subDir = req.query.dir || '';
   const ext = req.query.ext || '.md';
@@ -298,21 +298,21 @@ router.get('/search', (req, res) => {
     return res.status(400).json({ error: 'q parameter required' });
   }
 
-  const searchDir = safePath(vaultRoot, subDir);
+  const searchDir = safePath(folioRoot, subDir);
   if (!searchDir) {
     return res.status(400).json({ error: 'Invalid path' });
   }
 
   try {
     const results = [];
-    searchFiles(searchDir, vaultRoot, query.toLowerCase(), ext, results, limit);
+    searchFiles(searchDir, folioRoot, query.toLowerCase(), ext, results, limit);
     res.json({ query, results, count: results.length });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
-function searchFiles(dirPath, vaultRoot, query, ext, results, limit) {
+function searchFiles(dirPath, folioRoot, query, ext, results, limit) {
   if (results.length >= limit) return;
   if (!fs.existsSync(dirPath)) return;
 
@@ -325,7 +325,7 @@ function searchFiles(dirPath, vaultRoot, query, ext, results, limit) {
     const fullPath = path.join(dirPath, entry.name);
 
     if (entry.isDirectory()) {
-      searchFiles(fullPath, vaultRoot, query, ext, results, limit);
+      searchFiles(fullPath, folioRoot, query, ext, results, limit);
     } else if (!ext || entry.name.endsWith(ext)) {
       try {
         const content = fs.readFileSync(fullPath, 'utf8');
@@ -339,7 +339,7 @@ function searchFiles(dirPath, vaultRoot, query, ext, results, limit) {
           const context = content.substring(start, end).replace(/\n/g, ' ');
 
           results.push({
-            path: path.relative(vaultRoot, fullPath),
+            path: path.relative(folioRoot, fullPath),
             name: entry.name,
             context: (start > 0 ? '...' : '') + context + (end < content.length ? '...' : ''),
             matchIndex: idx,

@@ -12,7 +12,7 @@
  *
  * IPC Protocol:
  *   Parent -> Child:
- *     { type: 'init', workerPath, agentId, agentConfig, onboardingBrief, onboardingPreamble, vaultPath }
+ *     { type: 'init', workerPath, agentId, agentConfig, onboardingBrief, onboardingPreamble, folioPath }
  *     { type: 'run_task', taskName, timeout }
  *     { type: 'run_listener', listenerName, channelId, fromUser, body, timeout }
  *     { type: 'shutdown' }
@@ -33,7 +33,7 @@ const crypto = require('crypto');
 let workerModule = null;
 let agentId = null;
 let agentConfig = null;
-let vaultPath = null;
+let folioPath = null;
 let identityPreamble = '';
 
 // Request ID counter for IPC proxy calls
@@ -139,11 +139,11 @@ function buildContext() {
           return proxyCall('tools.fs.write', [filePath, data]);
         },
         exists(filePath) {
-          const fullPath = filePath.startsWith('/') ? filePath : path.join(vaultPath, filePath);
+          const fullPath = filePath.startsWith('/') ? filePath : path.join(folioPath, filePath);
           return fs.existsSync(fullPath);
         },
         async readdir(dirPath) {
-          const fullPath = dirPath.startsWith('/') ? dirPath : path.join(vaultPath, dirPath);
+          const fullPath = dirPath.startsWith('/') ? dirPath : path.join(folioPath, dirPath);
           return fs.promises.readdir(fullPath);
         },
       },
@@ -180,7 +180,7 @@ process.on('message', async (msg) => {
       try {
         agentId = msg.agentId;
         agentConfig = msg.agentConfig;
-        vaultPath = msg.vaultPath;
+        folioPath = msg.folioPath;
         identityPreamble = msg.onboardingPreamble || '';
 
         // Load the worker module

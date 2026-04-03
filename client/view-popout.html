@@ -170,7 +170,7 @@
     async function loadDocs() {
       content.innerHTML = '<div class="content-area" id="po-docs"><p>Loading...</p></div>';
       try {
-        const data = await api('GET', '/vault/tree');
+        const data = await api('GET', '/folio/tree');
         const el = document.getElementById('po-docs');
         const files = (data.tree || []).filter(f => f.type === 'file').slice(0, 50);
         el.innerHTML = files.map(f =>
@@ -184,7 +184,7 @@
 
     window._loadDoc = async function(path) {
       try {
-        const data = await api('GET', '/vault/file?path=' + encodeURIComponent(path));
+        const data = await api('GET', '/folio/file?path=' + encodeURIComponent(path));
         content.innerHTML = '<div class="content-area"><div class="markdown-body" style="line-height:1.6;">' +
           (typeof marked !== 'undefined' ? marked.parse(data.content || '') : '<pre>' + escapeHtml(data.content || '') + '</pre>') +
           '</div></div>';

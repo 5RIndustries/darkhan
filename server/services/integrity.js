@@ -57,7 +57,7 @@ class IntegrityService {
       'services/llm.js',
       'routes/messages.js',
       'routes/auth.js',
-      'routes/vault.js',
+      'routes/folio.js',
       'db/schema.sql',
       'db/secrets-schema.sql',
       'db/seed.js',

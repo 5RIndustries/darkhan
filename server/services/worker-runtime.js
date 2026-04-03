@@ -28,13 +28,13 @@ class WorkerRuntime {
     this.activityLog = activityLog;
     this.costTracker = costTracker;
     this.workers = new Map();     // id -> { module, cronJobs, running, lastRun, status, listeners, context }
-    this.vaultPath = (config.vault?.path || '~/darkhan-vault').replace('~', process.env.HOME);
+    this.folioPath = (config.folio?.path || '~/darkhan-folio').replace('~', process.env.HOME);
 
     // Agent onboarding service — generates verified briefs for every worker
     this.onboardingService = new OnboardingService({
       config,
       db,
-      vaultPath: this.vaultPath,
+      folioPath: this.folioPath,
     });
 
     // Evidence service — structured evidence-based reporting for all workers
@@ -42,7 +42,7 @@ class WorkerRuntime {
 
     // Claim verifier — tags agent messages with evidence of whether claims check out
     this.claimVerifier = new ClaimVerifierService({
-      vaultPath: this.vaultPath,
+      folioPath: this.folioPath,
       db,
       activityLog,
     });
@@ -340,7 +340,7 @@ class WorkerRuntime {
             agentId: id,
             agentConfig,
             onboardingPreamble: onboarding.preamble,
-            vaultPath: self.vaultPath,
+            folioPath: self.folioPath,
           });
         } else if (msg.type === 'ready') {
           clearTimeout(timeout);
@@ -509,7 +509,7 @@ class WorkerRuntime {
       }
       case 'tools.fs.read': {
         const filePath = args[0];
-        const fullPath = filePath.startsWith('/') ? filePath : path.join(this.vaultPath, filePath);
+        const fullPath = filePath.startsWith('/') ? filePath : path.join(this.folioPath, filePath);
         // Sandbox deny-list check
         if (this.sandbox.enabled) {
           const denyPaths = this.sandbox.getAllowedPaths(agentConfig).deny;
@@ -520,7 +520,7 @@ class WorkerRuntime {
         const content = await fs.promises.readFile(fullPath, 'utf8');
         // [C-1 FIX] Injection scan on file content before returning to child
         if (this.securityService && content.length > 0) {
-          const scan = this.securityService.scanForInjection(content, { source: `file:${filePath}`, origin: 'vault' });
+          const scan = this.securityService.scanForInjection(content, { source: `file:${filePath}`, origin: 'folio' });
           if (!scan.safe && scan.severity === 'critical') {
             this.activityLog?.append({ actor: agentId, action: 'tool_output_injection_detected', target: filePath, details: JSON.stringify({ severity: scan.severity }) });
             throw new Error(`ASI01: File ${filePath} contains critical injection patterns — read blocked`);
@@ -532,10 +532,10 @@ class WorkerRuntime {
       case 'tools.fs.write': {
         const filePath = args[0];
         const data = args[1];
-        const fullPath = filePath.startsWith('/') ? filePath : path.join(this.vaultPath, filePath);
+        const fullPath = filePath.startsWith('/') ? filePath : path.join(this.folioPath, filePath);
         // Check write permissions
         const allowed = agentConfig.permissions?.fsWrite || [];
-        const relPath = path.relative(this.vaultPath, fullPath);
+        const relPath = path.relative(this.folioPath, fullPath);
         const permitted = allowed.length > 0 && allowed.some(prefix => relPath.startsWith(prefix));
         if (!permitted) throw new Error(`Write permission denied: ${relPath}`);
         const dir = path.dirname(fullPath);
@@ -555,7 +555,7 @@ class WorkerRuntime {
         const { execFile } = require('child_process');
         return new Promise((resolve, reject) => {
           execFile('/bin/sh', ['-c', command], {
-            cwd: opts.cwd || this.vaultPath,
+            cwd: opts.cwd || this.folioPath,
             timeout: opts.timeout || 30000,
             env: { HOME: process.env.HOME, PATH: process.env.PATH, LANG: process.env.LANG || 'en_US.UTF-8', USER: process.env.USER, TERM: process.env.TERM || 'xterm-256color' },
           }, (err, stdout, stderr) => {
@@ -865,7 +865,7 @@ class WorkerRuntime {
         fs: {
           read: async (filePath) => {
             toolLimits.checkFs('read');
-            const fullPath = filePath.startsWith('/') ? filePath : path.join(self.vaultPath, filePath);
+            const fullPath = filePath.startsWith('/') ? filePath : path.join(self.folioPath, filePath);
             // [SANDBOX] Check deny list for reads
             if (self.sandbox.enabled) {
               const denyPaths = self.sandbox.getAllowedPaths(agentConfig).deny;
@@ -877,11 +877,11 @@ class WorkerRuntime {
             }
             const content = await fs.promises.readFile(fullPath, 'utf8');
             // [ASI01] Scan file content for injection before it reaches LLM context.
-            // This catches indirect injection via vault files containing payloads.
+            // This catches indirect injection via folio files containing payloads.
             if (self.securityService && content.length > 0) {
               const scan = self.securityService.scanForInjection(content, {
                 source: `file:${filePath}`,
-                origin: 'vault',
+                origin: 'folio',
               });
               if (!scan.safe) {
                 self.activityLog?.append({
@@ -909,7 +909,7 @@ class WorkerRuntime {
               if (isSensitive) {
                 self.aep.recordEvidence(context._aepTraceId, 'PRIVILEGE_BOUNDARY', {
                   resource: fullPath,
-                  authorizedScope: `vault: ${self.vaultPath}, fsWrite: ${(agentConfig.permissions?.fsWrite || []).join(', ') || 'none'}`,
+                  authorizedScope: `folio: ${self.folioPath}, fsWrite: ${(agentConfig.permissions?.fsWrite || []).join(', ') || 'none'}`,
                   action: `READ_FILE on sensitive path`,
                 });
                 self.activityLog?.append({
@@ -925,7 +925,7 @@ class WorkerRuntime {
           },
           write: (filePath, data) => {
             toolLimits.checkFs('write');
-            const fullPath = filePath.startsWith('/') ? filePath : path.join(self.vaultPath, filePath);
+            const fullPath = filePath.startsWith('/') ? filePath : path.join(self.folioPath, filePath);
             // [SANDBOX] Check deny list for writes
             if (self.sandbox.enabled) {
               const denyPaths = self.sandbox.getAllowedPaths(agentConfig).deny;
@@ -937,7 +937,7 @@ class WorkerRuntime {
             }
             // Check write permissions
             const allowed = agentConfig.permissions?.fsWrite || [];
-            const relPath = path.relative(self.vaultPath, fullPath);
+            const relPath = path.relative(self.folioPath, fullPath);
             // SECURITY: Empty allowed array = NO write permissions (principle of least privilege).
             // Workers must have explicit fsWrite paths configured to write anything.
             const permitted = allowed.length > 0 && allowed.some(prefix => relPath.startsWith(prefix));
@@ -955,11 +955,11 @@ class WorkerRuntime {
             return fs.promises.writeFile(fullPath, data, 'utf8');
           },
           exists: (filePath) => {
-            const fullPath = filePath.startsWith('/') ? filePath : path.join(self.vaultPath, filePath);
+            const fullPath = filePath.startsWith('/') ? filePath : path.join(self.folioPath, filePath);
             return fs.existsSync(fullPath);
           },
           readdir: (dirPath) => {
-            const fullPath = dirPath.startsWith('/') ? dirPath : path.join(self.vaultPath, dirPath);
+            const fullPath = dirPath.startsWith('/') ? dirPath : path.join(self.folioPath, dirPath);
             return fs.promises.readdir(fullPath);
           },
         },
@@ -978,7 +978,7 @@ class WorkerRuntime {
             const timeout = opts.timeout || 30000;
             return new Promise((resolve, reject) => {
               execFile('/bin/sh', ['-c', command], {
-                cwd: opts.cwd || self.vaultPath,
+                cwd: opts.cwd || self.folioPath,
                 timeout,
                 // SECURITY: Whitelist env vars — workers must NOT access SESSION_SECRET,
               // GOOGLE_API_KEY, ANTHROPIC_API_KEY, or any other secrets via printenv/env

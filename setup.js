@@ -202,7 +202,7 @@ async function importConfig(configPath) {
   print(`${c.bold}  What will NOT be imported:${c.reset}`);
   print(`    ${c.accent}⚠${c.reset} No passwords, API keys, or secrets from the source`);
   print(`    ${c.accent}⚠${c.reset} No message history or activity logs`);
-  print(`    ${c.accent}⚠${c.reset} No vault path (you will set your own)`);
+  print(`    ${c.accent}⚠${c.reset} No folio path (you will set your own)`);
   print('');
 
   const confirm = await ask(`${c.bold}Apply this configuration?${c.reset} [y/N]`, 'n');
@@ -218,7 +218,7 @@ async function importConfig(configPath) {
   const instanceName = await ask('Instance name for THIS node', imported.instance?.name || 'My Forge');
   const port = await ask('Port', String(imported.instance?.port || 3001));
   const timezone = await ask('Timezone', imported.instance?.timezone || 'America/New_York');
-  const vaultPath = await ask('Vault path (or Enter to skip)', '');
+  const folioPath = await ask('Folio path (or Enter to skip)', '');
 
   // API keys
   banner('API Keys');
@@ -260,7 +260,7 @@ async function importConfig(configPath) {
       globalRateLimits: imported.llm?.globalRateLimits || {},
     },
     channels: imported.channels,
-    ...(vaultPath ? { vault: { path: vaultPath } } : {}),
+    ...(folioPath ? { folio: { path: folioPath } } : {}),
     sandbox: imported.sandbox || { processIsolation: false },
     federation: { enabled: false },  // Federation is opt-in after setup
   };
@@ -458,10 +458,10 @@ async function main() {
   const anthropicKey = await ask('Anthropic API key (for Claude escalation) — Enter to skip', '');
   const openaiKey = await ask('OpenAI API key (for GPT consensus model) — Enter to skip', '');
 
-  // ── Step 6: Vault ──
-  banner('Step 6: Knowledge base (vault)');
+  // ── Step 6: Folio ──
+  banner('Step 6: Knowledge base (folio)');
   info('Darkhan can browse and search a folder of markdown files.');
-  const vaultPath = await ask('Vault path (or Enter to skip)', '');
+  const folioPath = await ask('Folio path (or Enter to skip)', '');
 
   // ── Step 7: First agent ──
   banner('Step 7: Your first agent');
@@ -556,7 +556,7 @@ async function main() {
       { id: 'chan_command', name: '#command', description: 'Primary team channel' },
       { id: 'chan_alerts', name: '#alerts', description: 'System alerts' },
     ],
-    ...(vaultPath ? { vault: { path: vaultPath } } : {}),
+    ...(folioPath ? { folio: { path: folioPath } } : {}),
     sandbox: { processIsolation: false },  // Start with in-process workers; enable forked mode after testing
     federation: { enabled: false },
   };

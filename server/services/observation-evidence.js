@@ -20,7 +20,6 @@
  *   - maintenance.js: system observations (process state, resource pressure)
  *   - Shares evidence_traces table with AEP (observation records stored alongside action records)
  *
- * Patent claims: 18-20 in the Darkhan provisional patent.
  */
 
 const crypto = require('crypto');

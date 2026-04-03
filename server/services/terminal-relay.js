@@ -288,7 +288,7 @@ class TerminalRelay {
       console.log(`[Terminal] ${label} for ${userId} exited (code=${exitCode}, signal=${signal})`);
       socket.emit('terminal:exit', { key, exitCode, signal });
       this.sessions.delete(key);
-      this._postToChannel('chan_claude',
+      this._postToChannel('chan_system',
         `[Terminal] ${label} session ended for ${userId} (exit code: ${exitCode})`);
       if (this.activityLog) {
         try {
@@ -315,7 +315,7 @@ class TerminalRelay {
       } catch {}
     }
 
-    this._postToChannel('chan_claude', `[Terminal] ${label} session started by ${userId}`);
+    this._postToChannel('chan_system', `[Terminal] ${label} session started by ${userId}`);
     console.log(`[Terminal] ${label} spawned for ${userId} (${cols}x${rows})`);
     socket.emit('terminal:ready', { key, mode });
   }

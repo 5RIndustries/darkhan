@@ -78,12 +78,12 @@ class OnboardingService {
    * @param {Object} opts
    * @param {Object} opts.config - darkhan.config.json contents
    * @param {Object} opts.db - SQLite database handle (null for federated workers)
-   * @param {string} opts.vaultPath - Resolved vault path
+   * @param {string} opts.folioPath - Resolved folio path
    */
-  constructor({ config, db, vaultPath }) {
+  constructor({ config, db, folioPath }) {
     this.config = config;
     this.db = db;
-    this.vaultPath = vaultPath;
+    this.folioPath = folioPath;
     // Build chain of command from config
     CHAIN_OF_COMMAND = buildChainOfCommand(config);
   }
@@ -248,7 +248,7 @@ class OnboardingService {
 
     // File system paths
     const fsWritePaths = agentConfig.permissions?.fsWrite || [];
-    const vaultExists = fs.existsSync(this.vaultPath);
+    const folioExists = fs.existsSync(this.folioPath);
 
     // [P0-M3 FIX] Stripped: hostname, platform, process uptime, port, other agents'
     // providers/models. A compromised worker should not receive a deployment map.
@@ -264,7 +264,7 @@ class OnboardingService {
       `- Your LLM: ${providerDetails}`,
       `- Rate limits: ${agentConfig.rateLimits ? `${agentConfig.rateLimits.requestsPerDay} req/day, ${agentConfig.rateLimits.requestsPerMinute} req/min` : 'not configured (defaults apply)'}`,
       '',
-      `- Vault accessible: ${vaultExists ? 'yes' : 'NO — path does not exist'}`,
+      `- Folio accessible: ${folioExists ? 'yes' : 'NO — path does not exist'}`,
       `- Write permissions: ${fsWritePaths.length > 0 ? fsWritePaths.join(', ') : 'none explicitly configured'}`,
       '',
       'Your channels:',
@@ -329,7 +329,7 @@ class OnboardingService {
       `- LLM provider: ${provider}`,
       `- LLM model: ${model}`,
       `- Shell access: ${shellDesc}`,
-      `- File system: Read access to full vault. ${writeDesc}`,
+      `- File system: Read access to full folio. ${writeDesc}`,
       `- Email access: No (email tools are not configured for workers)`,
       `- Internet access: No direct access. Only via LLM API calls to your provider.`,
       `- Database access: ${this.db ? 'Read via context queries' : 'No (federated — HTTP API only)'}`,

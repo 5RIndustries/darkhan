@@ -14,17 +14,17 @@ const POLL_INTERVAL = 30000;       // 30 seconds (reduced from 15s — less work
 const HEALTH_GREEN = 5 * 60000;    // 5 min
 const HEALTH_AMBER = 30 * 60000;   // 30 min
 
-// Load trigger directory from config vault path
-let monitorVaultPath;
+// Load trigger directory from config folio path
+let monitorFolioPath;
 try {
   const config = require('../darkhan.config.json');
-  monitorVaultPath = config.vault?.path;
+  monitorFolioPath = config.folio?.path;
 } catch (e) { /* Config not yet loaded */ }
 
-const resolvedVault = monitorVaultPath
-  ? monitorVaultPath.replace(/^~/, process.env.HOME || '')
-  : path.join(process.env.HOME || '', 'darkhan-vault');
-const TRIGGER_DIR = path.join(resolvedVault, 'Triggers');
+const resolvedFolio = monitorFolioPath
+  ? monitorFolioPath.replace(/^~/, process.env.HOME || '')
+  : path.join(process.env.HOME || '', 'darkhan-folio');
+const TRIGGER_DIR = path.join(resolvedFolio, 'Triggers');
 
 function startMonitor(db, io) {
   console.log('[Monitor] Health monitor starting — polling every 30s');

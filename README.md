@@ -93,7 +93,7 @@ darkhan/
     darkhan.config.json    # Team config: agents, humans, channels, schedules, permissions
     .env                   # Secrets (never committed)
     db/                    # SQLite databases (darkhan.db + secrets.db)
-    routes/                # REST API (auth, messages, tasks, health, vault, security)
+    routes/                # REST API (auth, messages, tasks, health, folio, security)
     services/              # Core services (see below)
     workers/               # Agent worker definitions (your agents live here)
     middleware/             # Auth, identity enforcement
@@ -339,7 +339,7 @@ For full details, see [SECURITY.md](SECURITY.md).
 
 **Web UI**
 - Vanilla JS SPA, dark theme, no framework dependencies
-- Channels, tasks, agent health dashboard, vault browser, cost reporting
+- Channels, tasks, agent health dashboard, Folio browser, cost reporting
 - Integrated Claude Code and shell terminals with pop-out window support
 - Admin settings: lockdown control, password management, PIN setup, execution tier control
 - PWA with service worker
@@ -434,7 +434,7 @@ All endpoints require authentication via session cookie or `X-API-Key` header.
 | Tasks | `GET /api/tasks`, `POST /api/tasks`, `PATCH /api/tasks/:id` |
 | Health | `GET /api/health/status`, `POST /api/health/ping`, `GET /api/workers`, `POST /api/health/maintenance` (admin), `GET /api/health/maintenance` |
 | Terminal | `GET /api/terminal` (active session status) |
-| Folio | `GET /api/vault/tree`, `GET /api/vault/file`, `PUT /api/vault/file`, `GET /api/vault/search` |
+| Folio | `GET /api/folio/tree`, `GET /api/folio/file`, `PUT /api/folio/file`, `GET /api/folio/search` |
 | Security | `GET /api/security`, `POST /api/security/lockdown`, `POST /api/security/unlock` |
 | Activity | `GET /api/activity`, `GET /api/activity/chain-head`, `GET /api/activity/stats` |
 | Ground Truth | `GET /api/ground-truth`, `POST /api/ground-truth`, `POST /api/ground-truth/check` |

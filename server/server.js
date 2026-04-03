@@ -300,8 +300,8 @@ const rateLimiter = new RateLimiter({ config, activityLog });
 const llmService = new LLMService({ rateLimiter, costTracker, activityLog, config });
 const securityService = new SecurityService({ db, activityLog, config, llmService });
 const integrityService = new IntegrityService({ db, activityLog, securityService, config, secretsDb });
-const vaultPath = (config.vault?.path || '~/darkhan-vault').replace('~', process.env.HOME);
-const claimVerifier = new ClaimVerifierService({ vaultPath, db, activityLog });
+const folioPath = (config.folio?.path || '~/darkhan-folio').replace('~', process.env.HOME);
+const claimVerifier = new ClaimVerifierService({ folioPath, db, activityLog });
 const groundTruth = new GroundTruthRegistry({ db, activityLog });
 const behavioralBaseline = new BehavioralBaseline({ db, activityLog, io });
 
@@ -375,9 +375,9 @@ app.use('/api/approvals', approvalsRoutes);
 app.use('/api/quarantine', quarantineRoutes);
 app.use('/api/context', contextRoutes);
 
-// Vault (Knowledge Base)
-const vaultRoutes = require('./routes/vault');
-app.use('/api/vault', vaultRoutes);
+// Folio (Knowledge Base)
+const folioRoutes = require('./routes/folio');
+app.use('/api/folio', folioRoutes);
 
 // --- Darkhan API endpoints ---
 
@@ -1018,7 +1018,7 @@ server.listen(PORT, BIND_HOST, () => {
   // trigger lockdown (integrity only monitors server/ code and workers/).
   // Each day gets its own file: Transcript_YYYY-MM-DD.md
   const TRANSCRIPT_DIR = path.join(__dirname, '..', 'docs', 'transcripts');
-  const TRANSCRIPT_CHANNELS = ['chan_command', 'chan_claude', 'chan_alerts'];
+  const TRANSCRIPT_CHANNELS = ['chan_command', 'chan_system', 'chan_alerts'];
 
   async function writeTranscript() {
     const now = new Date();
@@ -1092,7 +1092,7 @@ server.listen(PORT, BIND_HOST, () => {
       const count = await new Promise((resolve, reject) => {
         db.get(
           'SELECT COUNT(*) as c FROM messages WHERE channel_id IN (?,?,?) AND created_at > ?',
-          ['chan_command', 'chan_claude', 'chan_alerts', startOfDay],
+          ['chan_command', 'chan_system', 'chan_alerts', startOfDay],
           (err, row) => err ? reject(err) : resolve(row?.c || 0)
         );
       });

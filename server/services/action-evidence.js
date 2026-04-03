@@ -986,8 +986,6 @@ class ActionEvidenceProtocol {
    * Submits the agent's message and evidence trail to two independent LLMs
    * from different providers and requires agreement before marking claims verified.
    *
-   * Patent claim 14/15: Cross-provider consensus for action verification.
-   *
    * @param {string} traceId - The trace to verify against
    * @param {string} messageBody - The agent's message text
    * @param {Object} llmService - LLM service instance for making calls

@@ -61,8 +61,8 @@
     { "id": "chan_command", "name": "#command", "description": "Primary team channel" },
     { "id": "chan_alerts", "name": "#alerts", "description": "System alerts" }
   ],
-  "vault": {
-    "path": "~/darkhan-vault"
+  "folio": {
+    "path": "~/darkhan-folio"
   },
   "security": {
     "scanHumanMessages": false

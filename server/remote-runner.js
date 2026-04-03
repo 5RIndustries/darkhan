@@ -105,7 +105,7 @@ const costTracker = {
       `[CostTracker] ${agent} | ${provider}/${model} | in:${tokensIn} out:${tokensOut} | ${costMillicents}mc | ${requestType}`
     );
 
-    // Optionally POST cost data to Node 2 for centralized tracking
+    // Optionally POST cost data to the hub for centralized tracking
     try {
       const http = require('http');
       const https = require('https');
@@ -153,7 +153,7 @@ const costTracker = {
 };
 
 /**
- * Activity log stub — logs to console and optionally posts critical events to Node 2.
+ * Activity log stub — logs to console and optionally posts critical events to the hub.
  */
 const activityLog = {
   append({ actor, action, target, details }) {

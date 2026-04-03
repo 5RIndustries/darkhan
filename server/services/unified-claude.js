@@ -6,7 +6,7 @@
  * KEY DESIGN DECISIONS (2026-04-01):
  *   1. SDK v2's session.stream() is PER-TURN — yields events for one send(), then completes.
  *      The session stays alive for subsequent send() → stream() cycles.
- *   2. No heavy preamble. System prompt gives Claude identity + vault path.
+ *   2. No heavy preamble. System prompt gives Claude identity + folio path.
  *      Claude reads files when it needs them, not upfront.
  *   3. Both chat and terminal get ALL stream events. The CALLER decides visibility:
  *      - Terminal subscriber renders to xterm (always)
@@ -129,8 +129,8 @@ class UnifiedClaudeSession {
     this._creatingSession = new Map(); // userId -> Promise (mutex)
 
     const HOME = process.env.HOME || '';
-    const vaultPath = config.vault?.path?.replace(/^~/, HOME);
-    this.vaultPath = vaultPath || path.join(HOME, 'darkhan-vault');
+    const folioPath = config.folio?.path?.replace(/^~/, HOME);
+    this.folioPath = folioPath || path.join(HOME, 'darkhan-folio');
 
     // Lead agent config — platform-level settings for session management
     const lead = config.leadAgent || {};
@@ -202,7 +202,7 @@ class UnifiedClaudeSession {
     const session = unstable_v2_resumeSession(sessionId, {
       model: 'opus',
       allowedTools: this._getAllowedTools(),
-      cwd: this.vaultPath,
+      cwd: this.folioPath,
       permissionMode: 'bypassPermissions',
       includePartialMessages: true,
     });
@@ -235,7 +235,7 @@ class UnifiedClaudeSession {
     let stateContent = '';
     if (this.stateFile) {
       try {
-        const statePath = path.join(this.vaultPath, this.stateFile);
+        const statePath = path.join(this.folioPath, this.stateFile);
         stateContent = fs.readFileSync(statePath, 'utf8');
         // Trim to first 3000 chars (header + current sprint section) to keep prompt manageable
         if (stateContent.length > 3000) {
@@ -259,7 +259,7 @@ class UnifiedClaudeSession {
     const sessionOpts = {
       model: 'opus',
       allowedTools: this._getAllowedTools(),
-      cwd: this.vaultPath,
+      cwd: this.folioPath,
       permissionMode: 'bypassPermissions', // We handle permissions ourselves via canUseTool
       systemPrompt: { type: 'preset', append: this._buildSystemPrompt(channelContext, userTier, activityDigest, stateContent) },
       includePartialMessages: true,
@@ -304,8 +304,8 @@ class UnifiedClaudeSession {
     entry.executionTier = userTier;
     this.sessions.set(userId, entry);
 
-    this._postToChannel('chan_claude', `[Unified Session] Session created for ${userId} (tier: ${userTier})`);
-    console.log(`[UnifiedClaude] Created for ${userId} (cwd: ${this.vaultPath}, tier: ${userTier})`);
+    this._postToChannel('chan_system', `[Unified Session] Session created for ${userId} (tier: ${userTier})`);
+    console.log(`[UnifiedClaude] Created for ${userId} (cwd: ${this.folioPath}, tier: ${userTier})`);
     return entry;
   }
 
@@ -858,7 +858,7 @@ class UnifiedClaudeSession {
       `DARKHAN UNIFIED SESSION — Date: ${today}`,
       `Running inside the Darkhan web UI.`,
       ``,
-      `Vault: ${this.vaultPath}`,
+      `Folio: ${this.folioPath}`,
       `USE ABSOLUTE PATHS for all file operations.`,
       ``,
       `EXECUTION TIER: ${executionTier || 'supervised'}`,
@@ -877,8 +877,8 @@ class UnifiedClaudeSession {
         `- Current state file summary (below)`,
         `- System events (below)`,
         ``,
-        `On your FIRST turn, read your operating instructions: ${this.vaultPath}/CLAUDE.md`,
-        `(If no CLAUDE.md exists, check for agent instructions in the vault root.)`,
+        `On your FIRST turn, read your operating instructions: ${this.folioPath}/CLAUDE.md`,
+        `(If no CLAUDE.md exists, check for agent instructions in the folio root.)`,
         ``,
         `For DEEPER context beyond what's in this prompt, read the full transcripts:`,
         `- Today: ${this.transcriptDir}/Transcript_${today}.md`,
@@ -894,7 +894,7 @@ class UnifiedClaudeSession {
     if (this.stateMaintenance && this.stateFile) {
       lines.push(
         `=== STATE MAINTENANCE ===`,
-        `You are responsible for maintaining ${this.stateFile} (at ${this.vaultPath}/${this.stateFile}).`,
+        `You are responsible for maintaining ${this.stateFile} (at ${this.folioPath}/${this.stateFile}).`,
         `After completing any significant task, update this file to reflect the new state.`,
         `This includes: sprint progress, completed milestones, changed priorities, new decisions.`,
         `If you don't update it, the next agent session will have stale state.`,
@@ -1118,7 +1118,7 @@ class UnifiedClaudeSession {
       sessionId: entry.sessionId,
     });
 
-    this._postToChannel('chan_claude', `[Session cycled for ${userId} after ${msgCount} messages. Next message resumes with recent context.]`);
+    this._postToChannel('chan_system', `[Session cycled for ${userId} after ${msgCount} messages. Next message resumes with recent context.]`);
 
     // Close in-memory session but KEEP the stored session ID.
     // The SDK session persists server-side — we can resume it after restart.
@@ -1179,7 +1179,7 @@ class UnifiedClaudeSession {
       const since = new Date(Date.now() - hours * 3600000);
       // Format to match SQLite's DATETIME format (no T, no Z)
       const sinceStr = since.toISOString().replace('T', ' ').substring(0, 19);
-      const channels = ['chan_command', 'chan_claude', 'chan_alerts'];
+      const channels = ['chan_command', 'chan_system', 'chan_alerts'];
 
       this.db.all(
         `SELECT from_user, body, created_at, channel_id FROM messages
@@ -1221,7 +1221,7 @@ class UnifiedClaudeSession {
   _getRecentChannelContext(limit = 100) {
     return new Promise((resolve, reject) => {
       if (!this.db) return resolve('');
-      const channels = ['chan_command', 'chan_claude', 'chan_alerts'];
+      const channels = ['chan_command', 'chan_system', 'chan_alerts'];
 
       this.db.all(
         `SELECT from_user, body, created_at, channel_id FROM messages
