@@ -144,12 +144,14 @@ router.post('/', async (req, res) => {
     const scan = await securityService.sanitizeMessage(body, userId, origin);
     securityMetadata = scan.metadata;
 
-    // If critical injection detected from external source, block and record for threshold
-    if (!scan.metadata.injectionScan.safe && scan.metadata.injectionScan.severity === 'critical') {
+    // Block messages that the security pipeline determined are unsafe
+    const scanAction = scan.metadata.injectionScan.action;
+    if (!scan.metadata.injectionScan.safe && (scanAction === 'block' || scan.metadata.injectionScan.severity === 'critical')) {
       securityService.recordSecurityEvent('criticalInjections');
       return res.status(400).json({
         error: 'Message blocked by security scan',
         severity: scan.metadata.injectionScan.severity,
+        action: scanAction,
         lockdown: securityService.getLockdownStatus(),
       });
     }

@@ -427,7 +427,7 @@ Respond with EXACTLY one word: SAFE, SUSPICIOUS, or MALICIOUS.`;
         { role: 'system', content: classificationPrompt },
         { role: 'user', content: messagePrompt },
       ],
-      options: { temperature: 0, maxTokens: 10 },
+      options: { temperature: 0, maxTokens: 256 },
       requestType: 'security_consensus_local',
     }).catch(e => { console.warn('[Security] Consensus local LLM failed:', e.message); return null; });
 
@@ -440,7 +440,7 @@ Respond with EXACTLY one word: SAFE, SUSPICIOUS, or MALICIOUS.`;
             { role: 'system', content: classificationPrompt },
             { role: 'user', content: messagePrompt },
           ],
-          options: { temperature: 0, maxTokens: 10 },
+          options: { temperature: 0, maxTokens: 256 },
           requestType: 'security_consensus_cloud',
         }).catch(e => { console.warn('[Security] Consensus cloud LLM failed:', e.message); return null; })
       : Promise.resolve(null);
@@ -561,15 +561,24 @@ Respond with EXACTLY one word: SAFE, SUSPICIOUS, or MALICIOUS.`;
     }
 
     if (localScan.safe && !hadEncodedContent) {
-      // Pattern scan clean and no encoded content — but for external messages,
-      // still run two-LLM consensus (pattern scan can't catch semantic injection)
-      if (context.origin === 'external' || context.origin === 'federated' || context.origin === 'agent') {
+      // Pattern scan clean and no encoded content — but for non-trivial origins,
+      // still run two-LLM consensus (pattern scan can't catch semantic injection).
+      // When scanHumanMessages is enabled, human-internal messages also get consensus.
+      const needsConsensus = context.origin === 'external'
+        || context.origin === 'federated'
+        || context.origin === 'agent'
+        || (context.origin === 'internal' && this.scanHumanMessages);
+      if (needsConsensus) {
         const consensus = await this.twoLLMConsensus(text, context);
+        if (consensus.action === 'block') {
+          return { safe: false, severity: 'high', action: 'block', consensus };
+        }
         if (consensus.action === 'quarantine') {
           return { safe: false, severity: 'medium', action: 'quarantine', consensus, note: 'LLM consensus disagreement' };
         }
-        if (consensus.action === 'block') {
-          return { safe: false, severity: 'high', action: 'block', consensus };
+        if (consensus.action === 'flag') {
+          // Single-model threat or both unavailable — surface to admin, don't silently allow
+          return { safe: false, severity: 'low', action: 'flag', consensus, note: 'Flagged by LLM (single-model or degraded mode)' };
         }
       }
       return { safe: true, severity: 'none', action: 'allow' };
