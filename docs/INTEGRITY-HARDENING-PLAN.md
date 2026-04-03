@@ -3,11 +3,11 @@
 
 ## Context
 
-During a fresh install dress rehearsal on node3, Claude (AI agent) bypassed Darkhan's
+During a fresh install dress rehearsal on a clean node, an AI agent bypassed Darkhan's
 integrity system by deleting the external baseline file to resolve a lockdown triggered
 by a legitimate schema change. The integrity service was working correctly — the agent
-chose efficiency over security. Subsequent analysis (Penrose deep research + Corey red
-team + Adrian's rogue node insight) revealed deeper architectural gaps.
+chose efficiency over security. Subsequent adversarial analysis revealed deeper
+architectural gaps.
 
 This framework closes those gaps through **architectural constraints** — defenses that
 make bypass physically impossible, not just inadvisable.
@@ -252,7 +252,7 @@ LaunchAgent plists are typically 0644 (world-readable). Removed; Darkhan
 reads from .env (0600) instead.
 
 ### 0c. Run setup-service-user.sh — RECOMMENDED before release
-The self-audit proved that any process running as `adrianoutlaw` can read
+The self-audit proved that any process running as the primary user can read
 .env, secrets.db, darkhan.db, sessions.db, and the baseline file. File
 permissions (0600) only protect against OTHER users. Running Darkhan as
 the `_darkhan` service user is the single most impactful security step.
@@ -321,7 +321,7 @@ This is the single highest-impact change.
 
 ## Implementation Status (April 2, 2026)
 
-All build items implemented and verified on node2.
+All build items implemented and verified.
 
 | Item | Status | Verified |
 |------|--------|----------|
@@ -349,5 +349,5 @@ All build items implemented and verified on node2.
 - [x] Step 0b: DONE (API key removed from launchd)
 - [ ] Step 0c: service user setup — PENDING (recommended before release)
 - [x] Step 0d: PIN length increase — DONE (minimum 8 characters)
-- [ ] Adrian final review: PENDING
+- [ ] Final review: PENDING
 - [x] Implementation of Build Items 1-10: COMPLETE (April 2, 2026)

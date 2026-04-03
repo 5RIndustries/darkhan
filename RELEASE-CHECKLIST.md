@@ -107,7 +107,7 @@ A misconfigured `.npmignore` shipped a 59.8 MB source map file in npm package `@
 
 ### In Our Code
 1. Assess severity (CRITICAL/HIGH/MODERATE/LOW)
-2. If CRITICAL or HIGH: fix immediately, push to main, notify Adrian
+2. If CRITICAL or HIGH: fix immediately, push to main, notify the project maintainer
 3. Document in CHANGELOG.md
 4. Add regression check to CI if applicable
 5. Post to Darkhan chan_alerts

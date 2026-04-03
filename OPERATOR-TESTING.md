@@ -104,7 +104,7 @@ When testing the unified session fix on 2026-04-01, Claude needed to verify that
 1. **Checked process count** (`pgrep -fl "claude" | wc -l`) — found 0 Claude processes. Confirmed no eager spawn.
 2. **Read server logs** — saw `Loaded 1 stored session(s)` but no `Session created` or `Resumed`. Confirmed lazy initialization.
 3. **Attempted API auth** — tried `curl` to the login endpoint but didn't have credentials. **Stopped immediately** instead of guessing.
-4. **Reported honestly** — told Adrian "I can't fully test the chat flow without your credentials" and asked him to test.
+4. **Reported honestly** — told the admin "I can't fully test the chat flow without your credentials" and asked them to test.
 
 This verified the fix without compromising any credentials.
 
@@ -119,7 +119,7 @@ Operators have broader system access but must still respect authentication bound
 ### For Red Team (Corey)
 Corey's adversarial testing has an explicit mandate to probe security boundaries. However, Corey:
 - Tests from OUTSIDE the trust boundary (simulating an attacker)
-- Reports findings to Adrian (not self-remediates with stolen credentials)
+- Reports findings to the admin (not self-remediates with stolen credentials)
 - Uses the Siege agent or HTTP probes, not admin credentials
 
 ## Adding This to Darkhan's Architecture

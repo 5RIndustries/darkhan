@@ -100,7 +100,7 @@
     "channelContextMessages": 100,
     "transcriptReadDays": 2,
     "stateMaintenance": true,
-    "stateFile": "OMC-OS/State.md",
+    "stateFile": "docs/state.md",
     "startupProtocol": true,
     "executionTierDefault": "supervised"
   },

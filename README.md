@@ -31,6 +31,8 @@ Most agent frameworks trust the agent. Darkhan does not.
 
 **Federation across machines.** Run workers on multiple nodes with a single hub. Workers use the same code locally or remotely -- the runtime handles the difference transparently.
 
+**Adversarial tested.** Before public release, Darkhan was subjected to a structured adversarial test: 32 semantic injection payloads across 8 categories (social engineering, authority pressure, multilingual attacks, competitive intelligence framing, and more). The two-LLM consensus pipeline blocked or quarantined 100% of payloads. Full methodology and results: [Adversarial Testing Report](docs/ADVERSARIAL-TESTING-REPORT.md).
+
 ---
 
 ## Quick Start
@@ -173,7 +175,11 @@ Every message flows through a security pipeline before reaching agents or storag
 ```
 Message arrives
     │
-    ├─ Human internal message → regex pattern scan → allow/flag
+    ├─ Human internal message (scanHumanMessages: false)
+    │     → regex pattern scan → allow/flag
+    │
+    ├─ Human internal message (scanHumanMessages: true)
+    │     → full pipeline below (defends against session hijacking)
     │
     └─ External / Agent / Federated message:
          │

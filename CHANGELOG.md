@@ -2,9 +2,23 @@
 
 All notable changes to Darkhan are documented here.
 
-## [1.0.0] — 2026-04-03 (planned)
+## [1.0.0] — 2026-04-03
 
 First public release. Darkhan is a self-hosted AI command center that gives you full control over your AI agents — what they can do, what they can see, and what happens when they go wrong.
+
+### Adversarial Testing & Security Hardening (2026-04-03)
+
+Three-pass adversarial test validated the full security pipeline before public release.
+
+- **Two-LLM consensus for human messages** — New `scanHumanMessages` config option routes human-origin messages through the full scan pipeline (content normalization + regex + two-LLM consensus). Defends against session hijacking and compromised browser extensions. Disabled by default; enabled with `"security": { "scanHumanMessages": true }` in config.
+- **Parallel consensus execution** — Local and cloud LLM classification calls now run via `Promise.all`, reducing consensus latency by ~40%.
+- **Consensus token budget fix** — Increased `maxTokens` from 10 to 256 for consensus classification calls. Thinking models (Gemini 2.5 Flash) require headroom for internal reasoning before producing the SAFE/SUSPICIOUS/MALICIOUS verdict.
+- **fullScan() origin check fix** — Two-LLM consensus was only triggered for external/federated/agent origins. Internal-origin messages now also get consensus when `scanHumanMessages` is enabled.
+- **Flag action handling** — Consensus `flag` action (single-model threat or degraded mode) was silently treated as `allow`. Now surfaces as `{ safe: false, action: 'flag' }` and is blocked at the message route.
+- **Lockdown loop resilience** — Three fixes to prevent the unlock → verify → re-lock cycle: (1) 10-minute grace period after admin baseline reset, (2) baseline file auto-recovery from in-memory state if deleted at runtime, (3) startup recovery when baseline file is missing but admin reset occurred within 15 minutes.
+- **Baseline file protection** — Integrity baseline path added to shell denylist and security input patterns. Agents cannot delete or reference the baseline file via shell commands.
+- **Dev mode sentinel** — Development mode switched from `DARKHAN_DEV_MODE` environment variable to `.dev` sentinel file (gitignored). Cannot accidentally ship to production.
+- **Test results** — Pass 2 (regex-only): 30/32 semantic injection payloads bypassed. Pass 3 (full pipeline): 32/32 blocked or quarantined. See [Adversarial Testing Report](docs/ADVERSARIAL-TESTING-REPORT.md).
 
 ### Channel Transcripts (2026-04-02)
 Automatic verbatim conversation capture for session continuity. Every Darkhan instance maintains a rolling transcript of channel conversations.
@@ -38,7 +52,7 @@ Per-user control over agent autonomy. Users choose how much freedom agents have 
 - **Session-scoped** — Tier is read when a Claude session is created. The active tier is announced in the system prompt so the agent understands its operating constraints. Changes take effect on the next session.
 
 ### Integrity Hardening Framework (2026-04-02)
-Comprehensive security hardening driven by adversarial analysis of the integrity baseline system. During a fresh install on node3, the AI agent bypassed the integrity system by deleting the baseline file to resolve a lockdown — choosing efficiency over security. Subsequent analysis (Penrose deep research, Corey red team, and adversarial self-audit) revealed architectural gaps. This framework closes those gaps through **architectural constraints** — defenses that make bypass physically impossible, not just inadvisable.
+Comprehensive security hardening driven by adversarial analysis of the integrity baseline system. During a fresh install on a clean node, an AI agent bypassed the integrity system by deleting the baseline file to resolve a lockdown — choosing efficiency over security. Subsequent adversarial analysis revealed architectural gaps. This framework closes those gaps through **architectural constraints** — defenses that make bypass physically impossible, not just inadvisable.
 
 - **First-boot vs baseline-deleted detection** — The integrity service now distinguishes between a genuine first boot (no database) and a deleted baseline (database with users exists). A missing baseline with an existing database triggers immediate lockdown and CRITICAL alert. Previously, deleting the baseline file caused the system to treat a restart as first boot and trust everything.
 - **Cryptographic baseline anchoring (HMAC-SHA256)** — The integrity baseline is now anchored with an HMAC-SHA256 signature stored in the database `settings` table. The anchor key is domain-separated from `SESSION_SECRET`. On startup, the baseline file is verified against the stored anchor. A mismatch (baseline file tampered externally) triggers immediate lockdown. An agent that forges both the baseline file and the target files still cannot forge the database anchor without `SESSION_SECRET`.

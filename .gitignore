@@ -64,3 +64,4 @@ server/workers/manifest.json
 # Siege test artifacts (contain internal results — NEVER commit)
 server/logs/siege-*
 server/scripts/siege-*
+docs/SIEGE-REPORT-*
