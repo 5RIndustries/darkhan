@@ -508,4 +508,4 @@ Enterprise federation for connecting multiple Darkhan instances across an organi
 
 The name comes from Mongolian/Turkic: a *darkhan* is a master craftsman whose skill earned them autonomy. The forge is where craftsmen work. Each team member -- human or agent -- is a craftsman with a defined specialty. Darkhan is the forge that coordinates them.
 
-Built by [Outlaw Motor Company](https://github.com/5RIndustries). Evolved from five iterations of an internal command center (2026), then rebuilt from scratch with security as the foundation.
+Built by [5R Industries LLC](https://github.com/5RIndustries). Evolved from five iterations of an internal command center (2026), then rebuilt from scratch with security as the foundation.
