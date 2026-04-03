@@ -130,7 +130,7 @@ class UnifiedClaudeSession {
 
     const HOME = process.env.HOME || '';
     const vaultPath = config.vault?.path?.replace(/^~/, HOME);
-    this.vaultPath = vaultPath || path.join(HOME, 'Documents', 'Feedback Loop');
+    this.vaultPath = vaultPath || path.join(HOME, 'darkhan-vault');
 
     // Lead agent config — platform-level settings for session management
     const lead = config.leadAgent || {};

@@ -1,5 +1,5 @@
 /**
- * DARYL — Health Monitor Service
+ * Darkhan — Health Monitor Service
  *
  * Tracks agent health status (green/amber/red), updates dashboard status lights,
  * and cleans up stale trigger files. Runs every 30 seconds.

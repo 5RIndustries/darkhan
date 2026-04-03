@@ -5,7 +5,7 @@
  * and communicate with the main Darkhan server via HTTP API instead of
  * direct database/socket access.
  *
- * Used on Node 1 to run Chief and Lindsey workers against the Node 2 server.
+ * Used on a remote node to run federated workers against the main Darkhan hub.
  */
 
 const http = require('http');
@@ -251,7 +251,7 @@ class FederatedWorkerRuntime extends WorkerRuntime {
   }
 
   /**
-   * Start polling Node 2 for new messages across all configured channels.
+   * Start polling the hub server for new messages across all configured channels.
    * Runs new messages through this.onMessage() for listener matching.
    *
    * @param {number} intervalMs - Polling interval in milliseconds (default: 5000)
@@ -310,7 +310,7 @@ class FederatedWorkerRuntime extends WorkerRuntime {
             }
           }
         } catch (err) {
-          // Node 2 unreachable — log and continue, will retry next cycle
+          // Hub unreachable — log and continue, will retry next cycle
           console.warn(`[FederatedRuntime] Poll failed for ${channelId}: ${err.message}`);
         }
       }

@@ -1,5 +1,5 @@
 /**
- * DARYL — Tool Executor
+ * Darkhan — Tool Executor
  * 
  * Executes tool calls from Claude's API responses.
  * Integrates with permissions, file I/O, and message bus.
@@ -43,7 +43,7 @@ async function executeTool(toolName, toolInput, context) {
 
 /**
  * send_message(channel_id, body)
- * Post a message to the DARYL message bus
+ * Post a message to the Darkhan message bus
  */
 async function sendMessage(input, context) {
   const { channel_id, body } = input;
@@ -90,7 +90,7 @@ async function sendMessage(input, context) {
 
 /**
  * create_task(title, description, assignee, priority)
- * Create a task in DARYL
+ * Create a task in Darkhan
  */
 async function createTask(input, context) {
   const { title, description, assignee, priority = 3 } = input;

@@ -1156,7 +1156,7 @@ class WorkerRuntime {
 
         /**
          * Google Workspace tools — Drive and Docs access via @googleworkspace/cli.
-         * Authenticated as aoutlaw113@gmail.com via gcloud.
+         * Requires gcloud authentication (user-specific, see SETUP.md).
          * All methods shell out to `npx @googleworkspace/cli` and parse JSON responses.
          */
         google: {

@@ -681,7 +681,7 @@ Respond with EXACTLY one word: SAFE, SUSPICIOUS, or MALICIOUS.`;
    * the full pipeline — defends against session hijacking and compromised clients.
    *
    * @param {string} body - Message body text
-   * @param {string} fromUser - Sender user ID (e.g., 'agent_chief', 'user_adrian')
+   * @param {string} fromUser - Sender user ID (e.g., 'agent_assistant', 'user_admin')
    * @param {string} origin - Message origin: 'internal' | 'external' | 'federated'
    * @returns {Promise<{ body: string, metadata: { origin: string, injectionScan: Object, sanitizedAt: string } }>}
    */

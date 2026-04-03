@@ -1,5 +1,5 @@
 /**
- * DARYL — Message Routes
+ * Darkhan — Message Routes
  * GET  /api/messages         — list messages (with channel, since, unread filters)
  * POST /api/messages         — send a message
  * GET  /api/messages/:id     — get single message

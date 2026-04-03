@@ -1,5 +1,5 @@
 /**
- * DARYL — Agent Health Routes
+ * Darkhan — Agent Health Routes
  * GET  /api/health/agents         — list agent health status
  * POST /api/health/agents         — post agent health update
  */
