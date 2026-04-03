@@ -15,7 +15,7 @@
  *   - value:      The verified value
  *   - unit:       Unit of measurement (if applicable)
  *   - source:     Where this fact comes from (audit, paper, measurement)
- *   - verified_by: Who verified it (human admin, Corey audit, etc.)
+ *   - verified_by: Who verified it (human admin, red team audit, etc.)
  *   - aliases:    Alternate phrasings that should match (for claim checking)
  *
  * Integration:

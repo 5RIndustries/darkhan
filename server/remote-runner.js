@@ -70,7 +70,7 @@ if (REMOTE_HOST.startsWith('http://')) {
 }
 
 // Build API keys dynamically from config — for each worker agent, look for <AGENT_ID>_API_KEY env var
-// e.g., agent_assistant → AGENT_ASSISTANT_API_KEY, agent_chief → AGENT_CHIEF_API_KEY
+// e.g., agent_assistant → AGENT_ASSISTANT_API_KEY, agent_security → AGENT_SECURITY_API_KEY
 const apiKeys = {};
 const workerMembers = (config.team?.members || []).filter(m => m.worker);
 for (const member of workerMembers) {

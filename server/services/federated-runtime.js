@@ -19,7 +19,7 @@ class FederatedWorkerRuntime extends WorkerRuntime {
   /**
    * @param {Object} opts
    * @param {string} opts.remoteHost - Full URL of the Darkhan server (e.g., 'http://192.168.1.100:3001')
-   * @param {Object} opts.apiKeys - Map of agent_id -> API key (e.g., { agent_chief: 'dk_agent_xxx' })
+   * @param {Object} opts.apiKeys - Map of agent_id -> API key (e.g., { agent_myagent: 'dk_agent_xxx' })
    * @param {Object} opts.llmService - LLMService instance
    * @param {Object} opts.config - darkhan.config.json contents
    * @param {Object} opts.activityLog - Activity log interface

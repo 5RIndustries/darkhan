@@ -247,8 +247,8 @@ Five bugs caught during clean-install dress rehearsal on MacBook Air:
 4. **Missing `entry_type` column** — `activity_log` table in `schema.sql` was missing the `entry_type` column, breaking activity log inserts
 5. **SETUP.md incorrect default password** — Documentation referenced a random hex password; actual default is now `changeme`
 
-### Corey Audit Fixes (2026-03-31)
-Eight findings from Corey red team audit, all resolved:
+### Red Team Audit Fixes (2026-03-31)
+Eight findings from red team security audit, all resolved:
 1. **C-1: Federation header spoofing** — Added spacer ingestion validation and server-side trust level enforcement; federated messages cannot spoof trust classification
 2. **C-2: Socket.IO auth HMAC bypass** — Socket.IO authentication now properly validates HMAC signatures; bypass path closed
 3. **L-4: Quarantine INSERT wrong column name** — Quarantine insert was silently broken due to incorrect column name; fixed and verified
@@ -332,7 +332,7 @@ Driven by internal audit after the Anthropic Claude Code source map leak. See [R
 - **Split-screen and pop-out views** — multi-monitor support, any view in its own window
 - **Knowledge base** — browse, search, and edit markdown files from the vault
 
-### Security (Grade A- — independently audited by Corey Red Team + adversarial self-audit, updated 2026-04-02)
+### Security (Grade A- — independently audited by red team + adversarial self-audit, updated 2026-04-02)
 - **Credential isolation** — secrets.db separated from main database, 600 permissions, never exposed to workers
 - **API key encryption at rest** — AES-256-GCM with HMAC-indexed lookups
 - **Identity enforcement** — agents cannot impersonate humans or each other

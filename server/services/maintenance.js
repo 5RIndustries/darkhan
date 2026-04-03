@@ -74,7 +74,7 @@ class MaintenanceService {
    * Start daily maintenance schedule.
    */
   startSchedule() {
-    // Run daily maintenance at 0300 ET (between Corey audit at 0100 and morning brief at 0600)
+    // Run daily maintenance at 0300 ET (between nightly security audit and morning brief)
     this._dailyInterval = setInterval(() => {
       this.runDaily();
     }, DAILY_MS);

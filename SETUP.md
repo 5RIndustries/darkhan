@@ -255,7 +255,7 @@ Edit `darkhan.config.json` to define your instance and team members. Here is a m
           "model": "qwen2.5:14b",
           "mode": "worker"
         },
-        "worker": "chief.worker.js",
+        "worker": "assistant.worker.js",
         "rateLimits": {
           "requestsPerDay": 0,
           "requestsPerMinute": 0

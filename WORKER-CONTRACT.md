@@ -39,13 +39,13 @@ Workers never interact with the database, filesystem, or network directly. Every
 
 ```javascript
 module.exports = {
-  id: 'agent_chief',           // MUST match a team member ID in darkhan.config.json
-  name: 'Chief',
+  id: 'agent_assistant',       // MUST match a team member ID in darkhan.config.json
+  name: 'Assistant',
 
   // Called once when the worker is loaded at server start
   async onLoad({ llm, darkhan, tools, evidence, observe, config, log }) {
-    log.info('Chief worker loaded');
-    await darkhan.post('chan_command', 'Chief online.');
+    log.info('Assistant worker loaded');
+    await darkhan.post('chan_command', 'Assistant online.');
   },
 
   // --- Scheduled Tasks ---
@@ -65,7 +65,7 @@ module.exports = {
   // --- Message Listeners ---
   listeners: {
     listener_name: {
-      patterns: [/^comms?\s*check$/i, /@chief/i],  // Regex patterns to match
+      patterns: [/^comms?\s*check$/i, /@assistant/i],  // Regex patterns to match
       timeout: 15000,              // Max runtime in ms (default: 60s)
 
       // Receives context + message details
@@ -200,7 +200,7 @@ darkhan.flagThreat({ category, severity, description, evidence })
 
 **Claim verification:** Every agent message posted via `darkhan.post()` is automatically scanned by the Claim Verifier before being saved. The verifier checks:
 - File references ("saved to Intel/report.md") against the filesystem
-- Status claims ("Lindsey is operational") against the heartbeat table
+- Status claims ("agent is operational") against the heartbeat table
 - Numeric claims ("scanned 47 messages") tagged as self-reported
 
 Verification results are stored in the message's `metadata.claimVerification` field. This is non-blocking -- the verifier never modifies the message body or prevents posting. It only adds trust signals for human review.
@@ -304,8 +304,8 @@ async run({ observe, log }) {
 ### `config` -- Agent Configuration
 
 ```
-config.id          -> 'agent_chief'
-config.name        -> 'Chief'
+config.id          -> 'agent_assistant'
+config.name        -> 'Assistant'
 config.model       -> { provider: 'ollama', model: 'qwen2.5:14b' }
 config.schedule    -> { ... }
 config.rateLimits  -> { requestsPerDay: 0, ... }

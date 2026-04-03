@@ -2,7 +2,7 @@
  * Darkhan — Cost Tracker
  *
  * Per-agent token and cost accounting. Append-only tracking table.
- * Uses INTEGER millicents (not REAL) per Corey's recommendation.
+ * Uses INTEGER millicents (not REAL) to avoid floating-point rounding errors.
  */
 
 class CostTracker {

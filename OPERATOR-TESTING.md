@@ -4,7 +4,7 @@
 
 ## The Problem
 
-An AI agent (Claude, Corey, or any operator) needs to verify that Darkhan is working correctly. But testing typically requires authentication — logging in, sending messages, checking responses. An agent that guesses passwords, reads credential stores, or impersonates users to test the system is violating the same trust boundaries the system is designed to protect.
+An AI agent or operator needs to verify that Darkhan is working correctly. But testing typically requires authentication — logging in, sending messages, checking responses. An agent that guesses passwords, reads credential stores, or impersonates users to test the system is violating the same trust boundaries the system is designed to protect.
 
 ## The Principle
 
@@ -116,11 +116,11 @@ Workers already operate within sandboxed permissions. They cannot read secrets.d
 ### For Operators (Claude Code, SSH users)
 Operators have broader system access but must still respect authentication boundaries. Having the ability to read a file doesn't grant permission to use its contents. The protocol above applies to all operators regardless of their filesystem access level.
 
-### For Red Team (Corey)
-Corey's adversarial testing has an explicit mandate to probe security boundaries. However, Corey:
+### For Red Team Agents
+Red team adversarial testing has an explicit mandate to probe security boundaries. However, the red team agent:
 - Tests from OUTSIDE the trust boundary (simulating an attacker)
 - Reports findings to the admin (not self-remediates with stolen credentials)
-- Uses the Siege agent or HTTP probes, not admin credentials
+- Uses siege testing or HTTP probes, not admin credentials
 
 ## Adding This to Darkhan's Architecture
 

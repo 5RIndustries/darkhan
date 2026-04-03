@@ -59,7 +59,7 @@ When saving baseline:
 2. Compute HMAC-SHA256 with key: `HMAC(SESSION_SECRET, "darkhan-baseline-v1")`
 3. Store HMAC in `settings` table as `baseline_anchor`
 4. Also store current activity_log chain head hash as `baseline_chain_checkpoint`
-   (Penrose recommendation: ties baseline to audit trail state)
+   (design recommendation: ties baseline to audit trail state)
 
 On startup verification:
 - Match → proceed
@@ -72,7 +72,7 @@ On startup verification:
 - PIN cannot be extracted from bcrypt hash → computationally unforgeable by agents
 - Verify via deploy mode (Item 4) when PIN is available
 
-**Known limitation (Corey):** Phase 1 anchor is forgeable if attacker reads .env.
+**Known limitation (red team):** Phase 1 anchor is forgeable if attacker reads .env.
 Phase 2 closes this. Acceptable for v1.0.0 single-user deployments.
 
 **Tests:**
@@ -121,8 +121,8 @@ node server.js --deploy
 
 1. Check process.stdin.isTTY → refuse if not interactive
 2. Check for CLAUDE_CODE, DARKHAN_RELAY_SESSION, DARKHAN_PTY_SESSION env vars
-   → refuse if running inside agent terminal (Corey feedback)
-3. Check process.ppid isn't a known Darkhan worker process (Corey feedback)
+   → refuse if running inside agent terminal (red team feedback)
+3. Check process.ppid isn't a known Darkhan worker process (red team feedback)
 4. Prompt for lockdown PIN (hidden echo)
 5. Verify against secrets.db (bcrypt compare)
 6. If valid: reset baseline, update anchor, log, continue startup
@@ -181,7 +181,7 @@ Add provenance rows to instance_identity during seed:
 
 Include in `getInfo()` for federation handshakes.
 
-**Corey note:** Provenance is self-attested. Not a trust authority — informational only.
+**Red team note:** Provenance is self-attested. Not a trust authority — informational only.
 Real trust gate is Build Item 7.
 
 **Tests:**
@@ -219,7 +219,7 @@ Real trust gate is Build Item 7.
 **Estimated size:** ~10 lines
 
 **Acknowledged:** This is the weakest layer (behavioral, not architectural).
-Corey: "Not security. Documentation. Include but don't count toward posture."
+Red team assessment: "Not security. Documentation. Include but don't count toward posture."
 
 ---
 
@@ -342,9 +342,9 @@ All build items implemented and verified.
 
 ## Review Status
 
-- [x] Penrose deep analysis: APPROVED (added chain checkpoint to Item 2)
-- [x] Corey red team: APPROVED, Grade A- (added terminal detection to Item 4)
-- [x] Claude self-adversarial audit: COMPLETE (12 findings, 2 new build items)
+- [x] Deep research analysis: APPROVED (added chain checkpoint to Item 2)
+- [x] Red team review: APPROVED, Grade A- (added terminal detection to Item 4)
+- [x] Adversarial self-audit: COMPLETE (12 findings, 2 new build items)
 - [x] Step 0a: DONE (dev mode removed from launchd)
 - [x] Step 0b: DONE (API key removed from launchd)
 - [ ] Step 0c: service user setup — PENDING (recommended before release)

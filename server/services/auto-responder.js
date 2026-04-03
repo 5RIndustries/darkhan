@@ -397,7 +397,7 @@ function classifyMessage(messageBody, fromUser) {
     return 'heartbeat_log';
   }
 
-  // Agent relay triggers (Lindsey) → Claude relay (needs comprehension)
+  // Agent relay triggers → Claude relay (needs comprehension)
   if (!HUMAN_USERS.includes(fromUser)) {
     return 'claude_relay';
   }
@@ -468,7 +468,7 @@ async function processLocalLlmMessage(channelId, fromUser, messageBody, context)
   const darylContext = await buildDarylContext(db, channelId);
 
   const ollamaModel = process.env.OLLAMA_MODEL || 'qwen2.5:14b';
-  const prompt = `You are Darkhan, the command center assistant. You are NOT Claude — Claude is the Chief of Staff who runs in the terminal tab. You are Darkhan, running on a local ${ollamaModel} model.
+  const prompt = `You are Darkhan, the command center assistant. You are NOT Claude — Claude is the lead agent who runs in the terminal tab. You are Darkhan, running on a local ${ollamaModel} model.
 
 Your role: Handle routine communication (greetings, acknowledgments, status questions you can answer from context), and be a competent front-desk assistant.
 

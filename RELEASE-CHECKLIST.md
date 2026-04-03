@@ -74,7 +74,7 @@ A misconfigured `.npmignore` shipped a 59.8 MB source map file in npm package `@
 ### Daily (Automated)
 | Check | How | When |
 |-------|-----|------|
-| `npm audit` | Darkhan security worker or CI scheduled run | 0100 ET (alongside Corey audit) |
+| `npm audit` | Darkhan security worker or CI scheduled run | 0100 ET (alongside red team audit) |
 | Dependency version check | `npm outdated` in server/ | 0100 ET |
 | Secret scanner | `node scripts/secret-scanner.js --startup` | Every server start |
 
@@ -89,7 +89,7 @@ A misconfigured `.npmignore` shipped a 59.8 MB source map file in npm package `@
 
 ### Per-Release (Before Every Push to Main)
 - Full pre-release checklist above
-- Corey red team review of any new security-relevant code
+- Red team review of any new security-relevant code
 - Fresh install dress rehearsal if >50 lines changed in server/
 
 ### Quarterly (Deep Audit)
@@ -153,7 +153,7 @@ This document should be updated when:
 - A new high-profile supply chain attack occurs (review if we're affected)
 - A new dependency is added to Darkhan
 - A new contributor gets repo access
-- Corey flags a security gap in his audit
+- Red team audit flags a security gap
 - A fresh install test fails for security-related reasons
 - Any security incident occurs (ours or industry — extract lessons)
 

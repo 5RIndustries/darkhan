@@ -24,7 +24,7 @@ router.use(requireAuth);
  *
  * Request:
  *   {
- *     "requested_by": "agent_lindsey",       — agent ID (optional; auto-filled from auth)
+ *     "requested_by": "agent_assistant",      — agent ID (optional; auto-filled from auth)
  *     "action_type": "send_email",           — type of action needing approval
  *     "action_detail": "Send email to ..."   — human-readable detail
  *   }

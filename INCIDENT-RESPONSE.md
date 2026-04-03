@@ -69,7 +69,7 @@ The hash-chain audit log tells you exactly when tampering started:
 3. Generate a new integrity baseline
 4. Deploy to your own instance first and verify clean state
 5. Run Siege (or equivalent adversarial testing) against the patched system for 48 hours
-6. Full Corey-grade security audit before declaring resolved
+6. Full red team security audit before declaring resolved
 
 ---
 
