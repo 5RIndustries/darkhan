@@ -61,6 +61,13 @@ class SecurityService {
     this.escalationModel = process.env.SECURITY_ESCALATION_MODEL || 'claude-haiku-4-5';
     this.escalateOn = ['medium', 'high'];
 
+    // When true, human-origin messages also go through the full scan pipeline
+    // (normalization + regex + two-LLM consensus) instead of the regex-only fast path.
+    // Defends against session hijacking, XSS-driven message injection, and compromised
+    // browser extensions posting as an authenticated human.
+    this.scanHumanMessages = config?.security?.scanHumanMessages ?? false;
+    console.log(`[Security] scanHumanMessages: ${this.scanHumanMessages}`);
+
     // === LOCKDOWN STATE ===
     // When lockdown is active, ALL agent traffic is blocked.
     // Only human admin users can post messages and must explicitly unlock.
@@ -411,31 +418,21 @@ Respond with EXACTLY one word: SAFE, SUSPICIOUS, or MALICIOUS.`;
     let localVerdict = null;
     let cloudVerdict = null;
 
-    // Model 1: Local LLM (Ollama)
-    try {
-      const localResult = await this.llmService.complete({
-        agentId: 'agent_darkhan',
-        provider: 'ollama',
-        model: process.env.OLLAMA_MODEL || 'qwen2.5:14b',
-        messages: [
-          { role: 'system', content: classificationPrompt },
-          { role: 'user', content: messagePrompt },
-        ],
-        options: { temperature: 0, maxTokens: 10 },
-        requestType: 'security_consensus_local',
-      });
-      const r = localResult.response.trim().toUpperCase();
-      if (r.startsWith('SAFE')) localVerdict = 'SAFE';
-      else if (r.startsWith('SUSPICIOUS')) localVerdict = 'SUSPICIOUS';
-      else if (r.startsWith('MALICIOUS')) localVerdict = 'MALICIOUS';
-    } catch (e) {
-      console.warn('[Security] Consensus local LLM failed:', e.message);
-    }
+    // Run both models in PARALLEL for lower latency (~40% faster than sequential)
+    const localPromise = this.llmService.complete({
+      agentId: 'agent_darkhan',
+      provider: 'ollama',
+      model: process.env.OLLAMA_MODEL || 'qwen2.5:14b',
+      messages: [
+        { role: 'system', content: classificationPrompt },
+        { role: 'user', content: messagePrompt },
+      ],
+      options: { temperature: 0, maxTokens: 10 },
+      requestType: 'security_consensus_local',
+    }).catch(e => { console.warn('[Security] Consensus local LLM failed:', e.message); return null; });
 
-    // Model 2: Cloud LLM (Gemini or Anthropic)
-    if (this.escalationProvider) {
-      try {
-        const cloudResult = await this.llmService.complete({
+    const cloudPromise = this.escalationProvider
+      ? this.llmService.complete({
           agentId: 'agent_darkhan',
           provider: this.escalationProvider,
           model: this.escalationModel,
@@ -445,14 +442,23 @@ Respond with EXACTLY one word: SAFE, SUSPICIOUS, or MALICIOUS.`;
           ],
           options: { temperature: 0, maxTokens: 10 },
           requestType: 'security_consensus_cloud',
-        });
-        const r = cloudResult.response.trim().toUpperCase();
-        if (r.startsWith('SAFE')) cloudVerdict = 'SAFE';
-        else if (r.startsWith('SUSPICIOUS')) cloudVerdict = 'SUSPICIOUS';
-        else if (r.startsWith('MALICIOUS')) cloudVerdict = 'MALICIOUS';
-      } catch (e) {
-        console.warn('[Security] Consensus cloud LLM failed:', e.message);
-      }
+        }).catch(e => { console.warn('[Security] Consensus cloud LLM failed:', e.message); return null; })
+      : Promise.resolve(null);
+
+    const [localResult, cloudResult] = await Promise.all([localPromise, cloudPromise]);
+
+    if (localResult) {
+      const r = localResult.response.trim().toUpperCase();
+      if (r.startsWith('SAFE')) localVerdict = 'SAFE';
+      else if (r.startsWith('SUSPICIOUS')) localVerdict = 'SUSPICIOUS';
+      else if (r.startsWith('MALICIOUS')) localVerdict = 'MALICIOUS';
+    }
+
+    if (cloudResult) {
+      const r = cloudResult.response.trim().toUpperCase();
+      if (r.startsWith('SAFE')) cloudVerdict = 'SAFE';
+      else if (r.startsWith('SUSPICIOUS')) cloudVerdict = 'SUSPICIOUS';
+      else if (r.startsWith('MALICIOUS')) cloudVerdict = 'MALICIOUS';
     }
 
     // Consensus logic
@@ -661,8 +667,9 @@ Respond with EXACTLY one word: SAFE, SUSPICIOUS, or MALICIOUS.`;
    * origin='agent' which triggers the full scan pipeline in fullScan(), including
    * content normalization and two-LLM consensus.
    *
-   * Human internal messages still get the fast path (regex only) because a human
-   * typing in the Darkhan UI is authenticated and trusted.
+   * Human internal messages get the fast path (regex only) by default. When
+   * config.security.scanHumanMessages is true, human messages also go through
+   * the full pipeline — defends against session hijacking and compromised clients.
    *
    * @param {string} body - Message body text
    * @param {string} fromUser - Sender user ID (e.g., 'agent_chief', 'user_adrian')
@@ -672,12 +679,24 @@ Respond with EXACTLY one word: SAFE, SUSPICIOUS, or MALICIOUS.`;
   async sanitizeMessage(body, fromUser, origin = 'internal') {
     // Determine if this is an agent message — agents get full scan too
     const isAgent = fromUser && fromUser.startsWith('agent_');
+    const isHumanInternal = !isAgent && origin === 'internal';
     const effectiveOrigin = isAgent ? 'agent' : origin;
 
-    // Use fullScan for external and agent messages (includes consensus + normalization)
-    // Use basic pattern scan for human internal messages (fast path)
+    // Use fullScan for external, agent, and (optionally) human messages.
+    // When scanHumanMessages is enabled, human-origin messages also go through
+    // the full pipeline (normalization + regex + two-LLM consensus). This defends
+    // against session hijacking and compromised browser extensions.
+    const useFullScan = effectiveOrigin === 'external'
+      || effectiveOrigin === 'federated'
+      || effectiveOrigin === 'agent'
+      || (isHumanInternal && this.scanHumanMessages);
+
+    if (isHumanInternal) {
+      console.log(`[Security] Human message scan: scanHumanMessages=${this.scanHumanMessages}, useFullScan=${useFullScan}, from=${fromUser}`);
+    }
+
     let scan;
-    if (effectiveOrigin === 'external' || effectiveOrigin === 'federated' || effectiveOrigin === 'agent') {
+    if (useFullScan) {
       scan = await this.fullScan(body, { origin: effectiveOrigin, source: fromUser });
     } else {
       const basicScan = this.scanForInjection(body, { origin: effectiveOrigin, source: fromUser });
@@ -916,9 +935,10 @@ Respond with EXACTLY one word: SAFE, SUSPICIOUS, or MALICIOUS.`;
         return { allowed: false, reason: `Dangerous command '${baseCmd}' blocked for ${agentId}` };
       }
 
-      // Block access to sensitive files (credentials, database, env)
+      // Block access to sensitive files (credentials, database, env, integrity baseline)
       const sensitivePatterns = [/\.env\b/, /\.db\b/, /password/, /api_key/, /token/,
-        /\.sqlite/, /darkhan\.db/, /sessions\.db/, /secret/i];
+        /\.sqlite/, /darkhan\.db/, /sessions\.db/, /secret/i,
+        /integrity-baseline/];
       for (const pat of sensitivePatterns) {
         if (pat.test(command)) {
           this.activityLog.append({

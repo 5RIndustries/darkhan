@@ -64,6 +64,9 @@
   "vault": {
     "path": "~/darkhan-vault"
   },
+  "security": {
+    "scanHumanMessages": false
+  },
   "sandbox": {
     "enabled": true,
     "processIsolation": true,

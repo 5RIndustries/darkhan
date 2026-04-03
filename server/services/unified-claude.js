@@ -68,6 +68,8 @@ const SECURITY_INPUT_PATTERNS = [
   /\.(env|pem|key|cert)\b/,
   // Service user / sudo operations
   /\b(sudo|su\s|_darkhan)\b/i,
+  // Integrity baseline — agents must not delete or modify the baseline file
+  /integrity-baseline/,
 ];
 
 /**
@@ -160,12 +162,11 @@ class UnifiedClaudeSession {
     }
 
     // 2. Try resume from stored session (survives server restart)
-    // Skip resume if session is near the cycling threshold — create fresh instead
-    // so the new session gets the full activity digest and system prompt.
+    // Always resume if we have a valid stored session — cycling happens after
+    // turn completion, not preemptively. This preserves continuity across restarts.
     const stored = this._storedSessions[userId];
     const MAX_AGE = 8 * 3600000;
-    const nearCycleThreshold = stored?.messageCount >= (this.maxSessionMessages - 5);
-    if (stored?.sessionId && !nearCycleThreshold && (Date.now() - (stored.lastMessageAt || 0)) < MAX_AGE) {
+    if (stored?.sessionId && (Date.now() - (stored.lastMessageAt || 0)) < MAX_AGE) {
       const promise = this._resumeSession(userId, stored.sessionId, stored.messageCount || 0);
       this._creatingSession.set(userId, promise);
       try {
@@ -184,10 +185,6 @@ class UnifiedClaudeSession {
       } finally {
         this._creatingSession.delete(userId);
       }
-    } else if (stored && nearCycleThreshold) {
-      console.log(`[UnifiedClaude] Stored session near cycle threshold (${stored.messageCount}/${this.maxSessionMessages}) — creating fresh`);
-      delete this._storedSessions[userId];
-      this._saveStoredSessions();
     }
 
     // 3. Create fresh
@@ -1106,10 +1103,10 @@ class UnifiedClaudeSession {
   }
 
   /**
-   * Cycle a session — close the current one and clear stored state so
-   * the next message creates a fresh session. The hash-chain activity log
-   * preserves full history; the new session gets recent channel context
-   * in its system prompt for continuity.
+   * Cycle a session — close the in-memory session so the next message
+   * gets a fresh system prompt with updated context. The SDK session ID
+   * is KEPT in stored sessions so it can be resumed after server restarts.
+   * The hash-chain activity log preserves full history.
    */
   _cycleSession(userId, entry) {
     const msgCount = entry.messageCount || 0;
@@ -1121,14 +1118,22 @@ class UnifiedClaudeSession {
       sessionId: entry.sessionId,
     });
 
-    // Post a notice so the user knows what happened
-    this._postToChannel('chan_claude', `[Session cycled for ${userId} after ${msgCount} messages. Next message starts a fresh session with recent context.]`);
+    this._postToChannel('chan_claude', `[Session cycled for ${userId} after ${msgCount} messages. Next message resumes with recent context.]`);
 
-    // Close and clear — next getOrCreateSession() will build fresh
+    // Close in-memory session but KEEP the stored session ID.
+    // The SDK session persists server-side — we can resume it after restart.
+    // Reset message count so the next resume doesn't immediately re-cycle.
     try { entry.session.close(); } catch {}
     this.sessions.delete(userId);
-    delete this._storedSessions[userId];
-    this._saveStoredSessions();
+    if (entry.sessionId) {
+      this._storedSessions[userId] = {
+        sessionId: entry.sessionId,
+        createdAt: this._storedSessions[userId]?.createdAt || Date.now(),
+        messageCount: 0, // Reset — cycle is a logical boundary, not a session kill
+        lastMessageAt: Date.now(),
+      };
+      this._saveStoredSessions();
+    }
   }
 
   async closeSession(userId, { clearStored = false } = {}) {

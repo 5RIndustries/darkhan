@@ -37,6 +37,7 @@ server/db/secrets.db
 
 # Runtime files
 server/.darkhan.pid
+server/.dev
 
 # Logs
 *.log

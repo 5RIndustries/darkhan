@@ -39,6 +39,11 @@ class IntegrityService {
     this.baselineUserCount = 0;
     this.baselineConfigHash = null;
 
+    // Grace period: after admin baseline reset, suppress re-lockdown for 10 minutes.
+    // Prevents the unlock → 5-min verify → re-lock cycle.
+    this.lastBaselineResetAt = null;
+    this.gracePeriodMs = 10 * 60 * 1000; // 10 minutes
+
     // Critical files to monitor
     this.serverDir = path.join(__dirname, '..');
     this.criticalFiles = [
@@ -65,33 +70,13 @@ class IntegrityService {
     // so tampering with Darkhan code doesn't affect the baseline reference
     this.externalBaselinePath = path.join(process.env.HOME, '.darkhan-integrity-baseline.json');
 
-    // Development mode: skip integrity baseline checks during active development.
-    // All other security remains active (injection detection, identity enforcement, etc).
-    // [M-1 FIX] Enabled via explicit DARKHAN_DEV_MODE=true or config — not NODE_ENV.
-    this.devMode = process.env.DARKHAN_DEV_MODE === 'true' || config.integrity?.devMode === true;
+    // Local development mode: activated by presence of .dev sentinel file in server/.
+    // This file is gitignored and never ships. All other security remains active.
+    const devSentinel = path.join(__dirname, '..', '.dev');
+    this.devMode = fs.existsSync(devSentinel);
     if (this.devMode) {
-      console.log('[Integrity] *** DEVELOPMENT MODE — integrity baseline checks DISABLED ***');
-      console.log('[Integrity] File tampering will not trigger lockdown. All other security is active.');
-      console.log('[Integrity] Set DARKHAN_DEV_MODE=false for full integrity enforcement.');
-
-      // [HARDENING-10]: Warn loudly if dev mode is active with real users in DB.
-      // This catches accidental production deployments with dev mode enabled.
-      try {
-        const dbPath = path.join(path.join(__dirname, '..'), 'db', 'darkhan.db');
-        if (fs.existsSync(dbPath)) {
-          db.get('SELECT COUNT(*) as count FROM users', [], (err, row) => {
-            if (!err && row && row.count > 0) {
-              console.error(`[Integrity] *** WARNING: DEV MODE active with ${row.count} user(s) in database ***`);
-              console.error('[Integrity] *** All integrity checks are DISABLED. This is NOT safe for production. ***');
-              activityLog.append({
-                actor: 'darkhan_integrity',
-                action: 'DEV_MODE_WITH_USERS_WARNING',
-                details: JSON.stringify({ userCount: row.count, severity: 'CRITICAL' }),
-              });
-            }
-          });
-        }
-      } catch (e) { /* DB may not be ready yet — checked again in establishBaseline */ }
+      console.log('[Integrity] Local development mode active (.dev sentinel found)');
+      console.log('[Integrity] Baseline checks relaxed. All other security is active.');
     }
 
     console.log('[Integrity] Service initializing...');
@@ -280,34 +265,54 @@ class IntegrityService {
       // attack if an anchor exists (meaning a baseline was previously established and then deleted).
       const existingAnchor = await this._getBaselineAnchor();
       if (dbExists && this.baselineUserCount > 0 && existingAnchor) {
-        console.error('[Integrity] *** BASELINE FILE MISSING — but database has users AND a stored anchor. This is NOT a first boot. ***');
-        console.error('[Integrity] Possible baseline tampering. System locked.');
-        console.error('[Integrity] Recovery: node break-glass.js reset-baseline (requires lockdown PIN)');
+        // Check if an admin reset the baseline recently (within 15 min).
+        // If so, the file was likely deleted by an agent after admin maintenance —
+        // re-establish baseline instead of locking down. This breaks the
+        // "agent deletes baseline → restart → lockdown → admin resets → agent deletes → ..." loop.
+        const recentReset = await this._checkRecentAdminReset(15);
+        if (recentReset) {
+          console.warn('[Integrity] Baseline file missing, but admin reset baseline within last 15 min');
+          console.warn('[Integrity] Re-establishing baseline from current state (not locking down)');
+          this.activityLog.append({
+            actor: 'darkhan_integrity',
+            action: 'baseline_missing_recovered',
+            details: JSON.stringify({
+              userCount: this.baselineUserCount,
+              recentResetAt: recentReset,
+              recovery: 'auto_reestablish',
+            }),
+          });
+          // Fall through to save new baseline below
+        } else {
+          console.error('[Integrity] *** BASELINE FILE MISSING — but database has users AND a stored anchor. This is NOT a first boot. ***');
+          console.error('[Integrity] No recent admin reset found. Possible baseline deletion attack.');
+          console.error('[Integrity] Recovery: node break-glass.js reset-baseline (requires lockdown PIN)');
 
-        this.activityLog.append({
-          actor: 'darkhan_integrity',
-          action: 'BASELINE_MISSING_LOCKDOWN',
-          details: JSON.stringify({
-            userCount: this.baselineUserCount,
-            dbExists: true,
-            baselinePath: this.externalBaselinePath,
-            severity: 'CRITICAL',
-          }),
-        });
+          this.activityLog.append({
+            actor: 'darkhan_integrity',
+            action: 'BASELINE_MISSING_LOCKDOWN',
+            details: JSON.stringify({
+              userCount: this.baselineUserCount,
+              dbExists: true,
+              baselinePath: this.externalBaselinePath,
+              severity: 'CRITICAL',
+            }),
+          });
 
-        if (this.securityService) {
-          this.securityService.triggerLockdown(
-            `CRITICAL: Integrity baseline file missing but database contains ${this.baselineUserCount} user(s). Possible baseline deletion attack. Recovery: node break-glass.js reset-baseline`,
-            'darkhan_integrity'
-          );
+          if (this.securityService) {
+            this.securityService.triggerLockdown(
+              `CRITICAL: Integrity baseline file missing but database contains ${this.baselineUserCount} user(s). Possible baseline deletion attack. Recovery: node break-glass.js reset-baseline`,
+              'darkhan_integrity'
+            );
+          }
+
+          this._enforcePermissions();
+          return {
+            files: Object.keys(this.baselineHashes).length,
+            users: this.baselineUserCount,
+            baselineMissing: true,
+          };
         }
-
-        this._enforcePermissions();
-        return {
-          files: Object.keys(this.baselineHashes).length,
-          users: this.baselineUserCount,
-          baselineMissing: true,
-        };
       }
 
       // Genuine first boot — no database or no users
@@ -437,12 +442,17 @@ class IntegrityService {
     // Save to external baseline file
     this._saveExternalBaseline();
 
+    // Start grace period — suppress re-lockdown for 10 minutes after admin reset
+    this.lastBaselineResetAt = Date.now();
+    console.log(`[Integrity] Grace period started (${this.gracePeriodMs / 60000} min) — verify() will log but not lock down`);
+
     this.activityLog.append({
       actor: 'darkhan_integrity',
       action: 'baseline_reset_by_admin',
       details: JSON.stringify({
         files: Object.keys(this.baselineHashes).length,
         users: this.baselineUserCount,
+        gracePeriodMs: this.gracePeriodMs,
       }),
     });
 
@@ -572,20 +582,44 @@ class IntegrityService {
       }
     } catch (e) { /* */ }
 
-    // Log and handle violations
-    if (violations.length > 0) {
+    // RESILIENCE: If external baseline file was deleted at runtime, re-save from in-memory state.
+    // Prevents the "baseline disappeared → restart → lockdown" loop when an agent accidentally
+    // deletes the file. The in-memory baseline (established on startup or admin reset) is authoritative.
+    if (Object.keys(this.baselineHashes).length > 0 && !fs.existsSync(this.externalBaselinePath)) {
+      console.warn('[Integrity] External baseline file missing — re-saving from in-memory state');
+      this._saveExternalBaseline();
       this.activityLog.append({
         actor: 'darkhan_integrity',
-        action: 'INTEGRITY_VIOLATION',
+        action: 'baseline_file_restored',
+        details: JSON.stringify({ files: Object.keys(this.baselineHashes).length }),
+      });
+    }
+
+    // Log and handle violations
+    if (violations.length > 0) {
+      // Check if we're within the grace period after an admin baseline reset
+      const inGracePeriod = this.lastBaselineResetAt &&
+        (Date.now() - this.lastBaselineResetAt) < this.gracePeriodMs;
+
+      this.activityLog.append({
+        actor: 'darkhan_integrity',
+        action: inGracePeriod ? 'INTEGRITY_VIOLATION_GRACE_PERIOD' : 'INTEGRITY_VIOLATION',
         details: JSON.stringify({
           violationCount: violations.length,
           critical: violations.filter(v => v.severity === 'CRITICAL').length,
           violations: violations.map(v => ({ type: v.type, file: v.file, severity: v.severity })),
+          gracePeriod: inGracePeriod || false,
         }),
       });
 
       console.error(`[Integrity] *** ${violations.length} VIOLATION(S) DETECTED ***`);
       violations.forEach(v => console.error(`  [${v.severity}] ${v.detail}`));
+
+      if (inGracePeriod) {
+        const remaining = Math.round((this.gracePeriodMs - (Date.now() - this.lastBaselineResetAt)) / 1000);
+        console.warn(`[Integrity] Grace period active (${remaining}s remaining) — logging only, no lockdown`);
+        return { clean: false, violations, gracePeriod: true };
+      }
 
       // Auto-lockdown on any CRITICAL violation
       const hasCritical = violations.some(v => v.severity === 'CRITICAL');
@@ -686,6 +720,23 @@ class IntegrityService {
         resolve(crypto.createHash('sha256').update(content).digest('hex'));
       }
     );
+  }
+
+  /**
+   * Check if an admin reset the baseline within the last N minutes.
+   * Used on startup to distinguish "agent deleted baseline file" from "attacker deleted baseline."
+   */
+  _checkRecentAdminReset(minutesAgo) {
+    return new Promise((resolve) => {
+      const cutoff = new Date(Date.now() - minutesAgo * 60 * 1000).toISOString();
+      this.db.get(
+        `SELECT created_at FROM activity_log WHERE action = 'baseline_reset_by_admin' AND created_at >= ? ORDER BY id DESC LIMIT 1`,
+        [cutoff],
+        (err, row) => {
+          resolve(err || !row ? null : row.created_at);
+        }
+      );
+    });
   }
 
   /**
