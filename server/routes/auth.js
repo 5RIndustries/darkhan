@@ -147,7 +147,8 @@ router.post('/login', (req, res) => {
   // [H-1 FIX] Initialize brute-force persistence on first login attempt
   _initBruteForceDb(req.app.locals.db);
 
-  const { username, password } = req.body;
+  const { password } = req.body;
+  const username = req.body.username?.toLowerCase();
   if (!username || !password) {
     return res.status(400).json({ error: 'Username and password required' });
   }
@@ -527,7 +528,8 @@ router.post('/generate-recovery', requireAuth, async (req, res) => {
 
 // POST /api/auth/reset-with-token — reset password using recovery token (no login required)
 router.post('/reset-with-token', async (req, res) => {
-  const { username, token, newPassword } = req.body;
+  const { token, newPassword } = req.body;
+  const username = req.body.username?.toLowerCase();
   if (!username || !token || !newPassword) {
     return res.status(400).json({ error: 'username, token, and newPassword required' });
   }
