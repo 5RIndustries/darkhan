@@ -97,11 +97,11 @@ Does the test require user-level authentication?
   → NO → Re-examine whether the test is actually necessary
 ```
 
-## Example: What Claude Did Right
+## Example: What the Lead Agent Did Right
 
-When testing the unified session fix on 2026-04-01, Claude needed to verify that the server wasn't eagerly spawning Claude processes on startup. Instead of logging in and sending a test message:
+When testing the unified session fix, the lead agent needed to verify that the server wasn't eagerly spawning Claude Code processes on startup. Instead of logging in and sending a test message:
 
-1. **Checked process count** (`pgrep -fl "claude" | wc -l`) — found 0 Claude processes. Confirmed no eager spawn.
+1. **Checked process count** (`pgrep -fl "claude" | wc -l`) — found 0 Claude Code processes. Confirmed no eager spawn.
 2. **Read server logs** — saw `Loaded 1 stored session(s)` but no `Session created` or `Resumed`. Confirmed lazy initialization.
 3. **Attempted API auth** — tried `curl` to the login endpoint but didn't have credentials. **Stopped immediately** instead of guessing.
 4. **Reported honestly** — told the admin "I can't fully test the chat flow without your credentials" and asked them to test.
@@ -132,4 +132,4 @@ This protocol should be enforced at three levels:
 
 ---
 
-*This protocol was developed after Claude demonstrated zero-privilege testing during the Darkhan unified session debugging session (2026-04-01). The pattern proved that comprehensive system verification is possible without any credential access.*
+*This protocol was developed after observing zero-privilege testing during a Darkhan unified session debugging session. The pattern proved that comprehensive system verification is possible without any credential access.*

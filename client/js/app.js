@@ -1021,7 +1021,7 @@
           const tokenDiv = document.createElement('div');
           tokenDiv.className = 'message token-info';
           tokenDiv.innerHTML = `
-            <span class="msg-user">daryl</span>
+            <span class="msg-user">darkhan</span>
             <span class="msg-time">now</span>
             <div class="msg-body" style="font-size:0.8rem;color:var(--text-muted);">Claude API: ${result.token_usage.input || '?'}in / ${result.token_usage.output || '?'}out tokens</div>
           `;
@@ -1033,7 +1033,7 @@
       } catch (err) {
         thinkingDiv.remove();
         appendMessage({
-          from_user: 'daryl',
+          from_user: 'darkhan',
           body: 'Claude API error: ' + err.message,
           created_at: new Date().toISOString(),
           type: 'error'

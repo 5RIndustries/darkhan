@@ -55,12 +55,12 @@ async function sendMessage(input, context) {
 
   return new Promise((resolve) => {
     const id = crypto.randomUUID();
-    const darylUserId = 'agent_darkhan'; // DARYL intelligence layer identity
+    const darkhanUserId = 'agent_darkhan';
 
     db.run(
       `INSERT INTO messages (id, channel_id, from_user, body, priority, type)
        VALUES (?, ?, ?, ?, ?, ?)`,
-      [id, channel_id, darylUserId, body, 'normal', 'message'],
+      [id, channel_id, darkhanUserId, body, 'normal', 'message'],
       function (err) {
         if (err) {
           console.error('[send_message] DB error:', err.message);
@@ -70,7 +70,7 @@ async function sendMessage(input, context) {
         const message = {
           id,
           channel_id,
-          from_user: darylUserId,
+          from_user: darkhanUserId,
           body,
           type: 'message',
           created_at: new Date().toISOString()
@@ -102,12 +102,12 @@ async function createTask(input, context) {
 
   return new Promise((resolve) => {
     const id = crypto.randomUUID();
-    const darylUserId = 'agent_darkhan';
+    const darkhanUserId = 'agent_darkhan';
 
     db.run(
       `INSERT INTO tasks (id, title, description, assignee, created_by, priority)
        VALUES (?, ?, ?, ?, ?, ?)`,
-      [id, title, description || '', assignee, darylUserId, priority],
+      [id, title, description || '', assignee, darkhanUserId, priority],
       function (err) {
         if (err) {
           console.error('[create_task] DB error:', err.message);

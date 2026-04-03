@@ -393,7 +393,7 @@ In `darkhan.config.json`, set:
 }
 ```
 
-Then restart Darkhan. Workers will run as isolated child processes. Check startup logs for confirmation messages like "Worker agent_chief started in forked process."
+Then restart Darkhan. Workers will run as isolated child processes. Check startup logs for confirmation messages like "Worker agent_assistant started in forked process."
 
 **Note:** In development mode (`NODE_ENV=development`), workers always run in-process regardless of this setting.
 
@@ -411,10 +411,10 @@ To stop a specific agent without full lockdown:
 
 ```bash
 # Disable (stops cron jobs, keeps the worker loaded)
-curl -X POST http://localhost:3001/api/workers/agent_chief/disable -H "X-API-Key: ADMIN_KEY"
+curl -X POST http://localhost:3001/api/workers/agent_assistant/disable -H "X-API-Key: ADMIN_KEY"
 
 # Re-enable
-curl -X POST http://localhost:3001/api/workers/agent_chief/enable -H "X-API-Key: ADMIN_KEY"
+curl -X POST http://localhost:3001/api/workers/agent_assistant/enable -H "X-API-Key: ADMIN_KEY"
 ```
 
 Admin API key required. Disabled workers stop running cron tasks but remain loaded and can be re-enabled without a restart.

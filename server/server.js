@@ -355,7 +355,7 @@ modelVerifier.verifyConfiguredModels().catch(e =>
   console.error('[ModelVerifier] Verification error:', e.message)
 );
 
-// Existing routes (evolved from DARYL)
+// Core routes
 const authRoutes = require('./routes/auth');
 const messageRoutes = require('./routes/messages');
 const taskRoutes = require('./routes/tasks');

@@ -91,7 +91,7 @@ class OnboardingService {
   /**
    * Generate a full onboarding brief for a specific agent.
    *
-   * @param {string} agentId - e.g. 'agent_penny'
+   * @param {string} agentId - e.g. 'agent_security'
    * @param {Object} agentConfig - The agent's config from darkhan.config.json
    * @returns {Object} { full: string, preamble: string, sections: Object }
    */

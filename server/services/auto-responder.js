@@ -20,7 +20,7 @@ const crypto = require('crypto');
 const { processAgentMessage } = require('./agent-relay');
 
 // Relay mode: 'sdk' uses Agent SDK, 'cli' uses claude -p --resume
-const RELAY_MODE = process.env.DARKHAN_RELAY_MODE || process.env.DARYL_RELAY_MODE || 'cli';
+const RELAY_MODE = process.env.DARKHAN_RELAY_MODE || 'cli';
 
 // Debounce tracking
 const pendingResponses = new Map();
@@ -146,7 +146,7 @@ function shouldRotateSession(channelId) {
 /**
  * Build context from recent Darkhan messages
  */
-function buildDarylContext(db, channelId) {
+function buildChannelContext(db, channelId) {
   return new Promise((resolve) => {
     // SECURITY: Fetch messages WITH metadata to filter flagged content
     db.all(
@@ -182,7 +182,7 @@ function buildDarylContext(db, channelId) {
 /**
  * Build the context-loading preamble for new Claude relay sessions.
  */
-function buildSessionInitPreamble(channelId, darylContext, fromUser, messageBody) {
+function buildSessionInitPreamble(channelId, channelContext, fromUser, messageBody) {
   // Look for session logs in a configurable location
   let logSubdir;
   try {
@@ -209,7 +209,7 @@ Before responding to the message below, silently perform these startup actions:
 4. Note today's date (${today})
 
 Recent Darkhan conversation:
-${darylContext}
+${channelContext}
 
 ---
 New message from ${fromUser}: ${messageBody}
@@ -384,11 +384,11 @@ function classifyMessage(messageBody, fromUser) {
     return 'claude_relay';
   }
 
-  // Force local LLM: /quick, /fast, /daryl prefix
-  if (body.startsWith('/quick ') || body.startsWith('/fast ') || body.startsWith('/daryl ')) {
+  // Force local LLM: /quick, /fast, /local prefix
+  if (body.startsWith('/quick ') || body.startsWith('/fast ') || body.startsWith('/local ')) {
     return 'local_llm';
   }
-  if (body.startsWith('@agent_darkhan') || body.startsWith('@daryl')) {
+  if (body.startsWith('@agent_darkhan') || body.startsWith('@darkhan')) {
     return 'local_llm';
   }
 
@@ -465,7 +465,7 @@ async function processLocalLlmMessage(channelId, fromUser, messageBody, context)
 
   console.log(`[Router] Local LLM for ${fromUser}: "${messageBody.substring(0, 60)}"`);
 
-  const darylContext = await buildDarylContext(db, channelId);
+  const channelContext = await buildChannelContext(db, channelId);
 
   const ollamaModel = process.env.OLLAMA_MODEL || 'qwen2.5:14b';
   const prompt = `You are Darkhan, the command center assistant. You run on a local ${ollamaModel} model. The lead agent runs in the terminal tab — you handle front-desk duties.
@@ -477,7 +477,7 @@ If the message requires vault/file access, code execution, agent dispatch, deep 
 [NEEDS_ESCALATION] Brief reason
 
 Recent conversation:
-${darylContext}
+${channelContext}
 
 ---
 ${fromUser}: ${messageBody}
@@ -550,7 +550,7 @@ async function processMessage(channelId, fromUser, messageBody, context) {
 
   // Strip routing prefix if present
   let cleanBody = messageBody;
-  for (const prefix of ['/deep ', '/opus ', '/claude ', '/quick ', '/fast ', '/daryl ']) {
+  for (const prefix of ['/deep ', '/opus ', '/claude ', '/quick ', '/fast ', '/local ']) {
     if (messageBody.toLowerCase().startsWith(prefix)) {
       cleanBody = messageBody.substring(prefix.length);
       break;
@@ -668,8 +668,8 @@ async function processMessage(channelId, fromUser, messageBody, context) {
 
       trimmedResponse = await unifiedClaude.sendFromChat(sessionUser, chatMessage, channelId, { onProgress });
     } else if (RELAY_MODE === 'sdk') {
-      const darylContext = await buildDarylContext(db, channelId);
-      const sdkPrompt = `Recent Darkhan conversation:\n${darylContext}\n\n---\n${fromUser}: ${cleanBody}`;
+      const channelContext = await buildChannelContext(db, channelId);
+      const sdkPrompt = `Recent Darkhan conversation:\n${channelContext}\n\n---\n${fromUser}: ${cleanBody}`;
       const result = await processAgentMessage(sdkPrompt, channelId);
       trimmedResponse = (result.response || '').trim();
     } else {
@@ -686,8 +686,8 @@ async function processMessage(channelId, fromUser, messageBody, context) {
       if (hasSession) {
         prompt = `[Darkhan ${channelId}] ${fromUser}: ${cleanBody}`;
       } else {
-        const darylContext = await buildDarylContext(db, channelId);
-        prompt = buildSessionInitPreamble(channelId, darylContext, fromUser, cleanBody);
+        const channelContext = await buildChannelContext(db, channelId);
+        prompt = buildSessionInitPreamble(channelId, channelContext, fromUser, cleanBody);
       }
 
       const result = await runClaudeRelay(prompt, channelId);

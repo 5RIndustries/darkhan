@@ -27,7 +27,7 @@ Automatic verbatim conversation capture for session continuity. Every Darkhan in
 - **Smart 30-minute interval** — Writes every 30 minutes, but only when new messages exist since the last write. No redundant writes overnight or during idle periods.
 - **24-hour daily blocks** — One file per day. At midnight the date rolls and a new file starts. Clean separation for search and reference.
 - **Session continuity** — New Claude sessions (after cycling at 50 messages, server restarts, or fresh starts) are instructed to read today's and yesterday's transcripts as their first action. Combined with 100 recent channel messages in the system prompt, this gives fresh instances full conversational context.
-- **Outside integrity scope** — Transcripts write to `docs/` which is not monitored by the integrity system. Agents, Claude, and humans can all write to `docs/` without triggering lockdown.
+- **Outside integrity scope** — Transcripts write to `docs/` which is not monitored by the integrity system. Agents and humans can all write to `docs/` without triggering lockdown.
 - **Agent onboarding awareness** — The onboarding service now includes transcript location and format in every agent's startup brief. Workers know where to find historical context.
 - **Human-accessible** — The `docs/` directory is a shared space. Human users can add daily notes, meeting records, or other documents alongside transcripts for everyone to reference.
 
@@ -178,7 +178,7 @@ Built-in commands handled by Darkhan instantly (no LLM call, no debounce):
 - **`/help`** — Lists all available commands.
 
 ### Pushover Removed (2026-04-01)
-- Pushover escalation system removed. Legacy from DARYL era when Claude ran in a separate terminal.
+- Pushover escalation system removed. Legacy from a predecessor system when the lead agent ran in a separate terminal.
 - Replaced with in-UI prompt: when Claude has no active session, Darkhan tells the user to open the Terminal tab.
 - `getClaudeStatus()` presence checker (ACTIVE/REST) removed — no longer needed.
 - Pushover config keys removed from `darkhan.config.json`, `.env.example`, and `darkhan.config.example.json`.
@@ -199,7 +199,7 @@ Built-in commands handled by Darkhan instantly (no LLM call, no debounce):
 ### Dead Code Removal (2026-04-01)
 - **Deleted `server/services/claude-api.js`** — Deprecated since 3/27, legacy Anthropic API integration.
 - **Deleted `server/routes/claude.js`** — Deprecated route, only consumer of claude-api.js. Route mount removed from server.js.
-- **`DARYL_RELAY_MODE` → `DARKHAN_RELAY_MODE`** — Renamed in `.env.example`, `setup.js`, and `auto-responder.js` (reads both for backwards compatibility).
+- **`DARKHAN_RELAY_MODE`** — Relay mode environment variable standardized. Reads legacy env var for backward compatibility.
 
 ### Action-Evidence Protocol (2026-04-01)
 - **`server/services/action-evidence.js`** — Core trust layer. 13-verb controlled action vocabulary (WROTE_CODE, DEPLOYED, VERIFIED, SEARCHED, CLAIMED, etc.) with required evidence schemas. Evidence is captured automatically by the system from tool execution — agents do not self-report. Automatic downgrade when evidence doesn't match claims. Persistent traces in SQLite. Every message is evaluated against its evidence trail and tagged: verified, partial, claimed, or contradicted.

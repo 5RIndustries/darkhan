@@ -124,7 +124,7 @@ class SecurityService {
     // Sensitive data patterns — things that should never appear in outbound messages
     this.sensitivePatterns = [
       /dk_(user|agent)_[a-f0-9]{48}/i,         // Darkhan API keys
-      /daryl_[a-f0-9]{48}/i,                     // Legacy DARYL keys
+      /dk_legacy_[a-f0-9]{48}/i,                  // Legacy API keys
       /sk-[a-zA-Z0-9]{20,}/,                     // OpenAI-style keys
       /AIza[a-zA-Z0-9_-]{35}/,                   // Google API keys
       /sk-ant-[a-zA-Z0-9_-]{20,}/,               // Anthropic keys
@@ -621,7 +621,7 @@ Respond with EXACTLY one word: SAFE, SUSPICIOUS, or MALICIOUS.`;
    * Scan outbound text for sensitive data leakage.
    *
    * Checks for patterns that indicate an agent is about to leak credentials:
-   * Darkhan API keys (dk_*), legacy DARYL keys, OpenAI keys, Google API keys,
+   * Darkhan API keys (dk_*), legacy keys, OpenAI keys, Google API keys,
    * Anthropic keys, private keys (PEM format), and hardcoded password assignments.
    *
    * On detection: the leak is blocked, logged to the activity log, and a CRISPR
