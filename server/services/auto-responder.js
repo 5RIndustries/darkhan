@@ -468,13 +468,13 @@ async function processLocalLlmMessage(channelId, fromUser, messageBody, context)
   const darylContext = await buildDarylContext(db, channelId);
 
   const ollamaModel = process.env.OLLAMA_MODEL || 'qwen2.5:14b';
-  const prompt = `You are Darkhan, the command center assistant. You are NOT Claude — Claude is the lead agent who runs in the terminal tab. You are Darkhan, running on a local ${ollamaModel} model.
+  const prompt = `You are Darkhan, the command center assistant. You run on a local ${ollamaModel} model. The lead agent runs in the terminal tab — you handle front-desk duties.
 
 Your role: Handle routine communication (greetings, acknowledgments, status questions you can answer from context), and be a competent front-desk assistant.
 
 ESCALATION RULES:
 If the message requires vault/file access, code execution, agent dispatch, deep analysis, or anything beyond your conversation context — respond with EXACTLY:
-[NEEDS_CLAUDE] Brief reason
+[NEEDS_ESCALATION] Brief reason
 
 Recent conversation:
 ${darylContext}
@@ -616,10 +616,10 @@ async function processMessage(channelId, fromUser, messageBody, context) {
       deleteThinkingMessage(db, io, channelId);
 
       if (llmResponse) {
-        // Check if local LLM is requesting escalation to Claude
-        if (llmResponse.includes('[NEEDS_CLAUDE]')) {
+        // Check if local LLM is requesting escalation to lead agent
+        if (llmResponse.includes('[NEEDS_ESCALATION]') || llmResponse.includes('[NEEDS_CLAUDE]')) {
           markTriageEscalation(db, messageBody);
-          console.log(`[Router] Local LLM requested escalation to Claude`);
+          console.log(`[Router] Local LLM requested escalation to lead agent`);
 
           // Route through unified session (auto-creates if needed) instead of
           // prompting user to open terminal. This handles the case where a session
