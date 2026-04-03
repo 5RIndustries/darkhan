@@ -1,11 +1,11 @@
 # Darkhan — Code Ownership
 # Enforced when branch protection is enabled (GitHub Pro or public repo).
 
-# Default: Adrian reviews everything
+# Default: maintainer reviews everything
 * @5RIndustries
 
-# Server-side code requires admin review
+# Server-side code requires maintainer review
 /server/ @5RIndustries
 
-# Client UI — brother can work here freely
-/client/ @5RIndustries @outlawbebe
+# Client UI
+/client/ @5RIndustries

@@ -51,7 +51,7 @@ cp darkhan.config.example.json darkhan.config.json
 ```
 
 Edit `darkhan.config.json`. Change:
-- `instance.name` to something you'll recognize (e.g., "Tino's Forge")
+- `instance.name` to something you'll recognize (e.g., "My Forge")
 - `user_admin` → your preferred username
 - Leave everything else as-is for now
 
