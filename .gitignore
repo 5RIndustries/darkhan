@@ -39,6 +39,9 @@ server/db/secrets.db
 server/.darkhan.pid
 server/.dev
 
+# Transcripts (auto-generated, contain internal comms — NEVER commit)
+docs/transcripts/
+
 # Logs
 *.log
 
@@ -57,3 +60,7 @@ Thumbs.db
 SPRINT.md
 BACKLOG.md
 server/workers/manifest.json
+
+# Siege test artifacts (contain internal results — NEVER commit)
+server/logs/siege-*
+server/scripts/siege-*
