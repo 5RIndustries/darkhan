@@ -470,6 +470,10 @@
         const chatView = document.getElementById('chat-view');
         if (chatView) {
           appendMessage(msg);
+          // Trim old messages from DOM if over cap
+          while (messageContainer.children.length > MAX_CHANNEL_MESSAGES) {
+            messageContainer.removeChild(messageContainer.firstChild);
+          }
           // Only auto-scroll if chat is the active view
           if (currentView === 'chat') scrollToBottom();
         }
@@ -521,7 +525,7 @@
       console.log('[Darkhan] Socket reconnected, rejoining channel:', currentChannel);
       socket.emit('join_channel', currentChannel);
       // Reload messages to catch anything missed while disconnected
-      if (currentView === 'chat') loadMessages();
+      if (currentView === 'chat') loadMessages(true);
     });
 
     // Update status lights when any new message arrives (dynamic)
@@ -939,11 +943,22 @@
   }
 
   // --- Messages ---
-  async function loadMessages() {
+  const MAX_CHANNEL_MESSAGES = 500;
+  const MESSAGE_WINDOW_HOURS = 6;
+  let loadedChannel = null; // Track which channel's messages are currently in the DOM
+
+  async function loadMessages(forceReload = false) {
+    // Skip reload if same channel is already loaded and we're not forcing
+    if (!forceReload && loadedChannel === currentChannel && messageContainer.children.length > 0) {
+      scrollToBottom(true);
+      return;
+    }
     messageContainer.innerHTML = '';
     try {
-      const data = await api('GET', `/messages?channel=${currentChannel}&limit=300`);
+      const since = new Date(Date.now() - MESSAGE_WINDOW_HOURS * 60 * 60 * 1000).toISOString();
+      const data = await api('GET', `/messages?channel=${currentChannel}&limit=${MAX_CHANNEL_MESSAGES}&since=${encodeURIComponent(since)}`);
       data.messages.forEach(appendMessage);
+      loadedChannel = currentChannel;
       scrollToBottom(true);  // Force scroll on initial load
     } catch (err) {
       messageContainer.innerHTML = `<p class="error">Failed to load messages: ${err.message}</p>`;
@@ -958,6 +973,7 @@
 
     // SQLite CURRENT_TIMESTAMP stores UTC without 'Z' suffix — append it so JS parses correctly
     const utcTime = msg.created_at.endsWith('Z') ? msg.created_at : msg.created_at + 'Z';
+    div.setAttribute('data-timestamp', utcTime);
     const time = new Date(utcTime).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZone: userTimezone });
     div.innerHTML = `
       <span class="msg-user">${escapeHtml(msg.from_user)}</span>
@@ -966,6 +982,24 @@
     `;
     messageContainer.appendChild(div);
   }
+
+  // Trim messages older than 6 hours from DOM every 30 minutes — no server call
+  const TRIM_INTERVAL_MS = 30 * 60 * 1000;
+  setInterval(() => {
+    const cutoff = Date.now() - MESSAGE_WINDOW_HOURS * 60 * 60 * 1000;
+    let trimmed = 0;
+    const messages = messageContainer.querySelectorAll('.message[data-timestamp]');
+    for (const el of messages) {
+      const ts = new Date(el.getAttribute('data-timestamp')).getTime();
+      if (ts < cutoff) {
+        el.remove();
+        trimmed++;
+      } else {
+        break; // Messages are in chronological order — stop at first fresh one
+      }
+    }
+    if (trimmed > 0) console.log(`[Darkhan] Trimmed ${trimmed} messages older than ${MESSAGE_WINDOW_HOURS}h`);
+  }, TRIM_INTERVAL_MS);
 
   function scrollToBottom(force = false) {
     // Only auto-scroll if user is near the bottom (within 150px) or forced

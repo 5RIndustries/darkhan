@@ -28,7 +28,7 @@ const DEBOUNCE_MS = 3000;
 
 // Terminal Claude activity tracking — suppress auto-responder when terminal is active
 const terminalClaudeActivity = new Map(); // channel_id -> timestamp
-const TERMINAL_ACTIVE_WINDOW_MS = 120000; // 2 minutes
+const TERMINAL_ACTIVE_WINDOW_MS = 600000; // 10 minutes — prevents auto-responder from intercepting during long background tasks
 
 // Session persistence: channel_id -> { sessionId, createdAt, messageCount, lastMessageAt }
 const channelSessions = new Map();
@@ -58,6 +58,7 @@ const SYSTEM_TRIGGERS = ['system_heartbeat'];
 let isProcessing = false;
 const messageQueue = [];
 const MAX_QUEUE_SIZE = 10;
+const MAX_QUEUE_AGE_MS = 60000; // Drop queued messages older than 60 seconds
 
 // Paths
 const HOME = process.env.HOME || '';
@@ -588,7 +589,21 @@ async function processMessage(channelId, fromUser, messageBody, context) {
   const lastTerminalPost = terminalClaudeActivity.get(channelId);
   if (lastTerminalPost && (Date.now() - lastTerminalPost) < TERMINAL_ACTIVE_WINDOW_MS) {
     console.log(`[Router] Terminal Claude active in ${channelId} (${Math.round((Date.now() - lastTerminalPost) / 1000)}s ago) — suppressing auto-response`);
+    isProcessing = false;
     return;
+  }
+
+  // If a unified Claude session exists and is actively processing a turn, suppress auto-response
+  // This catches the case where terminal Claude is doing background work (not posting to channel)
+  // but still has an active session that will handle the message
+  const unifiedForCheck = context.unifiedClaude;
+  if (unifiedForCheck && HUMAN_USERS.includes(fromUser)) {
+    const sessionEntry = unifiedForCheck.sessions.get(fromUser);
+    if (sessionEntry && sessionEntry.busy) {
+      console.log(`[Router] Unified session busy for ${fromUser} (since ${Math.round((Date.now() - (sessionEntry.busySince || 0)) / 1000)}s ago) — suppressing auto-response`);
+      isProcessing = false;
+      return;
+    }
   }
 
   // Post "thinking" indicator and track its ID for live progress updates
@@ -714,11 +729,34 @@ async function processMessage(channelId, fromUser, messageBody, context) {
   } finally {
     isProcessing = false;
 
-    // Process queued messages
+    // Process queued messages — drop stale ones
     if (messageQueue.length > 0) {
+      const now = Date.now();
       const allMessages = messageQueue.splice(0, messageQueue.length);
+
+      // Filter out stale messages that have been sitting in the queue too long
+      const freshMessages = allMessages.filter(m => {
+        if (m.queuedAt && (now - m.queuedAt) > MAX_QUEUE_AGE_MS) {
+          console.log(`[Relay] Dropping stale queued message from ${m.fromUser} (${Math.round((now - m.queuedAt) / 1000)}s old)`);
+          return false;
+        }
+        return true;
+      });
+
+      if (freshMessages.length === 0) {
+        console.log(`[Relay] All queued messages were stale — nothing to process`);
+        return;
+      }
+
+      // Also suppress if terminal Claude became active while we were processing
+      const lastPost = terminalClaudeActivity.get(freshMessages[0].channelId);
+      if (lastPost && (now - lastPost) < TERMINAL_ACTIVE_WINDOW_MS) {
+        console.log(`[Relay] Terminal Claude active — dropping ${freshMessages.length} queued message(s)`);
+        return;
+      }
+
       const byChannel = new Map();
-      for (const m of allMessages) {
+      for (const m of freshMessages) {
         if (!byChannel.has(m.channelId)) byChannel.set(m.channelId, []);
         byChannel.get(m.channelId).push(m);
       }
@@ -979,7 +1017,7 @@ function onNewMessage(message, context) {
         return;
       }
       console.log(`[Relay] Queuing message (${messageQueue.length + 1} in queue)`);
-      messageQueue.push({ channelId: channel_id, fromUser: from_user, body: truncatedBody, context });
+      messageQueue.push({ channelId: channel_id, fromUser: from_user, body: truncatedBody, context, queuedAt: Date.now() });
       return;
     }
 

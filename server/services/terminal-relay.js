@@ -181,14 +181,16 @@ class TerminalRelay {
       };
 
       // Handle terminal input — send to unified session
-      // If session already exists (e.g., chat already created one), attach subscriber now.
-      // If not, register as pending — will be attached when sendFromChat creates the session.
-      const existingSession = this.unifiedClaude.sessions.get(userId);
+      // Eagerly resume/create the unified session so the terminal subscriber
+      // attaches immediately — otherwise the user won't see thinking/tool output
+      // until someone sends a chat message (which triggers getOrCreateSession).
       let alreadyAttached = false;
-      if (existingSession) {
+      try {
+        await this.unifiedClaude.getOrCreateSession(userId);
         this.unifiedClaude.subscribe(userId, subscriberId, 'terminal', subscriberCallback);
         alreadyAttached = true;
-      } else {
+      } catch (err) {
+        console.warn(`[Terminal] Could not eagerly create session for ${userId}: ${err.message}`);
         this.unifiedClaude.registerPendingSubscriber(userId, subscriberId, 'terminal', subscriberCallback);
       }
 

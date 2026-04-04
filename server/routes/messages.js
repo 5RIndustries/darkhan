@@ -20,7 +20,7 @@ router.use(requireAuth);
 // GET /api/messages
 router.get('/', (req, res) => {
   const db = req.app.locals.db;
-  const { channel, channel_id, since, limit, unread } = req.query;
+  const { channel, channel_id, since, before, limit, unread } = req.query;
   const channelFilter = channel_id || channel;  // Accept both parameter names
 
   let sql = 'SELECT * FROM messages WHERE 1=1';
@@ -33,7 +33,13 @@ router.get('/', (req, res) => {
 
   if (since) {
     sql += ' AND created_at > ?';
-    params.push(since);
+    // Normalize ISO timestamps (2026-04-04T13:00:00.000Z) to SQLite format (2026-04-04 13:00:00)
+    params.push(since.replace('T', ' ').replace(/\.\d{3}Z$/, '').replace('Z', ''));
+  }
+
+  if (before) {
+    sql += ' AND created_at < ?';
+    params.push(before.replace('T', ' ').replace(/\.\d{3}Z$/, '').replace('Z', ''));
   }
 
   // Fetch newest messages first (DESC), then reverse to display in chronological order

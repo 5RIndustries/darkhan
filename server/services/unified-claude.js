@@ -382,6 +382,9 @@ class UnifiedClaudeSession {
   async sendFromTerminal(userId, message) {
     const entry = await this.getOrCreateSession(userId);
 
+    // Attach any pending subscribers (e.g., terminal spawned before session existed)
+    this._attachPendingSubscribers(userId);
+
     if (entry.busy) {
       this._notifySubscribers(entry, 'all', {
         type: 'info',
