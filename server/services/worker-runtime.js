@@ -483,7 +483,12 @@ class WorkerRuntime {
   async _handleProxyRequest(agentId, method, args, agentConfig) {
     switch (method) {
       case 'llm.complete':
-        return this.llmService.complete({ agentId, ...args[0] });
+        return this.llmService.complete({
+          agentId,
+          provider: agentConfig?.model?.provider,
+          model: agentConfig?.model?.model,
+          ...args[0],
+        });
       case 'llm.classify':
         return this.llmService.classify ? this.llmService.classify({ agentId, ...args[0] }) : null;
       case 'darkhan.post':
