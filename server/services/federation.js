@@ -34,6 +34,7 @@ class FederationService {
     this.instanceId = fed.instanceId || 'darkhan-' + crypto.randomBytes(4).toString('hex');
     this.hubUrl = (fed.hubUrl || '').replace(/\/+$/, '');
     this.instanceUrl = fed.instanceUrl || '';
+    this._hubToken = fed.hubToken || process.env.HUB_SECRET || '';
 
     this._connected = false;
     this._heartbeatInterval = null;
@@ -326,6 +327,10 @@ class FederationService {
         headers: { 'Content-Type': 'application/json' },
         timeout: 15000,
       };
+
+      if (this._hubToken) {
+        options.headers['X-Hub-Token'] = this._hubToken;
+      }
 
       if (payload) {
         options.headers['Content-Length'] = Buffer.byteLength(payload);
