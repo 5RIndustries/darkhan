@@ -204,6 +204,7 @@ class FederationService {
     try {
       if (!this._connected) {
         // Try to reconnect
+        console.log('[Federation] Attempting reconnect to hub...');
         await this._register();
         return;
       }
@@ -215,7 +216,12 @@ class FederationService {
           memoryMB: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
         },
       });
-    } catch {
+    } catch (err) {
+      if (this._connected) {
+        console.warn(`[Federation] Lost connection to hub: ${err.message}`);
+      } else {
+        console.warn(`[Federation] Reconnect failed: ${err.message}`);
+      }
       this._connected = false;
     }
   }
