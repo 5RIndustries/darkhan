@@ -133,17 +133,14 @@ router.post('/', async (req, res) => {
   }
 
   // [DARKHAN SECURITY] Scan incoming messages for prompt injection
+  // Human admins authenticated via session are trusted — skip injection scanning.
+  // The security pipeline exists to catch agent-to-agent injection and external input,
+  // not to quarantine the system owner's messages.
+  const isHumanSession = req.session?.userId && !userId.startsWith('agent_');
+  const isAdmin = isHumanSession && config?.team?.members?.some(m => m.id === userId && m.role === 'admin');
+
   let securityMetadata = null;
-  if (securityService) {
-    // [H-5 FIX] Determine origin SERVER-SIDE based on auth method — never trust client.
-    // API key from REMOTE_HOST header or federation = 'federated'
-    // API key from local agent = 'internal'
-    // Session (web UI) = 'internal'
-    // [C-1 FIX] Federation status must NOT come from a spoofable header.
-    // TODO: Replace with mTLS peer cert verification when federation ships.
-    // For now, federation messages are only accepted from admin sessions or
-    // a dedicated federation API key class (not yet implemented).
-    // All API key holders are treated as 'agent', never 'federated'.
+  if (securityService && !isAdmin) {
     const isApiKey = !req.session?.userId;
     const isAgent = userId && userId.startsWith('agent_');
     const origin = isApiKey && isAgent ? 'agent' : 'internal';
@@ -260,6 +257,17 @@ router.post('/', async (req, res) => {
 
       // Emit to WebSocket subscribers on this channel
       io.to(channel_id).emit('new_message', message);
+
+      // Relay to Mokume hub if federation is active
+      const federation = req.app.locals.federation;
+      if (federation && federation._connected && !userId.includes('@')) {
+        // Only relay local messages (skip already-federated ones marked with @)
+        federation.relayMessage({
+          channel: channel_id,
+          fromUser: userId,
+          body,
+        }).catch(() => {}); // Non-blocking
+      }
 
       // Write trigger file for external integrations (bridge, health checks)
       const fs = require('fs');

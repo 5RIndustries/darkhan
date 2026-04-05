@@ -34,6 +34,7 @@ const { UnifiedClaudeSession } = require('./services/unified-claude');
 const { InstanceIdentity } = require('./services/instance-identity');
 const { BehavioralBaseline } = require('./services/behavioral-baseline');
 const { MaintenanceService } = require('./services/maintenance');
+const { FederationService } = require('./services/federation');
 const SecretsCrypto = require('./services/secrets-crypto');
 
 // Load config
@@ -1247,6 +1248,15 @@ server.listen(PORT, BIND_HOST, () => {
       console.error('[Darkhan] Maintenance startup error:', err.message);
     }
 
+    // FEDERATION: Connect to Mokume hub if enabled
+    const federation = new FederationService({ config, db, io, activityLog });
+    app.locals.federation = federation;
+    try {
+      await federation.start();
+    } catch (err) {
+      console.error('[Darkhan] Federation startup error:', err.message);
+    }
+
     // INTEGRITY: Periodic verification every 5 minutes
     setInterval(async () => {
       try {
@@ -1278,6 +1288,7 @@ const shutdown = async (signal) => {
   if (app.locals.terminalRelay) await app.locals.terminalRelay.shutdown();
   if (app.locals.unifiedClaude) await app.locals.unifiedClaude.shutdown();
   if (app.locals.workerRuntime) await app.locals.workerRuntime.shutdown();
+  if (app.locals.federation) await app.locals.federation.shutdown();
   if (app.locals.maintenance) app.locals.maintenance.shutdown();
   server.close();
   db.close();
