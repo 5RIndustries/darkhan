@@ -985,6 +985,33 @@ function onNewMessage(message, context) {
     return;
   }
 
+  // CROSS-CHANNEL NOTIFY — when a message arrives on a channel other than #command,
+  // post a notification to #command so the lead agent's CLI session sees it.
+  // This bridges multi-channel awareness without requiring the CLI to poll.
+  // Skip: agent_darkhan notifications (avoid loops), the lead agent's own posts,
+  // and messages already in #command.
+  if (channel_id !== 'chan_command' && from_user !== 'agent_darkhan' && from_user !== LEAD_AGENT_ID) {
+    const preview = body.length > 150 ? body.substring(0, 150) + '...' : body;
+    const channelName = channel_id.replace('chan_', '#');
+    const notify = `[${channelName}] ${from_user}: ${preview}`;
+    const { db, io } = context;
+    if (db && io) {
+      const nId = crypto.randomUUID();
+      db.run(
+        'INSERT INTO messages (id, channel_id, from_user, body, priority, type) VALUES (?, ?, ?, ?, ?, ?)',
+        [nId, 'chan_command', 'agent_darkhan', notify, 'normal', 'notification'],
+        (err) => {
+          if (!err) {
+            io.to('chan_command').emit('new_message', {
+              id: nId, channel_id: 'chan_command', from_user: 'agent_darkhan',
+              body: notify, type: 'notification', created_at: new Date().toISOString(),
+            });
+          }
+        }
+      );
+    }
+  }
+
   // Track terminal lead agent activity — posts from terminal via darkhan-post.sh
   if (from_user === LEAD_AGENT_ID && !body.startsWith('HEARTBEAT:')) {
     terminalClaudeActivity.set(channel_id, Date.now());
