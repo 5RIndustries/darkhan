@@ -23,12 +23,13 @@ class FederationService {
    * @param {Object} opts.io - Socket.IO instance
    * @param {Object} opts.activityLog - Activity log service
    */
-  constructor({ config, db, io, activityLog, workerRuntime }) {
+  constructor({ config, db, io, activityLog, workerRuntime, onFederatedMessage }) {
     this.config = config;
     this.db = db;
     this.io = io;
     this.activityLog = activityLog;
     this.workerRuntime = workerRuntime || null;
+    this._onFederatedMessage = onFederatedMessage || null;
 
     const fed = config.federation || {};
     this.enabled = fed.enabled === true;
@@ -372,6 +373,20 @@ class FederationService {
           }
         }
       );
+    }
+
+    // Dispatch to auto-responder and unified session injection (server.js callback)
+    if (this._onFederatedMessage) {
+      this._onFederatedMessage({
+        id: msgId,
+        channel_id: channelId,
+        from_user: fromUser,
+        body,
+        created_at: timestamp,
+        federated: true,
+        source_instance: msg.from,
+        origin,
+      });
     }
   }
 

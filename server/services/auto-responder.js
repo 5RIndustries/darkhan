@@ -649,12 +649,28 @@ async function processMessage(channelId, fromUser, messageBody, context) {
     }
 
     // CLAUDE RELAY — Opus via Max plan ($0)
+    // For federated messages: if a live session exists, skip the relay entirely.
+    // The federation_notify worker already posted a notification to the lead agent
+    // channel — the live session will see it and respond with full context.
+    // Only spawn claude -p as a fallback when no live session is running.
+    const isFederatedMsg = fromUser.includes('@');
+    if (isFederatedMsg && context.unifiedClaude) {
+      const hasLiveSession = context.unifiedClaude.sessions.size > 0;
+      if (hasLiveSession) {
+        console.log(`[Router] Federation notification path — live session exists, skipping relay spawn for ${fromUser}`);
+        deleteThinkingMessage(db, io, channelId);
+        isProcessing = false;
+        return;
+      }
+    }
+
     console.log(`[Router] Claude relay (Opus/Max) for ${fromUser} (tier=${tier}, mode=${RELAY_MODE})`);
 
     let trimmedResponse = '';
 
     // UNIFIED SESSION PATH — shared context with terminal
-    const unifiedClaude = context.unifiedClaude;
+    // Federated messages use CLI relay — Agent SDK may not have auth in server process
+    const unifiedClaude = isFederatedMsg ? null : context.unifiedClaude;
     const sessionUser = HUMAN_USERS.includes(fromUser) ? fromUser : fromUser;
     if (unifiedClaude) {
       // Route through unified session — creates one if none exists (shared context with terminal)

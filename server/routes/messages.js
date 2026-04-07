@@ -266,10 +266,12 @@ router.post('/', async (req, res) => {
         const fedChannels = federation.config?.federation?.channels
           || ['chan_coordination', 'chan_alerts'];
         if (fedChannels.includes(channel_id)) {
+          const msgOrigin = isHumanSession ? 'human' : 'agent_direct';
           federation.relayMessage({
             channel: channel_id,
             fromUser: userId,
             body,
+            origin: msgOrigin,
           }).catch(() => {}); // Non-blocking
         }
       }
