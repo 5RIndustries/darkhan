@@ -23,7 +23,7 @@ Most agent frameworks trust the agent. Darkhan does not.
 
 **Identity enforcement.** Agents cannot impersonate humans or each other. Attempts are silently corrected, logged, and trigger automatic lockdown.
 
-**$0/day local LLM.** Triage, classification, and routine agent work runs on Ollama (Qwen 2.5 14B default, 16GB+ RAM) locally. Four cloud providers supported (Google Gemini, Anthropic Claude, OpenAI GPT) for heavier tasks and cross-provider consensus. You choose every model. You control the cost.
+**$0/day local LLM.** Triage, classification, and routine agent work runs locally via native inference (node-llama-cpp with Metal GPU acceleration on Apple Silicon). Qwen 2.5 7B is the default — runs comfortably on any Mac with an M-series chip and 16GB RAM. Four cloud providers supported (Google Gemini, Anthropic Claude, OpenAI GPT) for heavier tasks and cross-provider consensus. You choose every model. You control the cost.
 
 **Action-Evidence Protocol.** Every tool call produces system-captured evidence (file hashes, PIDs, exit codes, search results). Agent messages are evaluated against their evidence trail and tagged: verified, partial, claimed, or contradicted. Agents can say whatever they want — the evidence trail is immutable. Cross-provider claim verification sends the evidence trail to two independent LLMs for consensus.
 
@@ -37,7 +37,7 @@ Most agent frameworks trust the agent. Darkhan does not.
 
 ## Quick Start
 
-**Requirements:** Node.js 20.12+, npm, 16GB+ RAM, Ollama (for local 14B model)
+**Requirements:** Node.js 20.12+, npm, 16GB+ RAM, Ollama (for local LLM model files)
 
 ```bash
 # Clone the repo
@@ -323,7 +323,7 @@ For full details, see [SECURITY.md](SECURITY.md).
 - All terminal session events and interactions logged to the immutable hash chain audit trail
 
 **LLM Support**
-- Ollama (local, $0): Qwen 2.5 3B by default (runs on 8GB Macs), 14B for 16GB+ machines, or any Ollama model
+- Native local inference (node-llama-cpp, $0): Qwen 2.5 7B default (runs on any 16GB+ Apple Silicon Mac), 3B for 8GB machines, or any GGUF model via Ollama manifests. Metal GPU acceleration on Apple Silicon.
 - Google Gemini: pay-per-use for agent workers
 - Anthropic Claude: pay-per-use for strategic tasks
 - OpenAI ChatGPT: pay-per-use for agent workers and consensus
@@ -501,7 +501,7 @@ Darkhan is licensed under the [Business Source License 1.1](LICENSE).
 - **Production use** requires a commercial license from the licensor
 - The licensed code converts to a fully open-source license (Apache 2.0) on the change date specified in the license file
 
-Enterprise federation for connecting multiple Darkhan instances across an organization is planned as a separate product called Mokume.
+Enterprise federation for connecting multiple Darkhan instances across an organization is available as [Mokume](https://mokume.ai) — a separate product with its own 14B intelligence layer for cross-node security monitoring, message routing, and enterprise situational awareness.
 
 ---
 

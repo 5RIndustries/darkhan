@@ -137,7 +137,8 @@ router.post('/', async (req, res) => {
   // The security pipeline exists to catch agent-to-agent injection and external input,
   // not to quarantine the system owner's messages.
   const isHumanSession = req.session?.userId && !userId.startsWith('agent_');
-  const isAdmin = isHumanSession && config?.team?.members?.some(m => m.id === userId && m.role === 'admin');
+  const appConfig = req.app.locals.config;
+  const isAdmin = isHumanSession && appConfig?.team?.members?.some(m => m.id === userId && m.role === 'admin');
 
   let securityMetadata = null;
   if (securityService && !isAdmin) {
@@ -261,12 +262,16 @@ router.post('/', async (req, res) => {
       // Relay to Mokume hub if federation is active
       const federation = req.app.locals.federation;
       if (federation && federation._connected && !userId.includes('@')) {
-        // Only relay local messages (skip already-federated ones marked with @)
-        federation.relayMessage({
-          channel: channel_id,
-          fromUser: userId,
-          body,
-        }).catch(() => {}); // Non-blocking
+        // Only relay messages on federated channels (default: coordination + alerts)
+        const fedChannels = federation.config?.federation?.channels
+          || ['chan_coordination', 'chan_alerts'];
+        if (fedChannels.includes(channel_id)) {
+          federation.relayMessage({
+            channel: channel_id,
+            fromUser: userId,
+            body,
+          }).catch(() => {}); // Non-blocking
+        }
       }
 
       // Write trigger file for external integrations (bridge, health checks)
@@ -287,6 +292,7 @@ router.post('/', async (req, res) => {
         workerRuntime: req.app.locals.workerRuntime,
         unifiedClaude: req.app.locals.unifiedClaude,
         reviewGate: req.app.locals.reviewGate,
+        federation: req.app.locals.federation,
       });
 
       return res.status(201).json({ ok: true, message });

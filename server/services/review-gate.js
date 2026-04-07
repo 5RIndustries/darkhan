@@ -20,7 +20,13 @@
  * Toggle via chat: /review-gate on | /review-gate off | /review-gate status
  */
 
-const http = require('http');
+const { LocalLLMProvider } = require('./local-llm');
+
+let _localLLM = null;
+function getLocalLLM() {
+  if (!_localLLM) _localLLM = new LocalLLMProvider();
+  return _localLLM;
+}
 
 class ReviewGate {
   constructor({ config }) {
@@ -65,9 +71,7 @@ class ReviewGate {
    * Run the review via local LLM.
    */
   async _runReview(response, originalMessage, fromUser) {
-    const ollamaModel = process.env.OLLAMA_MODEL || 'qwen2.5:14b';
-    const ollamaHost = process.env.OLLAMA_HOST || 'localhost';
-    const ollamaPort = parseInt(process.env.OLLAMA_PORT || '11434');
+    const localModel = process.env.OLLAMA_MODEL || 'qwen2.5:7b';
 
     const prompt = `You are a response reviewer. Check the AI response below for issues.
 
@@ -86,66 +90,42 @@ Respond in this EXACT format (JSON array, empty if no issues):
 
 If the response looks fine, respond with: []`;
 
-    return new Promise((resolve) => {
-      const postData = JSON.stringify({
-        model: ollamaModel,
-        prompt,
-        stream: false,
-        options: { temperature: 0.1, num_predict: 500 },
-      });
-
-      const req = http.request({
-        hostname: ollamaHost,
-        port: ollamaPort,
-        path: '/api/generate',
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+    try {
+      const localLLM = getLocalLLM();
+      const result = await localLLM.generate(localModel, prompt, {
+        temperature: 0.1,
+        maxTokens: 500,
         timeout: 15000,
-      }, (res) => {
-        let data = '';
-        res.on('data', chunk => data += chunk);
-        res.on('end', () => {
-          try {
-            const parsed = JSON.parse(data);
-            const reviewText = (parsed.response || '').trim();
-
-            // Parse the JSON array from the LLM response
-            let flags = [];
-            try {
-              const jsonMatch = reviewText.match(/\[[\s\S]*\]/);
-              if (jsonMatch) {
-                flags = JSON.parse(jsonMatch[0]);
-              }
-            } catch { /* empty or malformed — treat as clean */ }
-
-            const hasCritical = flags.some(f =>
-              f.type === 'UNVERIFIED_CLAIM' || f.type === 'HALLUCINATION'
-            );
-
-            // In "critical" severity mode, only block on critical issues
-            const shouldBlock = this.severity === 'all'
-              ? flags.length > 0
-              : hasCritical;
-
-            if (shouldBlock) {
-              // Append flags to the response as a visible warning
-              const flagSummary = flags.map(f => `⚠ ${f.type}: ${f.detail}`).join('\n');
-              const annotatedResponse = `${response}\n\n---\n**⚠ Review Gate Flags:**\n${flagSummary}`;
-              resolve({ approved: true, response: annotatedResponse, flags, blocked: false });
-            } else {
-              resolve({ approved: true, response, flags });
-            }
-          } catch (e) {
-            resolve({ approved: true, response, flags: [] });
-          }
-        });
       });
 
-      req.on('error', () => resolve({ approved: true, response, flags: [] }));
-      req.on('timeout', () => { req.destroy(); resolve({ approved: true, response, flags: [] }); });
-      req.write(postData);
-      req.end();
-    });
+      const reviewText = (result.response || '').trim();
+
+      let flags = [];
+      try {
+        const jsonMatch = reviewText.match(/\[[\s\S]*\]/);
+        if (jsonMatch) {
+          flags = JSON.parse(jsonMatch[0]);
+        }
+      } catch { /* empty or malformed — treat as clean */ }
+
+      const hasCritical = flags.some(f =>
+        f.type === 'UNVERIFIED_CLAIM' || f.type === 'HALLUCINATION'
+      );
+
+      const shouldBlock = this.severity === 'all'
+        ? flags.length > 0
+        : hasCritical;
+
+      if (shouldBlock) {
+        const flagSummary = flags.map(f => `⚠ ${f.type}: ${f.detail}`).join('\n');
+        const annotatedResponse = `${response}\n\n---\n**⚠ Review Gate Flags:**\n${flagSummary}`;
+        return { approved: true, response: annotatedResponse, flags, blocked: false };
+      }
+      return { approved: true, response, flags };
+    } catch (e) {
+      console.error(`[ReviewGate] Review error: ${e.message}`);
+      return { approved: true, response, flags: [] };
+    }
   }
 
   // --- Toggle & Status ---

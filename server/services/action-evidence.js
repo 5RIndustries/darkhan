@@ -1024,7 +1024,7 @@ Respond with EXACTLY one word: VERIFIED, PARTIAL, CLAIMED, or CONTRADICTED.`;
     let localVerdict = null;
     let cloudVerdict = null;
 
-    const localModel = opts.localModel || process.env.OLLAMA_MODEL || 'qwen2.5:14b';
+    const localModel = opts.localModel || process.env.OLLAMA_MODEL || 'qwen2.5:7b';
 
     // Model 1: Local LLM
     try {

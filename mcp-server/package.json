@@ -1,0 +1,11 @@
+{
+  "name": "darkhan-mcp-server",
+  "version": "0.1.0",
+  "description": "MCP server bridging Darkhan workspace to Claude Code CLI",
+  "main": "index.js",
+  "type": "module",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "socket.io-client": "^4.7.5"
+  }
+}

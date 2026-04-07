@@ -110,8 +110,9 @@ class WorkerSandbox {
       env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
     }
     if (provider === 'ollama') {
-      env.OLLAMA_HOST = this.config.llm?.providers?.ollama?.host || 'localhost';
-      env.OLLAMA_PORT = String(this.config.llm?.providers?.ollama?.port || 11434);
+      // Native local LLM — models dir for node-llama-cpp to find GGUF files
+      env.LOCAL_MODELS_DIR = this.config.llm?.providers?.ollama?.modelsDir
+        || require('path').join(process.env.HOME, '.ollama', 'models');
     }
 
     return env;

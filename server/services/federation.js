@@ -23,11 +23,12 @@ class FederationService {
    * @param {Object} opts.io - Socket.IO instance
    * @param {Object} opts.activityLog - Activity log service
    */
-  constructor({ config, db, io, activityLog }) {
+  constructor({ config, db, io, activityLog, workerRuntime }) {
     this.config = config;
     this.db = db;
     this.io = io;
     this.activityLog = activityLog;
+    this.workerRuntime = workerRuntime || null;
 
     const fed = config.federation || {};
     this.enabled = fed.enabled === true;
@@ -89,7 +90,7 @@ class FederationService {
   /**
    * Relay a message from this Darkhan instance through the Mokume hub.
    */
-  async relayMessage({ channel, fromUser, body, to }) {
+  async relayMessage({ channel, fromUser, body, to, origin }) {
     if (!this._connected) return;
 
     const message = {
@@ -97,6 +98,7 @@ class FederationService {
       fromUser,
       body,
       to: to || null,
+      origin: origin || 'agent_direct',
       timestamp: new Date().toISOString(),
     };
 
@@ -128,6 +130,15 @@ class FederationService {
       });
     } catch (err) {
       console.error(`[Federation] Threat report failed: ${err.message}`);
+    }
+  }
+
+  /**
+   * Trigger an immediate poll — called by the /api/federation/notify push endpoint.
+   */
+  _pollNow() {
+    if (this._pollFn && this._connected) {
+      this._pollFn();
     }
   }
 
@@ -227,16 +238,18 @@ class FederationService {
   }
 
   _startPolling(intervalMs) {
-    this._lastPollTimestamp = new Date().toISOString();
+    // Start with no timestamp so the first poll catches any pending messages
+    this._lastPollTimestamp = null;
 
     const poll = async () => {
       if (!this._connected) return;
 
       try {
-        const result = await this._request('GET',
-          `/api/federation/messages?instanceId=${encodeURIComponent(this.instanceId)}` +
-          `&since=${encodeURIComponent(this._lastPollTimestamp)}&limit=50`
-        );
+        let url = `/api/federation/messages?instanceId=${encodeURIComponent(this.instanceId)}&limit=50`;
+        if (this._lastPollTimestamp) {
+          url += `&since=${encodeURIComponent(this._lastPollTimestamp)}`;
+        }
+        const result = await this._request('GET', url);
 
         const messages = result.messages || [];
         if (messages.length === 0) return;
@@ -267,6 +280,7 @@ class FederationService {
       }
     };
 
+    this._pollFn = poll; // Expose for _pollNow() push trigger
     this._pollInterval = setInterval(poll, intervalMs);
     setTimeout(poll, 1000); // First poll after 1s
   }
@@ -276,16 +290,26 @@ class FederationService {
    */
   _ingestMessage(msg) {
     const channelId = msg.channel || 'chan_command';
+
+    // Only ingest messages for channels we're configured to federate
+    const fedChannels = this.config?.federation?.channels
+      || ['chan_coordination', 'chan_alerts'];
+    if (!fedChannels.includes(channelId)) {
+      return; // Skip messages for non-federated channels
+    }
+
     const fromUser = `${msg.fromUser}@${msg.from}`;
     const body = msg.body;
     const timestamp = msg.originalTimestamp || msg.timestamp;
+    const origin = msg.origin || 'agent_direct';
 
     // Insert into local messages table
-    const sql = `INSERT INTO messages (id, channel_id, from_user, body, created_at)
-                 VALUES (?, ?, ?, ?, ?)`;
+    const sql = `INSERT INTO messages (id, channel_id, from_user, body, created_at, metadata)
+                 VALUES (?, ?, ?, ?, ?, ?)`;
     const msgId = `fed_${msg.id}`;
+    const metadata = JSON.stringify({ federated: true, source_instance: msg.from, origin });
 
-    this.db.run(sql, [msgId, channelId, fromUser, body, timestamp.replace('T', ' ').replace(/\.\d{3}Z$/, '').replace('Z', '')], (err) => {
+    this.db.run(sql, [msgId, channelId, fromUser, body, timestamp.replace('T', ' ').replace(/\.\d{3}Z$/, '').replace('Z', ''), metadata], (err) => {
       if (err) {
         // Duplicate or other error — skip
         if (!err.message.includes('UNIQUE constraint')) {
@@ -294,9 +318,9 @@ class FederationService {
         return;
       }
 
-      // Emit to connected clients via Socket.IO
+      // Emit to connected clients via Socket.IO (use 'new_message' to match local message events)
       if (this.io) {
-        this.io.emit('message', {
+        this.io.to(channelId).emit('new_message', {
           id: msgId,
           channel_id: channelId,
           from_user: fromUser,
@@ -304,6 +328,7 @@ class FederationService {
           created_at: timestamp,
           federated: true,
           source_instance: msg.from,
+          origin,
         });
       }
     });
@@ -313,8 +338,41 @@ class FederationService {
       actor: fromUser,
       action: 'federated_message',
       target: channelId,
-      details: JSON.stringify({ source: msg.from, messageId: msg.id }),
+      details: JSON.stringify({ source: msg.from, messageId: msg.id, origin }),
     });
+
+    // Dispatch to worker listeners so federated messages trigger comms_check, mention, etc.
+    // Skip dispatch for auto_responder origin — prevents infinite relay loops
+    if (this.workerRuntime && origin !== 'auto_responder') {
+      this.workerRuntime.onMessage(channelId, fromUser, body).catch(() => {});
+    }
+
+    // FEDERATION NOTIFY — post a notification to the lead agent's channel
+    // so the active CLI session sees inbound federated messages without polling.
+    // Only notify for non-auto-responder messages (human + agent_direct).
+    if (origin !== 'auto_responder') {
+      const leadChannel = this.config?.leadAgent?.agentId === 'agent_penny'
+        ? 'chan_penny' : 'chan_claude';
+      const preview = body.length > 120 ? body.substring(0, 120) + '...' : body;
+      const notification = `[Mokume] ${fromUser} in ${channelId}: ${preview}`;
+      // Insert notification directly — don't relay it (it's local-only)
+      this.db.run(
+        'INSERT INTO messages (id, channel_id, from_user, body, priority, type) VALUES (?, ?, ?, ?, ?, ?)',
+        [crypto.randomUUID(), leadChannel, 'agent_darkhan', notification, 'normal', 'notification'],
+        (err) => {
+          if (!err && this.io) {
+            this.io.to(leadChannel).emit('new_message', {
+              id: crypto.randomUUID(),
+              channel_id: leadChannel,
+              from_user: 'agent_darkhan',
+              body: notification,
+              type: 'notification',
+              created_at: new Date().toISOString(),
+            });
+          }
+        }
+      );
+    }
   }
 
   _request(method, urlPath, body) {

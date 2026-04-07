@@ -7,6 +7,7 @@
 
 const http = require('http');
 const https = require('https');
+const { LocalLLMProvider } = require('./local-llm');
 
 class LLMService {
   constructor({ rateLimiter, costTracker, activityLog, config }) {
@@ -15,6 +16,31 @@ class LLMService {
     this.activityLog = activityLog;
     this.config = config;
     this.providers = config.llm.providers;
+    this._localLLM = null;
+  }
+
+  /**
+   * Get or create the native local LLM provider (lazy init).
+   */
+  _getLocalLLM() {
+    if (!this._localLLM) {
+      const ollamaConfig = this.providers.ollama || {};
+      this._localLLM = new LocalLLMProvider({
+        modelsDir: ollamaConfig.modelsDir,
+        gpuLayers: ollamaConfig.gpuLayers,
+        contextSize: ollamaConfig.contextSize,
+      });
+    }
+    return this._localLLM;
+  }
+
+  /**
+   * Dispose local LLM models — call on server shutdown.
+   */
+  async dispose() {
+    if (this._localLLM) {
+      await this._localLLM.dispose();
+    }
   }
 
   /**
@@ -129,55 +155,8 @@ Respond with ONLY the category name, nothing else.`;
   // --- Provider Implementations ---
 
   async _ollamaComplete(model, messages, options) {
-    const ollamaConfig = this.providers.ollama || {};
-    const host = ollamaConfig.host || 'localhost';
-    const port = ollamaConfig.port || 11434;
-    const timeout = options.timeout || 60000;
-
-    // Convert messages array to Ollama chat format
-    const postData = JSON.stringify({
-      model,
-      messages: messages.map(m => ({ role: m.role, content: m.content })),
-      stream: false,
-      options: {
-        temperature: options.temperature ?? 0.3,
-        num_predict: options.maxTokens || 2048,
-      },
-    });
-
-    return new Promise((resolve, reject) => {
-      const req = http.request({
-        hostname: host,
-        port,
-        path: '/api/chat',
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        timeout,
-      }, (res) => {
-        let data = '';
-        res.on('data', chunk => data += chunk);
-        res.on('end', () => {
-          try {
-            const parsed = JSON.parse(data);
-            resolve({
-              response: (parsed.message?.content || '').trim(),
-              usage: {
-                inputTokens: parsed.prompt_eval_count || 0,
-                outputTokens: parsed.eval_count || 0,
-              },
-              modelDigest: parsed.model || model,
-            });
-          } catch (e) {
-            reject(new Error(`Ollama parse error: ${e.message}`));
-          }
-        });
-      });
-
-      req.on('error', e => reject(new Error(`Ollama connection error: ${e.message}`)));
-      req.on('timeout', () => { req.destroy(); reject(new Error('Ollama timeout')); });
-      req.write(postData);
-      req.end();
-    });
+    const localLLM = this._getLocalLLM();
+    return localLLM.complete(model, messages, options);
   }
 
   async _geminiComplete(model, messages, options) {

@@ -18,6 +18,16 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { processAgentMessage } = require('./agent-relay');
+const { LocalLLMProvider } = require('./local-llm');
+
+// Shared LocalLLMProvider instance (lazy-initialized)
+let _sharedLocalLLM = null;
+function getSharedLocalLLM() {
+  if (!_sharedLocalLLM) {
+    _sharedLocalLLM = new LocalLLMProvider();
+  }
+  return _sharedLocalLLM;
+}
 
 // Relay mode: 'sdk' uses Agent SDK, 'cli' uses claude -p --resume
 const RELAY_MODE = process.env.DARKHAN_RELAY_MODE || 'cli';
@@ -53,6 +63,17 @@ try {
 } catch (e) { /* not loaded yet */ }
 const RELAY_TRIGGERS = configRelayTriggers || [];
 const SYSTEM_TRIGGERS = ['system_heartbeat'];
+
+// Lead agent identity — configurable per instance
+// Node 2: agent_claude (CTO), Node 1: agent_penny (CFO/CMO)
+let LEAD_AGENT_ID;
+try {
+  const cfg = require('../darkhan.config.json');
+  LEAD_AGENT_ID = cfg.leadAgent?.agentId || 'agent_claude';
+} catch (e) { LEAD_AGENT_ID = 'agent_claude'; }
+
+// Federation reference for relaying auto-responder posts
+let _federation = null;
 
 // Processing state
 let isProcessing = false;
@@ -226,10 +247,11 @@ function runClaudeRelay(prompt, channelId) {
     const session = channelSessions.get(channelId);
     const sessionId = session?.sessionId;
 
-    // --bare on resume: skip hooks/plugins/CLAUDE.md/memory (already loaded)
-    // Full load on new sessions
+    // Full load on all sessions — --bare skips auth token loading which breaks
+    // relay on nodes where the spawned process needs to authenticate fresh.
+    // Slightly slower on resumed sessions but guarantees auth works.
     const baseArgs = sessionId
-      ? ['--bare', '-p', prompt]
+      ? ['-p', prompt]
       : ['-p', prompt];
 
     const args = [
@@ -349,7 +371,7 @@ function logTriageDecision(db, messageBody, fromUser, channelId, classification,
   const crypto = require('crypto');
   const messageHash = crypto.createHash('sha256').update(messageBody).digest('hex');
   const fromUserType = fromUser.startsWith('agent_') ? 'agent' : 'human';
-  const modelName = process.env.OLLAMA_MODEL || 'qwen2.5:14b';
+  const modelName = process.env.OLLAMA_MODEL || 'qwen2.5:7b';
   const responseTimeMs = Date.now() - startTime;
 
   db.run(
@@ -394,7 +416,7 @@ function classifyMessage(messageBody, fromUser) {
   }
 
   // Heartbeats: log only, no AI call
-  if (fromUser === 'system_heartbeat' || (fromUser === 'agent_claude' && body.startsWith('heartbeat:'))) {
+  if (fromUser === 'system_heartbeat' || (fromUser === LEAD_AGENT_ID && body.startsWith('heartbeat:'))) {
     return 'heartbeat_log';
   }
 
@@ -457,19 +479,18 @@ function promptForClaudeSession(db, io, channelId, fromUser, messageBody) {
 }
 
 /**
- * Handle a message via local LLM (Ollama + Llama 3.2 3B)
+ * Handle a message via local LLM (native node-llama-cpp inference)
  */
 async function processLocalLlmMessage(channelId, fromUser, messageBody, context) {
   const { db } = context;
   const startTime = Date.now();
-  const http = require('http');
 
   console.log(`[Router] Local LLM for ${fromUser}: "${messageBody.substring(0, 60)}"`);
 
   const channelContext = await buildChannelContext(db, channelId);
 
-  const ollamaModel = process.env.OLLAMA_MODEL || 'qwen2.5:14b';
-  const prompt = `You are Darkhan, the command center assistant. You run on a local ${ollamaModel} model. The lead agent runs in the terminal tab — you handle front-desk duties.
+  const localModel = process.env.OLLAMA_MODEL || 'qwen2.5:7b';
+  const prompt = `You are Darkhan, the command center assistant. You run on a local ${localModel} model. The lead agent runs in the terminal tab — you handle front-desk duties.
 
 Your role: Handle routine communication (greetings, acknowledgments, status questions you can answer from context), and be a competent front-desk assistant.
 
@@ -485,55 +506,20 @@ ${fromUser}: ${messageBody}
 
 Respond concisely as Darkhan.`;
 
-  const ollamaHost = process.env.OLLAMA_HOST || 'localhost';
-  const ollamaPort = parseInt(process.env.OLLAMA_PORT || '11434');
-
-  return new Promise((resolve) => {
-    const postData = JSON.stringify({
-      model: ollamaModel,
-      prompt: prompt,
-      stream: false,
-      options: { temperature: 0.3, num_predict: 500 }
-    });
-
-    const req = http.request({
-      hostname: ollamaHost,
-      port: ollamaPort,
-      path: '/api/generate',
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+  try {
+    const localLLM = getSharedLocalLLM();
+    const result = await localLLM.generate(localModel, prompt, {
+      temperature: 0.3,
+      maxTokens: 500,
       timeout: 30000,
-    }, (res) => {
-      let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => {
-        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-        try {
-          const parsed = JSON.parse(data);
-          const response = (parsed.response || '').trim();
-          console.log(`[Router] Local LLM responded in ${elapsed}s (${response.length} chars)`);
-          resolve(response || null);
-        } catch (e) {
-          console.error(`[Router] Local LLM parse error: ${e.message}`);
-          resolve(null);
-        }
-      });
     });
-
-    req.on('error', (e) => {
-      console.error(`[Router] Local LLM error: ${e.message}`);
-      resolve(null);
-    });
-
-    req.on('timeout', () => {
-      console.error('[Router] Local LLM timeout (30s)');
-      req.destroy();
-      resolve(null);
-    });
-
-    req.write(postData);
-    req.end();
-  });
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    console.log(`[Router] Local LLM responded in ${elapsed}s (${result.response.length} chars)`);
+    return result.response || null;
+  } catch (e) {
+    console.error(`[Router] Local LLM error: ${e.message}`);
+    return null;
+  }
 }
 
 /**
@@ -783,7 +769,7 @@ async function processMessage(channelId, fromUser, messageBody, context) {
 /**
  * Post a message to a Darkhan channel. Returns the message ID.
  */
-function postToChannel(db, io, channelId, body, fromUser = 'agent_claude') {
+function postToChannel(db, io, channelId, body, fromUser = LEAD_AGENT_ID) {
   const id = crypto.randomUUID();
   db.run(
     'INSERT INTO messages (id, channel_id, from_user, body, priority, type) VALUES (?, ?, ?, ?, ?, ?)',
@@ -794,6 +780,22 @@ function postToChannel(db, io, channelId, body, fromUser = 'agent_claude') {
       if (io) io.to(channelId).emit('new_message', message);
       if (body !== '...thinking') {
         console.log(`[Relay] Posted to ${channelId} as ${fromUser} (${body.length} chars)`);
+      }
+
+      // Relay auto-responder posts to federation with origin='auto_responder'
+      // This ensures responses federate back to other nodes, tagged so they
+      // don't trigger auto-response loops on the receiving end.
+      if (_federation && _federation._connected && body !== '...thinking' && !fromUser.includes('@')) {
+        const fedChannels = _federation.config?.federation?.channels
+          || ['chan_coordination', 'chan_alerts'];
+        if (fedChannels.includes(channelId)) {
+          _federation.relayMessage({
+            channel: channelId,
+            fromUser,
+            body,
+            origin: 'auto_responder',
+          }).catch(() => {});
+        }
       }
     }
   );
@@ -947,11 +949,28 @@ function handleSlashCommand(body, fromUser, channelId, context) {
 function onNewMessage(message, context) {
   const { from_user, channel_id, body } = message;
 
+  // Capture federation reference for postToChannel relay
+  if (context.federation && !_federation) {
+    _federation = context.federation;
+  }
+
   if (!body || body.trim().length === 0) return;
   if (from_user === 'agent_darkhan') return;
 
-  // Track terminal Claude activity — agent_claude posts from terminal via darkhan-post.sh
-  if (from_user === 'agent_claude' && !body.startsWith('HEARTBEAT:')) {
+  // Skip auto-response for federated messages with origin='auto_responder'
+  // This prevents infinite loops: Node A auto-responds → federates → Node B auto-responds → federates → ...
+  if (message.origin === 'auto_responder') return;
+
+  // Skip auto-response relay for federated messages when a live CLI session exists.
+  // The federation_notify path handles these — posts a notification to the lead agent channel.
+  // The lead agent responds from their active session with full context, not a spawned claude -p.
+  if (message.federated && message.origin !== 'auto_responder') {
+    console.log(`[Router] Federated message from ${from_user} — notification path, skipping auto-responder relay`);
+    return;
+  }
+
+  // Track terminal lead agent activity — posts from terminal via darkhan-post.sh
+  if (from_user === LEAD_AGENT_ID && !body.startsWith('HEARTBEAT:')) {
     terminalClaudeActivity.set(channel_id, Date.now());
   }
 
@@ -965,15 +984,15 @@ function onNewMessage(message, context) {
     });
   }
 
-  // If the message @mentions a worker agent, let the worker handle it exclusively
-  // BUT @claude should still route to the Claude relay (Claude IS the auto-responder's deep path)
-  // Build worker mention pattern from config (worker agents that handle their own @mentions)
+  // If the message mentions an agent by name, let the worker handle it exclusively
+  // Matches both @penny and natural mentions like "hey Penny, you there?"
+  // Claude and Darkhan are excluded — they handle their own routing
   let workerNames;
   try {
     const cfg = require('../darkhan.config.json');
-    workerNames = cfg.team?.members?.filter(m => m.type === 'agent' && m.id !== 'agent_claude' && m.id !== 'agent_darkhan').map(m => m.id.replace('agent_', ''));
+    workerNames = cfg.team?.members?.filter(m => m.type === 'agent' && m.id !== LEAD_AGENT_ID && m.id !== 'agent_darkhan').map(m => m.id.replace('agent_', ''));
   } catch (e) { /* fallback */ }
-  const workerMentionPattern = workerNames?.length ? new RegExp(`@(${workerNames.join('|')})\\b`, 'i') : /^$/;
+  const workerMentionPattern = workerNames?.length ? new RegExp(`\\b(${workerNames.join('|')})\\b`, 'i') : /^$/;
   if (workerMentionPattern.test(body)) {
     return; // Worker listener already fired above — it handles the response
   }
@@ -991,10 +1010,10 @@ function onNewMessage(message, context) {
   const isAgentRelay = RELAY_TRIGGERS.includes(from_user) &&
     (body.toLowerCase().includes('claude') || body.toLowerCase().includes('cos'));
   const isSystemTrigger = SYSTEM_TRIGGERS.includes(from_user) ||
-    (from_user === 'agent_claude' && body.startsWith('HEARTBEAT:'));
+    (from_user === LEAD_AGENT_ID && body.startsWith('HEARTBEAT:'));
 
   if (!isHuman && !isAgentRelay && !isSystemTrigger) return;
-  if (from_user === 'agent_claude' && !body.startsWith('HEARTBEAT:')) return;
+  if (from_user === LEAD_AGENT_ID && !body.startsWith('HEARTBEAT:')) return;
 
   // Message length limit
   const MAX_MESSAGE_LENGTH = 10000;

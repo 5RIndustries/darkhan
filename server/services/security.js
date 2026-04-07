@@ -227,7 +227,7 @@ class SecurityService {
       const result = await this.llmService.complete({
         agentId: 'agent_darkhan',
         provider: 'ollama',
-        model: process.env.OLLAMA_MODEL || 'qwen2.5:14b',
+        model: process.env.OLLAMA_MODEL || 'qwen2.5:7b',
         messages: [{
           role: 'system',
           content: 'You are a security classifier. Respond with exactly one word: SAFE, SUSPICIOUS, or MALICIOUS. Nothing else.'
@@ -422,7 +422,7 @@ Respond with EXACTLY one word: SAFE, SUSPICIOUS, or MALICIOUS.`;
     const localPromise = this.llmService.complete({
       agentId: 'agent_darkhan',
       provider: 'ollama',
-      model: process.env.OLLAMA_MODEL || 'qwen2.5:14b',
+      model: process.env.OLLAMA_MODEL || 'qwen2.5:7b',
       messages: [
         { role: 'system', content: classificationPrompt },
         { role: 'user', content: messagePrompt },
@@ -913,7 +913,7 @@ Respond with EXACTLY one word: SAFE, SUSPICIOUS, or MALICIOUS.`;
         const allowed = new Set(perms.shellAllowedCommands || [
           'ls', 'cat', 'head', 'tail', 'wc', 'date', 'echo', 'grep', 'find',
           'sort', 'uniq', 'diff', 'pwd', 'whoami', 'uname', 'df', 'du',
-          'git', 'npm', 'ollama', 'pgrep',
+          'git', 'npm', 'pgrep',
         ]);
 
         if (!allowed.has(baseCmd) && !allowed.has(resolvedBase)) {

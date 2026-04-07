@@ -1007,10 +1007,10 @@ server.listen(PORT, BIND_HOST, () => {
   const modelSizeMatch = configuredModel.match(/(\d+)b/i);
   const modelSizeB = modelSizeMatch ? parseInt(modelSizeMatch[1]) : 0;
   if (modelSizeB > 0 && modelSizeB < 14) {
-    console.warn(`[Darkhan] WARNING: Local LLM "${configuredModel}" is below the recommended minimum (14B).`);
+    console.warn(`[Darkhan] WARNING: Local LLM "${configuredModel}" is below the recommended minimum (7B).`);
     console.warn(`[Darkhan] Triage, injection detection, and consensus verification may be unreliable.`);
-    console.warn(`[Darkhan] Recommended: qwen2.5:14b or any 14B+ model. Run: ollama pull qwen2.5:14b`);
-  } else if (modelSizeB >= 14) {
+    console.warn(`[Darkhan] Recommended: qwen2.5:7b or any 7B+ model.`);
+  } else if (modelSizeB >= 7) {
     console.log(`[Darkhan] Local LLM: ${configuredModel} (meets minimum capability)`);
   }
 
@@ -1249,13 +1249,53 @@ server.listen(PORT, BIND_HOST, () => {
     }
 
     // FEDERATION: Connect to Mokume hub if enabled
-    const federation = new FederationService({ config, db, io, activityLog });
+    const federation = new FederationService({ config, db, io, activityLog, workerRuntime });
     app.locals.federation = federation;
     try {
       await federation.start();
     } catch (err) {
       console.error('[Darkhan] Federation startup error:', err.message);
     }
+
+    // FEDERATION PUSH NOTIFY — Mokume hub pushes here when a message arrives for this node.
+    // Triggers an immediate poll so we don't wait for the 3s cycle, and posts a notification
+    // to the lead agent's channel for visibility.
+    app.post('/api/federation/notify', express.json(), (req, res) => {
+      const { from, fromUser, channel, preview, origin } = req.body || {};
+      if (!fromUser || !channel) return res.status(400).json({ error: 'fromUser and channel required' });
+
+      // Skip notifications for auto_responder origin
+      if (origin === 'auto_responder') return res.json({ ok: true, skipped: true });
+
+      // Trigger immediate federation poll
+      if (federation && federation._connected) {
+        federation._pollNow && federation._pollNow();
+      }
+
+      // Post notification to lead agent channel
+      const leadAgentId = config.leadAgent?.agentId || 'agent_claude';
+      const leadChannel = leadAgentId === 'agent_penny' ? 'chan_penny' : 'chan_claude';
+      const notification = `[Mokume] ${fromUser}@${from} in ${channel}: ${preview || '(no preview)'}`;
+
+      db.run(
+        'INSERT INTO messages (id, channel_id, from_user, body, priority, type) VALUES (?, ?, ?, ?, ?, ?)',
+        [require('crypto').randomUUID(), leadChannel, 'agent_darkhan', notification, 'normal', 'notification'],
+        (err) => {
+          if (!err && io) {
+            io.to(leadChannel).emit('new_message', {
+              channel_id: leadChannel,
+              from_user: 'agent_darkhan',
+              body: notification,
+              type: 'notification',
+              created_at: new Date().toISOString(),
+            });
+          }
+        }
+      );
+
+      console.log(`[Federation] Push notify: ${fromUser} → ${channel}`);
+      res.json({ ok: true });
+    });
 
     // INTEGRITY: Periodic verification every 5 minutes
     setInterval(async () => {
@@ -1290,6 +1330,7 @@ const shutdown = async (signal) => {
   if (app.locals.workerRuntime) await app.locals.workerRuntime.shutdown();
   if (app.locals.federation) await app.locals.federation.shutdown();
   if (app.locals.maintenance) app.locals.maintenance.shutdown();
+  if (app.locals.llmService) await app.locals.llmService.dispose();
   server.close();
   db.close();
   secretsDb.close();

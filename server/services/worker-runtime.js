@@ -125,7 +125,8 @@ class WorkerRuntime {
             details: JSON.stringify({ expected: manifest[fileName], actual: workerHash }),
           });
           // In production, block the load. In dev mode, warn and continue.
-          if (!this.sandbox.devMode && !isDevMode) {
+          const devSentinelPath = path.join(__dirname, '..', '.dev');
+          if (!this.sandbox.devMode && !fs.existsSync(devSentinelPath)) {
             throw new Error(`SUPPLY CHAIN: ${msg}`);
           }
           console.warn(`[WorkerRuntime] DEV MODE: Loading worker despite hash mismatch`);
