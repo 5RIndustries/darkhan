@@ -57,22 +57,30 @@ if (TRUST_PROXY) {
   app.set('trust proxy', TRUST_PROXY === 'true' ? 1 : TRUST_PROXY);
 }
 
-// [DARKHAN SECURITY] mTLS: Start HTTPS server if TLS config is enabled.
-// When TLS is enabled, the server requires valid client certificates signed by our CA
-// for all federation API calls. The web UI (localhost) can still use HTTP.
+// [DARKHAN SECURITY] Dual-listen when TLS is enabled:
+//   - HTTP on 127.0.0.1:3001 for web UI (browsers don't have client certs)
+//   - HTTPS/mTLS on 0.0.0.0:3002 for federation and direct-line (agents have certs)
+// This preserves rejectUnauthorized: true on the federation port (per Corey review)
+// while keeping the web UI accessible to humans.
 const resolveTlsPath = (p) => p ? p.replace('~', process.env.HOME) : null;
-let server;
+let server;       // Primary server (HTTP for UI, or HTTP-only if no TLS)
+let mtlsServer;   // mTLS server for federation (only when TLS enabled)
+const MTLS_PORT = parseInt(process.env.MTLS_PORT || config.tls?.mtlsPort || '3002');
+
 if (config.tls?.enabled) {
   try {
     const tlsOpts = {
       ca: fs.readFileSync(resolveTlsPath(config.tls.ca)),
       cert: fs.readFileSync(resolveTlsPath(config.tls.cert)),
       key: fs.readFileSync(resolveTlsPath(config.tls.key)),
-      requestCert: true,           // Ask clients for their certificate
-      rejectUnauthorized: true,    // [C-2 FIX] Reject connections without valid CA-signed cert
+      requestCert: true,           // Require client certificate
+      rejectUnauthorized: true,    // Reject connections without valid CA-signed cert
     };
-    server = https.createServer(tlsOpts, app);
-    console.log('[Darkhan] HTTPS server with mTLS — client certificates will be verified for federation routes');
+    // HTTP server for web UI (localhost only)
+    server = http.createServer(app);
+    // HTTPS/mTLS server for federation (network accessible)
+    mtlsServer = https.createServer(tlsOpts, app);
+    console.log(`[Darkhan] Dual-listen mode: HTTP :3001 (web UI) + HTTPS/mTLS :${MTLS_PORT} (federation)`);
   } catch (e) {
     console.error(`[Darkhan] FATAL: TLS enabled but certificates failed to load: ${e.message}`);
     process.exit(1);
@@ -84,7 +92,9 @@ if (config.tls?.enabled) {
 // --- VPS Hardening: WebSocket origin validation ---
 const ALLOWED_ORIGINS = (process.env.DARKHAN_ALLOWED_ORIGINS || process.env.CORS_ORIGIN || `http${config.tls?.enabled ? 's' : ''}://localhost:${config.instance?.port || 3001}`).split(',').map(s => s.trim());
 
-const io = new Server(server, {
+// Socket.IO attaches to the primary HTTP server (web UI).
+// If mTLS server exists, it also attaches there for federation WebSocket connections.
+const ioOpts = {
   cors: {
     origin: ALLOWED_ORIGINS.length === 1 ? ALLOWED_ORIGINS[0] : ALLOWED_ORIGINS,
     credentials: true
@@ -97,7 +107,12 @@ const io = new Server(server, {
     console.warn(`[Security] WebSocket connection rejected: origin "${origin}" not in allowed list [${ALLOWED_ORIGINS.join(', ')}]`);
     callback('Origin not allowed', false);
   }
-});
+};
+const io = new Server(server, ioOpts);
+// Attach Socket.IO to mTLS server as well so federation peers can use WebSocket over HTTPS
+if (mtlsServer) {
+  io.attach(mtlsServer, ioOpts);
+}
 
 const PORT = process.env.PORT || config.instance?.port || 3001;
 const BIND_HOST = process.env.BIND_HOST || '127.0.0.1';
@@ -970,19 +985,29 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, '../client/index.html'));
 });
 
-// Start — bind host is configurable via BIND_HOST env var (default: localhost only)
-server.listen(PORT, BIND_HOST, () => {
+// Start — dual-listen when TLS enabled, single-listen otherwise
+server.listen(PORT, '127.0.0.1', () => {
   const brandName = config.instance?.brandName || 'Darkhan';
-  console.log(`[Darkhan] ${brandName} Command Center running on ${BIND_HOST}:${PORT}${BIND_HOST === '127.0.0.1' ? ' (localhost only)' : ' (network accessible)'}`);
+
+  if (mtlsServer) {
+    // TLS enabled: HTTP on localhost for web UI, mTLS on network for federation
+    mtlsServer.listen(MTLS_PORT, '0.0.0.0', () => {
+      console.log(`[Darkhan] ${brandName} Command Center:`);
+      console.log(`[Darkhan]   Web UI:     http://127.0.0.1:${PORT} (localhost only)`);
+      console.log(`[Darkhan]   Federation: https://0.0.0.0:${MTLS_PORT} (mTLS, network accessible)`);
+    });
+  } else {
+    console.log(`[Darkhan] ${brandName} Command Center running on 127.0.0.1:${PORT} (localhost only)`);
+  }
 
   // --- VPS Hardening: Startup safety check ---
   const isExternal = BIND_HOST !== '127.0.0.1' && BIND_HOST !== 'localhost' && BIND_HOST !== '::1';
   const hasTLS = config.tls?.enabled || process.env.DARKHAN_HTTPS === 'true';
   const allowExternal = process.env.DARKHAN_ALLOW_EXTERNAL === 'true';
 
-  if (isExternal && !hasTLS && !allowExternal) {
+  if (!hasTLS && isExternal && !allowExternal) {
     console.warn('\n' + '='.repeat(72));
-    console.warn('  ⚠  WARNING: DARKHAN IS BINDING TO AN EXTERNAL INTERFACE');
+    console.warn('  WARNING: DARKHAN IS BINDING TO AN EXTERNAL INTERFACE');
     console.warn('='.repeat(72));
     console.warn(`  Bind address: ${BIND_HOST}:${PORT}`);
     console.warn('  TLS: NOT DETECTED');
@@ -990,13 +1015,9 @@ server.listen(PORT, BIND_HOST, () => {
     console.warn('  Without TLS, passwords, API keys, session cookies, and terminal');
     console.warn('  sessions are transmitted in CLEARTEXT over the network.');
     console.warn('');
-    console.warn('  To fix this, choose one:');
-    console.warn('    1. Use a reverse proxy (Caddy auto-HTTPS is easiest):');
-    console.warn('       Set DARKHAN_TRUST_PROXY=true and DARKHAN_HTTPS=true');
-    console.warn('    2. Use a VPN overlay (Tailscale/WireGuard):');
-    console.warn('       Bind to the VPN IP instead of 0.0.0.0');
-    console.warn('    3. Acknowledge the risk:');
-    console.warn('       Set DARKHAN_ALLOW_EXTERNAL=true');
+    console.warn('  To fix this:');
+    console.warn('    1. Run: node server/scripts/setup-tls.js --ip <your-ip>');
+    console.warn('    2. Restart Darkhan — mTLS federation on port 3002 activates automatically');
     console.warn('='.repeat(72) + '\n');
   } else if (isExternal && (hasTLS || allowExternal)) {
     console.log(`[Darkhan] External binding acknowledged${hasTLS ? ' (TLS enabled)' : ' (DARKHAN_ALLOW_EXTERNAL=true)'}`);
