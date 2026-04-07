@@ -295,6 +295,8 @@ router.post('/', async (req, res) => {
         unifiedClaude: req.app.locals.unifiedClaude,
         reviewGate: req.app.locals.reviewGate,
         federation: req.app.locals.federation,
+        rateLimiter: req.app.locals.rateLimiter,
+        costTracker: req.app.locals.costTracker,
       });
 
       return res.status(201).json({ ok: true, message });

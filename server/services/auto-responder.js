@@ -19,6 +19,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { processAgentMessage } = require('./agent-relay');
 const { LocalLLMProvider } = require('./local-llm');
+const { classifyForLayer, shouldNotifyCommand, layerDescription } = require('./intelligence-gate');
 
 // Shared LocalLLMProvider instance (lazy-initialized)
 let _sharedLocalLLM = null;
@@ -419,9 +420,14 @@ function classifyMessage(messageBody, fromUser) {
     return 'heartbeat_log';
   }
 
-  // Agent relay triggers → Claude relay (needs comprehension)
+  // Agent messages: stay local unless explicitly requesting Claude.
+  // This prevents agent-to-agent coordination from burning Anthropic API calls.
+  // Each agent has their own Max plan — coordination should cost $0 on all sides.
   if (!HUMAN_USERS.includes(fromUser)) {
-    return 'claude_relay';
+    if (body.includes('@claude') || body.includes('[NEEDS_CLAUDE]') || body.includes('[NEEDS_ESCALATION]')) {
+      return 'claude_relay';
+    }
+    return 'local_llm';
   }
 
   // Local LLM patterns: routine, no-think responses
@@ -443,25 +449,40 @@ function classifyMessage(messageBody, fromUser) {
     if (pattern.test(body)) return 'local_llm';
   }
 
-  // Claude relay indicators: operations that need folio access, deep analysis, or tool use
-  const relayIndicators = [
+  // Claude relay indicators: operations that need folio access, deep analysis, or tool use.
+  // IMPORTANT: Single common words no longer trigger relay — require 2+ indicator matches
+  // or a strong indicator. The local LLM can escalate via [NEEDS_ESCALATION] if needed.
+  const strongRelayIndicators = [
     'claude',
-    'deploy', 'implement', 'build', 'create', 'write', 'draft',
-    'analyze', 'investigate', 'dispatch', 'update state',
+    'deploy', 'implement', 'dispatch', 'update state',
     'red team', 'checkpoint', 'transcript', 'session log',
-    'edit', 'code', 'script', 'fix', 'debug', 'ssh',
+    'debug', 'ssh',
+  ];
+
+  for (const indicator of strongRelayIndicators) {
+    if (body.includes(indicator)) return 'claude_relay';
+  }
+
+  // Weak indicators: need 2+ matches to trigger relay
+  const weakRelayIndicators = [
+    'build', 'create', 'write', 'draft',
+    'analyze', 'investigate',
+    'edit', 'code', 'script', 'fix',
     'restart', 'kill', 'install', 'configure',
     'how should', 'what should', 'should we', 'do you think',
     'what\'s the plan', 'what\'s next', 'priority', 'recommend',
     'strategy', 'approach', 'architecture', 'design',
   ];
 
-  for (const indicator of relayIndicators) {
-    if (body.includes(indicator)) return 'claude_relay';
+  let weakMatches = 0;
+  for (const indicator of weakRelayIndicators) {
+    if (body.includes(indicator)) weakMatches++;
   }
+  if (weakMatches >= 2) return 'claude_relay';
 
-  // Long messages (>500 chars) → Claude relay (likely complex)
-  if (messageBody.length > 500) return 'claude_relay';
+  // Long messages (>1000 chars) → Claude relay (likely complex)
+  // Raised from 500 to reduce false positives — local LLM can still escalate
+  if (messageBody.length > 1000) return 'claude_relay';
 
   // Default → local LLM
   return 'local_llm';
@@ -643,9 +664,31 @@ async function processMessage(channelId, fromUser, messageBody, context) {
         // Local LLM failed — fall through to Claude relay
         console.log(`[Router] Local LLM failed → Claude relay fallback`);
       }
-    } else if (tier === 'local_llm' && unifiedActive) {
-      console.log(`[Router] Unified session active — routing local_llm tier to Claude for ${fromUser}`);
-      // Fall through to Claude relay below
+    } else if (tier === 'local_llm') {
+      // Intelligence gate: local_llm tier stays local EVEN when a unified session is active.
+      // This is the core rate limit fix — routine messages never touch the Anthropic API.
+      // The unified session remains alive and ready for explicit @claude / /deep requests.
+      const llmResponse = await processLocalLlmMessage(channelId, fromUser, cleanBody, context);
+      deleteThinkingMessage(db, io, channelId);
+
+      if (llmResponse) {
+        if (llmResponse.includes('[NEEDS_ESCALATION]') || llmResponse.includes('[NEEDS_CLAUDE]')) {
+          markTriageEscalation(db, messageBody);
+          console.log(`[Router] Local LLM requested escalation (unified session active)`);
+          if (context.unifiedClaude) {
+            activeThinkingMessageId = postToChannel(db, io, channelId, '...thinking', 'agent_darkhan');
+            // Fall through to Claude relay below
+          } else {
+            promptForClaudeSession(db, io, channelId, fromUser, cleanBody);
+            return;
+          }
+        } else {
+          postToChannel(db, io, channelId, llmResponse, 'agent_darkhan');
+          return;
+        }
+      } else {
+        console.log(`[Router] Local LLM failed (unified active) → Claude relay fallback`);
+      }
     }
 
     // CLAUDE RELAY — Opus via Max plan ($0)
@@ -661,6 +704,36 @@ async function processMessage(channelId, fromUser, messageBody, context) {
         deleteThinkingMessage(db, io, channelId);
         isProcessing = false;
         return;
+      }
+    }
+
+    // RATE LIMIT CHECK — before making an Anthropic API call, check budget.
+    // If budget is exhausted, gracefully degrade to local LLM instead of hitting
+    // the hard rate limit wall and going silent for 40+ minutes.
+    const rateLimiter = context.rateLimiter;
+    if (rateLimiter) {
+      try {
+        await rateLimiter.check(LEAD_AGENT_ID, 'anthropic');
+      } catch (rateLimitErr) {
+        if (rateLimitErr.name === 'RateLimitError' || rateLimitErr.name === 'BudgetExceededError') {
+          console.warn(`[Router] Rate limit pre-check failed: ${rateLimitErr.message} — falling back to local LLM`);
+          deleteThinkingMessage(db, io, channelId);
+
+          // Try local LLM as fallback
+          const fallbackResponse = await processLocalLlmMessage(channelId, fromUser, cleanBody, context);
+          if (fallbackResponse && !fallbackResponse.includes('[NEEDS_ESCALATION]') && !fallbackResponse.includes('[NEEDS_CLAUDE]')) {
+            postToChannel(db, io, channelId, fallbackResponse, 'agent_darkhan');
+            postToChannel(db, io, 'chan_alerts',
+              `[RATE LIMIT] ${rateLimitErr.message}. Routed to local LLM instead of Opus.`,
+              LEAD_AGENT_ID);
+          } else {
+            postToChannel(db, io, channelId,
+              `[Rate limit approaching — ${rateLimitErr.message}. Message queued for when budget resets. Use the Claude Code terminal for immediate access.]`,
+              'agent_darkhan');
+          }
+          isProcessing = false;
+          return;
+        }
       }
     }
 
@@ -709,6 +782,24 @@ async function processMessage(channelId, fromUser, messageBody, context) {
 
       const result = await runClaudeRelay(prompt, channelId);
       trimmedResponse = (result.response || '').trim();
+    }
+
+    // Record the API call in the rate limiter so budget tracking is accurate
+    if (rateLimiter) {
+      try { rateLimiter.record(LEAD_AGENT_ID, 'anthropic'); } catch (e) { /* non-fatal */ }
+    }
+    if (context.costTracker) {
+      try {
+        context.costTracker.record({
+          agent: LEAD_AGENT_ID,
+          provider: 'anthropic',
+          model: 'opus',
+          tokensIn: 0, // CLI relay doesn't report tokens
+          tokensOut: trimmedResponse.length,
+          costMillicents: 0, // Max plan is flat rate
+          requestType: 'auto_responder_relay',
+        }).catch(() => {});
+      } catch (e) { /* non-fatal */ }
     }
 
     // Post Claude's response (run through review gate if enabled)
@@ -873,7 +964,7 @@ function deleteThinkingMessage(db, io, channelId) {
 /**
  * Handle slash commands — returns true if handled, false to continue normal routing.
  */
-function handleSlashCommand(body, fromUser, channelId, context) {
+async function handleSlashCommand(body, fromUser, channelId, context) {
   const { db, io } = context;
 
   // /review-gate on | off | status
@@ -944,14 +1035,177 @@ function handleSlashCommand(body, fromUser, channelId, context) {
     return true;
   }
 
+  // /stats — intelligence gate statistics and layer distribution
+  if (body === '/stats' || body === '/stats today') {
+    const statsDb = context.db || db;
+    if (!statsDb) {
+      postToChannel(db, io, channelId, 'Database not available.', 'agent_darkhan');
+      return true;
+    }
+
+    // Query triage_log for today's classification distribution
+    const triageQuery = `SELECT classification, COUNT(*) as count,
+      ROUND(AVG(response_time_ms)) as avg_ms
+      FROM triage_log
+      WHERE created_at > date('now', 'start of day')
+      GROUP BY classification ORDER BY count DESC`;
+
+    // Query cost_tracking for today's API usage
+    const costQuery = `SELECT provider, model, COUNT(*) as calls,
+      SUM(tokens_in) as total_in, SUM(tokens_out) as total_out
+      FROM cost_tracking
+      WHERE created_at > date('now', 'start of day')
+      GROUP BY provider, model ORDER BY calls DESC`;
+
+    // Query triage escalations
+    const escalationQuery = `SELECT COUNT(*) as total,
+      SUM(CASE WHEN was_escalated = 1 THEN 1 ELSE 0 END) as escalated
+      FROM triage_log
+      WHERE created_at > date('now', 'start of day')`;
+
+    try {
+      const lines = ['**Intelligence Gate — Today\'s Stats**\n'];
+
+      // Triage distribution
+      const triageRows = await new Promise((resolve, reject) => {
+        statsDb.all(triageQuery, [], (err, rows) => err ? resolve([]) : resolve(rows || []));
+      });
+
+      if (triageRows.length > 0) {
+        const total = triageRows.reduce((sum, r) => sum + r.count, 0);
+        lines.push('**Layer Distribution:**');
+        for (const row of triageRows) {
+          const pct = Math.round((row.count / total) * 100);
+          const bar = '█'.repeat(Math.max(1, Math.round(pct / 5)));
+          const layerLabel = row.classification === 'local_llm' ? 'Layer 0-1 (local)' :
+            row.classification === 'claude_relay' ? 'Layer 3 (Opus)' :
+            row.classification === 'heartbeat_log' ? 'Layer 0 (heartbeat)' : row.classification;
+          lines.push(`  ${bar} ${layerLabel}: ${row.count} (${pct}%) — avg ${row.avg_ms || 0}ms`);
+        }
+        lines.push(`  Total messages classified: ${total}`);
+      } else {
+        lines.push('No triage data for today yet.');
+      }
+
+      // Escalation rate
+      const escRow = await new Promise((resolve, reject) => {
+        statsDb.get(escalationQuery, [], (err, row) => err ? resolve(null) : resolve(row));
+      });
+      if (escRow && escRow.total > 0) {
+        const escPct = Math.round((escRow.escalated / escRow.total) * 100);
+        lines.push(`\n**Escalation rate:** ${escRow.escalated}/${escRow.total} (${escPct}%) messages escalated from local to cloud`);
+      }
+
+      // API usage
+      const costRows = await new Promise((resolve, reject) => {
+        statsDb.all(costQuery, [], (err, rows) => err ? resolve([]) : resolve(rows || []));
+      });
+
+      if (costRows.length > 0) {
+        lines.push('\n**Cloud API Usage:**');
+        for (const row of costRows) {
+          lines.push(`  ${row.provider}/${row.model}: ${row.calls} calls | ${row.total_in || 0} tokens in, ${row.total_out || 0} out`);
+        }
+      } else {
+        lines.push('\n**Cloud API Usage:** 0 calls today');
+      }
+
+      // Rate limiter status
+      const rateLimiter = context.rateLimiter;
+      if (rateLimiter) {
+        lines.push('\n**Rate Budget:**');
+        for (const [provider, limits] of Object.entries(rateLimiter.providerLimits || {})) {
+          if (limits.perDay > 0) {
+            const usage = rateLimiter.providerUsage[provider] || { today: 0 };
+            const pct = Math.round((usage.today / limits.perDay) * 100);
+            const remaining = limits.perDay - usage.today;
+            lines.push(`  ${provider}: ${usage.today}/${limits.perDay} used (${pct}%) — ${remaining} remaining`);
+          }
+        }
+      }
+
+      // Direct line stats
+      lines.push('\n**Communication Paths:**');
+      lines.push('  Direct Line (Tailscale P2P): configured');
+      lines.push('  Federation (Mokume hub): ' + (_federation && _federation._connected ? 'connected' : 'disconnected'));
+      lines.push('  Local LLM: active');
+
+      postToChannel(db, io, channelId, lines.join('\n'), 'agent_darkhan');
+    } catch (err) {
+      postToChannel(db, io, channelId, `Stats error: ${err.message}`, 'agent_darkhan');
+    }
+    return true;
+  }
+
+  // /layer <message> — dry-run intelligence gate classification
+  if (body.startsWith('/layer ')) {
+    const testMessage = body.substring(7).trim();
+    if (!testMessage) {
+      postToChannel(db, io, channelId, 'Usage: `/layer <message>` — shows what layer a message would be classified at', 'agent_darkhan');
+      return true;
+    }
+    let gateConfig = {};
+    try { gateConfig = require('../darkhan.config.json').intelligenceGate || {}; } catch (e) { /* */ }
+    const result = classifyForLayer(
+      { body: testMessage, fromUser, channelId },
+      { humanUsers: HUMAN_USERS, leadAgentId: LEAD_AGENT_ID, gateConfig }
+    );
+    postToChannel(db, io, channelId,
+      `**Intelligence Gate (dry run)**\n` +
+      `Message: "${testMessage.substring(0, 100)}${testMessage.length > 100 ? '...' : ''}"\n` +
+      `${layerDescription(result.layer)}\n` +
+      `Reason: ${result.reason}`,
+      'agent_darkhan');
+    return true;
+  }
+
+  // /budget — show rate limit budget status
+  if (body === '/budget') {
+    const rateLimiter = context.rateLimiter;
+    if (!rateLimiter) {
+      postToChannel(db, io, channelId, 'Rate limiter not initialized.', 'agent_darkhan');
+      return true;
+    }
+    const status = rateLimiter.getStatus ? rateLimiter.getStatus() : { providers: {}, agents: {} };
+    const lines = ['**Rate Limit Budget**\n'];
+
+    // Provider budgets
+    for (const [provider, limits] of Object.entries(rateLimiter.providerLimits || {})) {
+      const usage = rateLimiter.providerUsage[provider] || { today: 0, minuteBucket: 0 };
+      const dayLimit = limits.perDay || 'unlimited';
+      const minLimit = limits.perMinute || 'unlimited';
+      const dayPct = limits.perDay > 0 ? Math.round((usage.today / limits.perDay) * 100) : 0;
+      lines.push(`**${provider}:** ${usage.today}/${dayLimit} daily (${dayPct}%) | ${usage.minuteBucket}/${minLimit} per min`);
+    }
+
+    // Agent budgets
+    lines.push('\n**Per-Agent:**');
+    for (const [agentId, limits] of Object.entries(rateLimiter.agentLimits || {})) {
+      const usage = rateLimiter.agentUsage[agentId] || { today: 0 };
+      const dayLimit = limits.perDay || 'unlimited';
+      if (limits.perDay > 0) {
+        const pct = Math.round((usage.today / limits.perDay) * 100);
+        lines.push(`  ${agentId}: ${usage.today}/${dayLimit} (${pct}%)`);
+      }
+    }
+
+    postToChannel(db, io, channelId, lines.join('\n'), 'agent_darkhan');
+    return true;
+  }
+
   // /help — list available commands
   if (body === '/help' || body === '/commands') {
     postToChannel(db, io, channelId,
       '**Darkhan Commands:**\n' +
       '`/status` — Worker status, Claude session, review gate\n' +
+      '`/stats` — Intelligence gate stats: layer distribution, API usage, escalation rate\n' +
+      '`/budget` — Rate limit budget status for all providers\n' +
+      '`/layer <message>` — Dry run: show what layer a message would be classified at\n' +
       '`/review-gate on|off|status` — Toggle output review gate\n' +
-      '`@claude <message>` — Force message to Claude\n' +
-      '`/quick <message>` — Force message to local LLM (Darkhan)',
+      '`@claude <message>` — Force message to Claude (Layer 3 / Opus)\n' +
+      '`/deep <message>` — Force message to Claude (Layer 3 / Opus)\n' +
+      '`/quick <message>` — Force message to local LLM (Layer 1)\n' +
+      '`@darkhan <message>` — Force message to local LLM (Layer 1)',
       'agent_darkhan');
     return true;
   }
@@ -987,28 +1241,33 @@ function onNewMessage(message, context) {
 
   // CROSS-CHANNEL NOTIFY — when a message arrives on a channel other than #command,
   // post a notification to #command so the lead agent's CLI session sees it.
-  // This bridges multi-channel awareness without requiring the CLI to poll.
-  // Skip: agent_darkhan notifications (avoid loops), the lead agent's own posts,
-  // and messages already in #command.
+  // INTELLIGENCE GATE: Only duplicate messages that would classify as Layer 2+
+  // (needs the lead agent's attention). Agent-to-agent coordination (Layer 0-1)
+  // stays in its channel — the lead agent sees it when they check, but it doesn't
+  // trigger additional processing or burn API calls.
   if (channel_id !== 'chan_command' && from_user !== 'agent_darkhan' && from_user !== LEAD_AGENT_ID) {
-    const preview = body.length > 150 ? body.substring(0, 150) + '...' : body;
-    const channelName = channel_id.replace('chan_', '#');
-    const notify = `[${channelName}] ${from_user}: ${preview}`;
-    const { db, io } = context;
-    if (db && io) {
-      const nId = crypto.randomUUID();
-      db.run(
-        'INSERT INTO messages (id, channel_id, from_user, body, priority, type) VALUES (?, ?, ?, ?, ?, ?)',
-        [nId, 'chan_command', 'agent_darkhan', notify, 'normal', 'notification'],
-        (err) => {
-          if (!err) {
-            io.to('chan_command').emit('new_message', {
-              id: nId, channel_id: 'chan_command', from_user: 'agent_darkhan',
-              body: notify, type: 'notification', created_at: new Date().toISOString(),
-            });
+    // Only notify #command for messages that need the lead agent's attention
+    const notifyTier = classifyMessage(body, from_user);
+    if (notifyTier === 'claude_relay') {
+      const preview = body.length > 150 ? body.substring(0, 150) + '...' : body;
+      const channelName = channel_id.replace('chan_', '#');
+      const notify = `[${channelName}] ${from_user}: ${preview}`;
+      const { db, io } = context;
+      if (db && io) {
+        const nId = crypto.randomUUID();
+        db.run(
+          'INSERT INTO messages (id, channel_id, from_user, body, priority, type) VALUES (?, ?, ?, ?, ?, ?)',
+          [nId, 'chan_command', 'agent_darkhan', notify, 'normal', 'notification'],
+          (err) => {
+            if (!err) {
+              io.to('chan_command').emit('new_message', {
+                id: nId, channel_id: 'chan_command', from_user: 'agent_darkhan',
+                body: notify, type: 'notification', created_at: new Date().toISOString(),
+              });
+            }
           }
-        }
-      );
+        );
+      }
     }
   }
 
@@ -1044,8 +1303,18 @@ function onNewMessage(message, context) {
   const trimmedBody = body.trim().toLowerCase();
 
   if (HUMAN_USERS.includes(from_user) && trimmedBody.startsWith('/')) {
-    const handled = handleSlashCommand(trimmedBody, from_user, channel_id, context);
-    if (handled) return;
+    // handleSlashCommand is async (for DB queries in /stats).
+    // Fire and return — slash commands handle their own response posting.
+    handleSlashCommand(trimmedBody, from_user, channel_id, context).then(handled => {
+      if (!handled) {
+        // Not a recognized slash command — could route through normal processing
+        // but typically unrecognized slash commands are just ignored
+        console.log(`[Router] Unrecognized slash command: ${trimmedBody.substring(0, 30)}`);
+      }
+    }).catch(err => {
+      console.error(`[Router] Slash command error: ${err.message}`);
+    });
+    return; // Always return — slash commands don't go through LLM routing
   }
 
   // Auto-responder filtering — only process messages from humans for LLM routing

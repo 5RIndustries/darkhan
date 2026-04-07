@@ -47,6 +47,24 @@ class FederationService {
     // Ed25519 identity
     this.publicKey = null;
     this._privateKey = null;
+
+    // mTLS client certs (if TLS configured)
+    this._tlsOpts = null;
+    if (config.tls?.enabled) {
+      try {
+        const os = require('os');
+        const resolvePath = (p) => p ? p.replace('~', os.homedir()) : null;
+        this._tlsOpts = {
+          ca: fs.readFileSync(resolvePath(config.tls.ca)),
+          cert: fs.readFileSync(resolvePath(config.tls.cert)),
+          key: fs.readFileSync(resolvePath(config.tls.key)),
+          rejectUnauthorized: true,
+        };
+        console.log('[Federation] mTLS enabled — hub connections will use client certificates');
+      } catch (e) {
+        console.warn(`[Federation] TLS configured but certs failed to load: ${e.message}`);
+      }
+    }
   }
 
   /**
@@ -416,6 +434,14 @@ class FederationService {
 
       if (this._hubToken) {
         options.headers['X-Hub-Token'] = this._hubToken;
+      }
+
+      // Attach mTLS client certs when using HTTPS
+      if (isHttps && this._tlsOpts) {
+        options.ca = this._tlsOpts.ca;
+        options.cert = this._tlsOpts.cert;
+        options.key = this._tlsOpts.key;
+        options.rejectUnauthorized = this._tlsOpts.rejectUnauthorized;
       }
 
       if (payload) {
