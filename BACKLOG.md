@@ -7,13 +7,13 @@
 
 ## Priority 1 — Fix Before First External User
 
-### Corey Audit — CRITICAL [ALL FIXED]
+### Red Team Audit — CRITICAL [ALL FIXED]
 - [x] ~~Credentials in both databases~~ — secrets.db sole source, no fallback
 - [x] ~~Hardcoded session secret fallback~~ — server refuses to start without SESSION_SECRET
 - [x] ~~Lockdown PIN in both databases~~ — fail-closed, secrets.db only
 - [x] ~~Worker shell gets process.env~~ — whitelisted to HOME/PATH/LANG/USER/TERM
 
-### Corey Audit — HIGH [ALL FIXED]
+### Red Team Audit — HIGH [ALL FIXED]
 - [x] ~~Default password in seed.js~~ — random generated, force change on first login (building)
 - [x] ~~WebSocket session auth stub~~ — real session validation from cookie + store
 - [x] ~~No CSRF protection~~ — X-Darkhan-Client header on state-changing requests
@@ -21,7 +21,7 @@
 - [x] ~~No TLS on federation~~ — FEDERATION_ALLOW_HTTP required, documented
 - [x] ~~fsWrite empty = write anywhere~~ — deny-by-default
 
-### Corey Audit — MEDIUM [ALL FIXED]
+### Red Team Audit — MEDIUM [ALL FIXED]
 - [x] ~~Integrity baseline auto-overwrites~~ — admin-commanded reset only
 - [x] ~~Injection detection regex-only~~ — local LLM cloud escalation for external-origin
 - [x] ~~Activity log immutability~~ — SHA-256 Merkle hash chain
@@ -40,7 +40,7 @@
 - [x] ~~Pre-commit secret scanner~~ — .githooks/pre-commit blocks API keys, tokens, private keys, JWTs, connection strings. **COMPLETE (2026-03-29)**
 - [x] ~~Repo sanitized for open-source~~ — Generic example config, example workers, internal references removed. **COMPLETE (2026-03-29)**
 - [x] ~~Telegram bridge~~ — Long-polling in, HTTPS out, injection scanning, zero external deps. **COMPLETE (2026-03-29)**
-- [x] ~~Corey OWASP ASI Top 10 audit~~ — Grade: B+. All P0s and critical P1s fixed. **COMPLETE (2026-03-29)**
+- [x] ~~Red Team OWASP ASI Top 10 audit~~ — Grade: B+. All P0s and critical P1s fixed. **COMPLETE (2026-03-29)**
 
 ### Remaining P1 [IN PROGRESS]
 - [x] ~~Approval queue UI + workflow~~ — Backend + UI complete (2026-03-28)
@@ -54,7 +54,7 @@
 - [x] ~~Shell terminal~~ — General-purpose bash/zsh terminal in web UI for system commands, SSH, administration. **COMPLETE (2026-03-30)**
 - [x] ~~Terminal pop-out window~~ — Standalone terminal window for multi-monitor setups. Auto-starts with selected mode. **COMPLETE (2026-03-30)**
 - [x] ~~Channel-terminal bridge~~ — Terminal events posted to channels, Claude terminal gets recent channel context, agents see terminal activity. **COMPLETE (2026-03-30)**
-- [x] ~~Corey audit context update~~ — Corey system prompt updated with full Darkhan architecture so audits focus on real gaps, not sandbox enforcement. Rate limits treated as user configuration. **COMPLETE (2026-03-30)**
+- [x] ~~Red Team audit context update~~ — Red Team system prompt updated with full Darkhan architecture so audits focus on real gaps, not sandbox enforcement. Rate limits treated as user configuration. **COMPLETE (2026-03-30)**
 - [x] ~~BSL 1.1 LICENSE~~ — Business Source License with 4-year change to Apache 2.0. **COMPLETE (2026-03-30)**
 - [x] ~~Landing page~~ — docs/index.html for darkhan.ai. **COMPLETE (2026-03-30)**
 - [ ] Gmail integration (gws CLI) — **PREPPED**, needs interactive OAuth
@@ -160,7 +160,7 @@ All P1 and P2 items shipped on 2026-03-29 (15 features in one session). OWASP AS
 | Mon 4/12 | Mokume hub architecture | Plugin system design |
 | Tue 4/13 | Multi-admin RBAC | Two-LLM consensus |
 | Wed 4/14 | Pen test framework | Pre-mortem protocol |
-| Thu 4/15 | Integration testing + Corey full audit | License decision |
+| Thu 4/15 | Integration testing + Red Team full audit | License decision |
 | **Fri 4/16** | **Red team review** | **Feature freeze** |
 
 **Note:** P1 + P2 completed ahead of schedule (3/29 vs planned 4/5). P3 (Mokume/enterprise federation) starts week of April 5, front-loading external user onboarding and federation security.
@@ -184,10 +184,10 @@ All P1 and P2 items shipped on 2026-03-29 (15 features in one session). OWASP AS
 | 2026-03-28 | Agent onboarding | Verified briefs + identity preamble on every LLM call |
 | 2026-03-28 | Evidence-based reporting | EvidenceService with SHA-256 hashes |
 | 2026-03-28 | Claim verification | ClaimVerifierService auto-tagging on agent messages |
-| 2026-03-28 | Corey daily audit | 0100 ET, unrestricted scope, evidence-based |
-| 2026-03-28 | All 16 Corey findings | 4 CRITICAL + 6 HIGH + 6 MEDIUM = 16/16 fixed |
+| 2026-03-28 | Red Team daily audit | 0100 ET, unrestricted scope, evidence-based |
+| 2026-03-28 | All 16 Red Team findings | 4 CRITICAL + 6 HIGH + 6 MEDIUM = 16/16 fixed |
 | 2026-03-28 | Chief email monitoring | Outlook integration, token refresh, URGENT triage |
-| 2026-03-28 | Nightly security pipeline | Darkhan 2330 → Claude 0000 → Corey 0100 → Brief 0600 |
+| 2026-03-28 | Nightly security pipeline | Darkhan 2330 → Claude 0000 → Red Team 0100 → Brief 0600 |
 | 2026-03-28 | Admin Settings UI | Password, PIN, lockdown, unlock, baseline reset |
 | 2026-03-28 | Professional docs | README, SETUP, WORKER-CONTRACT (updated twice) |
 | 2026-03-28 | Git repo | 9 commits, secure .gitignore |
@@ -224,7 +224,7 @@ All P1 and P2 items shipped on 2026-03-29 (15 features in one session). OWASP AS
 | 2026-03-29 | Pre-commit secret scanner | Blocks API keys, tokens, private keys, JWTs in staged diffs |
 | 2026-03-29 | LLM model hash verification | SHA-256 against Ollama manifests at startup |
 | 2026-03-29 | Telegram bridge | Long-polling in, HTTPS out, injection scanning, zero deps |
-| 2026-03-29 | Corey OWASP ASI Top 10 audit | Grade B+. All P0s and critical P1s fixed |
+| 2026-03-29 | Red Team OWASP ASI Top 10 audit | Grade B+. All P0s and critical P1s fixed |
 | 2026-03-29 | Open-source repo sanitization | Generic config, example workers, internal refs removed |
 | 2026-03-29 | Azure OAuth credential incident | Hardcoded creds removed, moved to .env, secret revoked, scanner prevents recurrence |
 | 2026-03-30 | Integrated Claude Code terminal | xterm.js + node-pty, Claude Code and shell modes, /terminal namespace |
@@ -232,7 +232,7 @@ All P1 and P2 items shipped on 2026-03-29 (15 features in one session). OWASP AS
 | 2026-03-30 | Shell terminal | General-purpose bash/zsh in web UI |
 | 2026-03-30 | Terminal pop-out window | Standalone window for multi-monitor setups |
 | 2026-03-30 | Channel-terminal bridge | Terminal events to channels, channel context to Claude terminal |
-| 2026-03-30 | Corey audit context update | Architecture context in system prompt, rate limits as user config |
+| 2026-03-30 | Red Team audit context update | Architecture context in system prompt, rate limits as user config |
 | 2026-03-30 | BSL 1.1 LICENSE | 5R Industries LLC, 4-year change to Apache 2.0 |
 | 2026-03-30 | Landing page | docs/index.html for darkhan.ai |
 | 2026-03-30 | README rewrite | Cold-visitor optimized, architecture diagram, terminal docs |
@@ -264,5 +264,5 @@ All P1 and P2 items shipped on 2026-03-29 (15 features in one session). OWASP AS
 | 2026-03-31 | First-login gated flow (app.js) | Forced password change overlay + forced PIN setup overlay on changeme login; cannot dismiss; no Settings hunting required |
 | 2026-03-31 | install.sh improvements | Per-prerequisite install prompts (skip if present), Homebrew PATH auto-add to .zprofile, PAT guidance on clone failure, pull-latest for existing installs |
 | 2026-03-31 | Dress rehearsal bug fixes (5) | (1) duplicate must_change_password column in secrets-schema.sql, (2) index on nonexistent api_key_hmac column, (3) missing glob dependency in package.json, (4) missing entry_type column in schema.sql activity_log, (5) SETUP.md incorrect default password |
-| 2026-03-31 | Corey audit fixes (8) | C-1: federation header spoofing, C-2: Socket.IO HMAC bypass, L-4: quarantine INSERT column name, H-5: activity log trimming removed (broke hash chain), M-6: requireHumanAdmin logic bug, H-1: session store table name injection, L-3: orphan detection ps format, M-4: JSON.parse safety in message listing |
+| 2026-03-31 | Red Team audit fixes (8) | C-1: federation header spoofing, C-2: Socket.IO HMAC bypass, L-4: quarantine INSERT column name, H-5: activity log trimming removed (broke hash chain), M-6: requireHumanAdmin logic bug, H-1: session store table name injection, L-3: orphan detection ps format, M-4: JSON.parse safety in message listing |
 | 2026-03-31 | Siege adversarial agent | examples/adversary.worker.js — persistent red team agent, Gemini Flash, 6 probe categories, daily research sweep + adversarial report, designed for Node 3 |

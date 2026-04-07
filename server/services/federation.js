@@ -352,8 +352,8 @@ class FederationService {
     // so the active CLI session sees inbound federated messages without polling.
     // Only notify for non-auto-responder messages (human + agent_direct).
     if (origin !== 'auto_responder') {
-      const leadChannel = this.config?.leadAgent?.agentId === 'agent_penny'
-        ? 'chan_penny' : 'chan_claude';
+      const leadAgentId = this.config?.leadAgent?.agentId || 'agent_claude';
+      const leadChannel = 'chan_' + leadAgentId.replace('agent_', '');
       const preview = body.length > 120 ? body.substring(0, 120) + '...' : body;
       const notification = `[Mokume] ${fromUser} in ${channelId}: ${preview}`;
       // Insert notification directly — don't relay it (it's local-only)

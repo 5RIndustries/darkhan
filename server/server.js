@@ -1274,7 +1274,7 @@ server.listen(PORT, BIND_HOST, () => {
 
       // Post notification to lead agent channel
       const leadAgentId = config.leadAgent?.agentId || 'agent_claude';
-      const leadChannel = leadAgentId === 'agent_penny' ? 'chan_penny' : 'chan_claude';
+      const leadChannel = 'chan_' + (leadAgentId || 'agent_claude').replace('agent_', '');
       const notification = `[Mokume] ${fromUser}@${from} in ${channel}: ${preview || '(no preview)'}`;
 
       db.run(

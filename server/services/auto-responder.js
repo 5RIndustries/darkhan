@@ -64,8 +64,7 @@ try {
 const RELAY_TRIGGERS = configRelayTriggers || [];
 const SYSTEM_TRIGGERS = ['system_heartbeat'];
 
-// Lead agent identity — configurable per instance
-// Node 2: agent_claude (CTO), Node 1: agent_penny (CFO/CMO)
+// Lead agent identity — configurable per instance via darkhan.config.json
 let LEAD_AGENT_ID;
 try {
   const cfg = require('../darkhan.config.json');
@@ -571,12 +570,13 @@ async function processMessage(channelId, fromUser, messageBody, context) {
   // If the message is an @mention that workers handle, the worker responses are
   // already being sent. The auto-responder continues for LLM triage routing.
 
-  // Check if terminal Claude is actively handling this channel — suppress duplicate responses
+  // Check if terminal Claude is actively handling this channel.
+  // When active, route through unified session (so the CLI session sees the message)
+  // but skip spawning a separate claude -p relay to avoid duplicate responses.
   const lastTerminalPost = terminalClaudeActivity.get(channelId);
-  if (lastTerminalPost && (Date.now() - lastTerminalPost) < TERMINAL_ACTIVE_WINDOW_MS) {
-    console.log(`[Router] Terminal Claude active in ${channelId} (${Math.round((Date.now() - lastTerminalPost) / 1000)}s ago) — suppressing auto-response`);
-    isProcessing = false;
-    return;
+  const terminalActive = lastTerminalPost && (Date.now() - lastTerminalPost) < TERMINAL_ACTIVE_WINDOW_MS;
+  if (terminalActive) {
+    console.log(`[Router] Terminal Claude active in ${channelId} (${Math.round((Date.now() - lastTerminalPost) / 1000)}s ago) — routing through unified session only`);
   }
 
   // If a unified Claude session exists and is actively processing a turn, suppress auto-response
@@ -1028,7 +1028,7 @@ function onNewMessage(message, context) {
   }
 
   // If the message mentions an agent by name, let the worker handle it exclusively
-  // Matches both @penny and natural mentions like "hey Penny, you there?"
+  // Matches both @agent_name and natural mentions like "hey AgentName, you there?"
   // Claude and Darkhan are excluded — they handle their own routing
   let workerNames;
   try {
