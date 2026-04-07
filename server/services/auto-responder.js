@@ -1241,14 +1241,12 @@ function onNewMessage(message, context) {
 
   // CROSS-CHANNEL NOTIFY — when a message arrives on a channel other than #command,
   // post a notification to #command so the lead agent's CLI session sees it.
-  // INTELLIGENCE GATE: Only duplicate messages that would classify as Layer 2+
-  // (needs the lead agent's attention). Agent-to-agent coordination (Layer 0-1)
-  // stays in its channel — the lead agent sees it when they check, but it doesn't
-  // trigger additional processing or burn API calls.
+  // INTELLIGENCE GATE: Human messages ALWAYS notify (Adrian should never be ignored).
+  // Agent-to-agent Layer 0-1 messages are suppressed to save API calls.
   if (channel_id !== 'chan_command' && from_user !== 'agent_darkhan' && from_user !== LEAD_AGENT_ID) {
-    // Only notify #command for messages that need the lead agent's attention
-    const notifyTier = classifyMessage(body, from_user);
-    if (notifyTier === 'claude_relay') {
+    const isHumanMsg = HUMAN_USERS.includes(from_user);
+    const notifyTier = isHumanMsg ? 'claude_relay' : classifyMessage(body, from_user);
+    if (isHumanMsg || notifyTier === 'claude_relay') {
       const preview = body.length > 150 ? body.substring(0, 150) + '...' : body;
       const channelName = channel_id.replace('chan_', '#');
       const notify = `[${channelName}] ${from_user}: ${preview}`;
