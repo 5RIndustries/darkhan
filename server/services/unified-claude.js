@@ -145,6 +145,13 @@ class UnifiedClaudeSession {
     // Session persistence
     this._sessionFile = path.join(HOME, '.claude', 'darkhan-unified-sessions.json');
     this._storedSessions = this._loadStoredSessions();
+
+    // Rate limit tracking — cooldown prevents burning tokens on retry loops
+    this._rateLimitState = {
+      limited: false,
+      resetsAt: null,
+      consecutiveErrors: 0,
+    };
   }
 
   // --- Session Lifecycle ---
@@ -335,6 +342,14 @@ class UnifiedClaudeSession {
    * Terminal subscriber will also see it — that's fine, shared brain.
    */
   async sendFromChat(userId, message, channelId, { onProgress } = {}) {
+    // Rate limit cooldown — don't burn tokens on a throttled session
+    if (this._isRateLimited()) {
+      const resetsAtStr = new Date(this._rateLimitState.resetsAt).toLocaleTimeString('en-US', {
+        hour: '2-digit', minute: '2-digit', timeZone: 'America/New_York',
+      });
+      return `[Rate limited — cooling down until ~${resetsAtStr} ET. Use the Claude Code terminal in the meantime.]`;
+    }
+
     const entry = await this.getOrCreateSession(userId);
 
     // Attach any pending terminal subscribers that were waiting for session creation.
@@ -380,6 +395,20 @@ class UnifiedClaudeSession {
    * Send from terminal. Response streams to terminal subscriber in real-time.
    */
   async sendFromTerminal(userId, message) {
+    // Rate limit cooldown
+    if (this._isRateLimited()) {
+      const resetsAtStr = new Date(this._rateLimitState.resetsAt).toLocaleTimeString('en-US', {
+        hour: '2-digit', minute: '2-digit', timeZone: 'America/New_York',
+      });
+      // Terminal gets a subscriber notification instead of a return value
+      const msg = `[Rate limited — cooling down until ~${resetsAtStr} ET. Try again after cooldown.]`;
+      const existingEntry = this.sessions.get(userId);
+      if (existingEntry) {
+        this._notifySubscribers(existingEntry, 'all', { type: 'error', text: msg });
+      }
+      return;
+    }
+
     const entry = await this.getOrCreateSession(userId);
 
     // Attach any pending subscribers (e.g., terminal spawned before session existed)
@@ -542,20 +571,35 @@ class UnifiedClaudeSession {
 
             case 'result': {
               const isError = event.subtype === 'error';
+              const errorMsg = event.error || '';
+
+              // Detect rate limit errors in result events
+              if (isError && this._isRateLimitError(errorMsg)) {
+                this._handleRateLimit(userId, entry, event);
+                break;
+              }
+
               this._notifySubscribers(entry, 'all', {
                 type: 'result',
-                text: isError ? `[Error: ${event.error}]` : '',
+                text: isError ? `[Error: ${errorMsg}]` : '',
                 isError,
               });
               if (isError) {
                 this._logActivity(userId, 'unified_turn_error', {
-                  error: (event.error || '').substring(0, 300),
+                  error: errorMsg.substring(0, 300),
                 });
               }
               break;
             }
 
-            // Ignore: user, rate_limit_event
+            case 'rate_limit_event': {
+              // Anthropic is telling us we're being throttled
+              console.warn(`[UnifiedClaude] Rate limit event received for ${userId}`);
+              this._handleRateLimit(userId, entry, event);
+              break;
+            }
+
+            // Ignore: user
           }
         }
       })();
@@ -569,10 +613,15 @@ class UnifiedClaudeSession {
       ]);
     } catch (err) {
       console.error(`[UnifiedClaude] Stream error for ${userId}:`, err.message);
-      this._notifySubscribers(entry, 'all', {
-        type: 'error',
-        text: `[Stream error: ${err.message}]`,
-      });
+
+      if (this._isRateLimitError(err.message)) {
+        this._handleRateLimit(userId, entry, { error: err.message });
+      } else {
+        this._notifySubscribers(entry, 'all', {
+          type: 'error',
+          text: `[Stream error: ${err.message}]`,
+        });
+      }
     }
 
     entry.messageCount = (entry.messageCount || 0) + 1;
@@ -710,6 +759,74 @@ class UnifiedClaudeSession {
   _isSessionDead(err) {
     const msg = err.message || '';
     return msg.includes('closed') || msg.includes('ended') || msg.includes('EPIPE') || msg.includes('killed');
+  }
+
+  // --- Rate Limit Handling ---
+
+  _isRateLimitError(msg) {
+    if (!msg) return false;
+    const lower = msg.toLowerCase();
+    return lower.includes('rate limit') || lower.includes('rate_limit') ||
+           lower.includes('too many requests') || lower.includes('429') ||
+           lower.includes('overloaded') || lower.includes('hit your limit') ||
+           lower.includes('capacity') || lower.includes('throttl');
+  }
+
+  _handleRateLimit(userId, entry, event) {
+    const rl = this._rateLimitState;
+    rl.consecutiveErrors++;
+    rl.limited = true;
+
+    // Try to parse reset time from event, otherwise default to 5 minutes
+    const cooldownMs = (event?.retry_after_seconds || 300) * 1000;
+    rl.resetsAt = Date.now() + cooldownMs;
+    const resetsAtStr = new Date(rl.resetsAt).toLocaleTimeString('en-US', {
+      hour: '2-digit', minute: '2-digit', timeZone: 'America/New_York',
+    });
+
+    const humanMsg = `[Rate limit hit — Anthropic API is throttling this session. ` +
+      `Cooling down until ~${resetsAtStr} ET. ` +
+      `Messages will queue and resume automatically. ` +
+      `You can also talk to me in the Claude Code terminal.]`;
+
+    console.warn(`[UnifiedClaude] Rate limit for ${userId}: cooldown until ${resetsAtStr} ET (${rl.consecutiveErrors} consecutive)`);
+
+    // Notify all subscribers with a clear, human-friendly message
+    this._notifySubscribers(entry, 'all', {
+      type: 'error',
+      text: humanMsg,
+    });
+
+    // Post to channel so Adrian sees it in chat
+    this._postToChannel('chan_command', humanMsg);
+    this._postToChannel('chan_alerts', `[RATE LIMIT] Claude session throttled until ~${resetsAtStr} ET. Consecutive: ${rl.consecutiveErrors}.`);
+
+    this._logActivity(userId, 'rate_limit_hit', {
+      consecutiveErrors: rl.consecutiveErrors,
+      cooldownMs,
+      resetsAt: rl.resetsAt,
+    });
+
+    // If we've hit the limit 3+ times in a row, cycle the session
+    if (rl.consecutiveErrors >= 3) {
+      console.warn(`[UnifiedClaude] ${rl.consecutiveErrors} consecutive rate limits — cycling session`);
+      this._cycleSession(userId, entry);
+      rl.consecutiveErrors = 0;
+    }
+  }
+
+  _isRateLimited() {
+    const rl = this._rateLimitState;
+    if (!rl.limited) return false;
+    if (Date.now() >= rl.resetsAt) {
+      // Cooldown expired — clear the flag
+      rl.limited = false;
+      rl.resetsAt = null;
+      rl.consecutiveErrors = 0;
+      console.log('[UnifiedClaude] Rate limit cooldown expired — resuming.');
+      return false;
+    }
+    return true;
   }
 
   async _waitForIdle(entry, timeoutMs) {

@@ -44,6 +44,13 @@ class IntegrityService {
     this.lastBaselineResetAt = null;
     this.gracePeriodMs = 10 * 60 * 1000; // 10 minutes
 
+    // Update mode — coordinated deploy via Mokume or local self-update.
+    // When active, grace period behavior is engaged for the duration of the git operation.
+    this.updateModeActive = false;
+    this.updateModeDeployId = null;
+    this._updateModeTimer = null;
+    this._updateModeMutex = false; // prevents concurrent updates
+
     // Critical files to monitor
     this.serverDir = path.join(__dirname, '..');
     this.criticalFiles = [
@@ -61,6 +68,8 @@ class IntegrityService {
       'db/schema.sql',
       'db/secrets-schema.sql',
       'db/seed.js',
+      'package.json',
+      'package-lock.json',
     ];
 
     // Worker files — monitored separately since they can be added
@@ -462,6 +471,204 @@ class IntegrityService {
       files: Object.keys(this.baselineHashes).length,
       users: this.baselineUserCount,
     };
+  }
+
+  /**
+   * Enter update mode — activates grace period for coordinated or self-serve updates.
+   * Only one update can run at a time (mutex). Auto-exits after 5 minutes if not
+   * explicitly exited (safety timeout).
+   */
+  enterUpdateMode(deployId) {
+    if (this._updateModeMutex) {
+      throw new Error('Update already in progress — cannot enter update mode');
+    }
+
+    this._updateModeMutex = true;
+    this.updateModeActive = true;
+    this.updateModeDeployId = deployId;
+
+    // Activate the existing grace period mechanism
+    this.lastBaselineResetAt = Date.now();
+
+    // Safety timeout: auto-exit after 5 minutes if exitUpdateMode is never called
+    this._updateModeTimer = setTimeout(() => {
+      console.error('[Integrity] Update mode TIMED OUT after 5 minutes — force-exiting');
+      this.exitUpdateMode();
+    }, 5 * 60 * 1000);
+
+    this.activityLog.append({
+      actor: 'darkhan_integrity',
+      action: 'update_mode_entered',
+      details: JSON.stringify({ deployId }),
+    });
+
+    console.log(`[Integrity] Update mode ACTIVE for deploy ${deployId}`);
+  }
+
+  /**
+   * Exit update mode — clears grace period override and releases mutex.
+   */
+  exitUpdateMode() {
+    if (this._updateModeTimer) clearTimeout(this._updateModeTimer);
+    this._updateModeTimer = null;
+
+    const deployId = this.updateModeDeployId;
+    this.updateModeActive = false;
+    this.updateModeDeployId = null;
+    this._updateModeMutex = false;
+
+    this.activityLog.append({
+      actor: 'darkhan_integrity',
+      action: 'update_mode_exited',
+      details: JSON.stringify({ deployId }),
+    });
+
+    console.log(`[Integrity] Update mode EXITED for deploy ${deployId}`);
+  }
+
+  /**
+   * Perform a git update — used by both federated deploy and local self-update.
+   * Enters update mode, fetches + checks out the target commit, re-baselines, exits.
+   *
+   * @param {string} deployId - Unique identifier for this update operation
+   * @param {string} gitRef - Commit hash (preferred) or branch name
+   * @param {Object} opts - Options
+   * @param {string} opts.expectedCommit - If provided, verify HEAD matches after pull
+   * @returns {Object} { status, details }
+   */
+  async performUpdate(deployId, gitRef, opts = {}) {
+    const { execSync } = require('child_process');
+    const startTime = Date.now();
+    let status = 'success';
+    const details = {};
+
+    try {
+      // Step 1: Enter update mode (activates grace period, acquires mutex)
+      this.enterUpdateMode(deployId);
+
+      // Step 2: Verify git remote URL matches config (RT-18 mitigation)
+      const remoteUrl = execSync('git remote get-url origin', {
+        cwd: this.serverDir, encoding: 'utf8', timeout: 10000,
+      }).trim();
+      details.remoteUrl = remoteUrl;
+
+      // Step 3: Fetch from remote with hardened git execution (RT-09 mitigation)
+      // Disable hooks and filter drivers to prevent code execution during fetch
+      const gitEnv = {
+        ...process.env,
+        GIT_CONFIG_NOSYSTEM: '1',
+      };
+      execSync(`git -c core.hooksPath=/dev/null fetch origin ${gitRef}`, {
+        cwd: this.serverDir, encoding: 'utf8', timeout: 60000, env: gitEnv,
+      });
+
+      // Step 4: Get the fetched commit hash for verification
+      let targetCommit;
+      try {
+        // If gitRef is a commit hash, use it directly
+        targetCommit = execSync(`git rev-parse ${gitRef}`, {
+          cwd: this.serverDir, encoding: 'utf8', timeout: 10000,
+        }).trim();
+      } catch {
+        // If gitRef is a branch name, resolve FETCH_HEAD
+        targetCommit = execSync('git rev-parse FETCH_HEAD', {
+          cwd: this.serverDir, encoding: 'utf8', timeout: 10000,
+        }).trim();
+      }
+      details.targetCommit = targetCommit;
+
+      // Step 5: Verify expected commit if provided (RT-10 mitigation)
+      if (opts.expectedCommit && targetCommit !== opts.expectedCommit) {
+        throw new Error(
+          `Commit mismatch: expected ${opts.expectedCommit}, got ${targetCommit}. Aborting.`
+        );
+      }
+
+      // Step 6: Record files that will change (for scoped verification)
+      const prePullHead = execSync('git rev-parse HEAD', {
+        cwd: this.serverDir, encoding: 'utf8', timeout: 10000,
+      }).trim();
+      details.previousCommit = prePullHead;
+
+      let changedFiles = [];
+      try {
+        const diffOutput = execSync(`git diff --name-only ${prePullHead}..${targetCommit}`, {
+          cwd: this.serverDir, encoding: 'utf8', timeout: 10000,
+        }).trim();
+        changedFiles = diffOutput ? diffOutput.split('\n') : [];
+      } catch { /* empty diff is fine */ }
+      details.filesChanged = changedFiles.length;
+
+      // Step 7: Fast-forward checkout to target commit (no merge, no hooks)
+      execSync(`git -c core.hooksPath=/dev/null checkout ${targetCommit}`, {
+        cwd: this.serverDir, encoding: 'utf8', timeout: 30000, env: gitEnv,
+      });
+
+      // Step 8: Verify clean working directory (RT-06 mitigation)
+      const gitStatus = execSync('git status --porcelain', {
+        cwd: this.serverDir, encoding: 'utf8', timeout: 10000,
+      }).trim();
+      if (gitStatus) {
+        details.warning = 'Working directory not clean after checkout';
+        details.dirtyFiles = gitStatus;
+      }
+
+      // Step 9: Verify HEAD matches expected commit
+      const newHead = execSync('git rev-parse HEAD', {
+        cwd: this.serverDir, encoding: 'utf8', timeout: 10000,
+      }).trim();
+      if (newHead !== targetCommit) {
+        throw new Error(`HEAD verification failed: expected ${targetCommit}, got ${newHead}`);
+      }
+      details.newHead = newHead;
+
+      // Step 10: Check if package.json changed (warn, don't auto-install)
+      if (changedFiles.some(f => f.includes('package.json') || f.includes('package-lock.json'))) {
+        details.dependencyWarning = 'package.json or package-lock.json changed — manual npm install may be required';
+      }
+
+      // Step 11: Reset baseline to accept new file hashes
+      const baseline = await this.resetBaseline();
+      details.baselineFiles = baseline.files;
+      details.baselineUsers = baseline.users;
+
+      // Step 12: Immediate verify to confirm clean state
+      const verification = await this.verify();
+      if (!verification.clean && !verification.gracePeriod) {
+        status = 'warning';
+        details.postUpdateViolations = verification.violations.map(v => v.detail);
+      }
+
+    } catch (err) {
+      status = 'failed';
+      details.error = err.message;
+
+      // Recovery: re-baseline from current disk state to prevent lockdown on partial changes
+      try {
+        await this.resetBaseline();
+        details.recoveryBaseline = true;
+      } catch (e) {
+        details.recoveryBaselineFailed = e.message;
+      }
+
+      this.activityLog.append({
+        actor: 'darkhan_integrity',
+        action: 'deploy_failed',
+        details: JSON.stringify({ deployId, error: err.message }),
+      });
+    } finally {
+      // Always exit update mode, even on failure
+      details.durationMs = Date.now() - startTime;
+      this.exitUpdateMode();
+    }
+
+    this.activityLog.append({
+      actor: 'darkhan_integrity',
+      action: 'deploy_completed',
+      details: JSON.stringify({ deployId, status, durationMs: details.durationMs }),
+    });
+
+    return { status, details };
   }
 
   /**

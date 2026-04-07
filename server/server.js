@@ -5,6 +5,7 @@ if (typeof process.loadEnvFile === 'function') {
   console.error('[Darkhan] Node 20.12+ required (process.loadEnvFile not available). Current: ' + process.version);
   process.exit(1);
 }
+const crypto = require('crypto');
 const express = require('express');
 const http = require('http');
 const https = require('https');
@@ -173,6 +174,9 @@ app.use((req, res, next) => {
 
   // API key auth is inherently CSRF-safe — skip check
   if (req.headers['x-api-key']) return next();
+
+  // Federation endpoints use hub token auth, not browser sessions — CSRF-safe
+  if (req.path.startsWith('/api/federation/') && req.headers['x-hub-token']) return next();
 
   // Login endpoint must be exempt (user hasn't authenticated yet, no session to exploit)
   if (req.path === '/api/auth/login') return next();
@@ -1261,6 +1265,17 @@ server.listen(PORT, BIND_HOST, () => {
     // Triggers an immediate poll so we don't wait for the 3s cycle, and posts a notification
     // to the lead agent's channel for visibility.
     app.post('/api/federation/notify', express.json(), (req, res) => {
+      // [RT-07 FIX] Verify hub token — this endpoint was previously unauthenticated.
+      // The hub sends X-Hub-Token with push notifications; spokes must verify it.
+      const hubToken = federation?._hubToken;
+      if (hubToken) {
+        const provided = req.headers['x-hub-token'];
+        if (!provided || provided !== hubToken) {
+          console.warn(`[Federation] Push notify rejected — invalid or missing hub token`);
+          return res.status(401).json({ error: 'Invalid or missing hub token' });
+        }
+      }
+
       const { from, fromUser, channel, preview, origin } = req.body || {};
       if (!fromUser || !channel) return res.status(400).json({ error: 'fromUser and channel required' });
 
@@ -1295,6 +1310,139 @@ server.listen(PORT, BIND_HOST, () => {
 
       console.log(`[Federation] Push notify: ${fromUser} → ${channel}`);
       res.json({ ok: true });
+    });
+
+    // FEDERATED UPDATE — Mokume hub sends this to initiate a coordinated deploy.
+    // Hub signs the command with its Ed25519 key; we verify before executing.
+    app.post('/api/federation/update', express.json(), async (req, res) => {
+      const { deployId, gitRef, timestamp, hubSignature, expectedCommit } = req.body || {};
+
+      if (!deployId || !gitRef || !hubSignature) {
+        return res.status(400).json({ error: 'deployId, gitRef, and hubSignature required' });
+      }
+
+      // Verify hub token (spoke knows the hub token from config)
+      const hubToken = federation?._hubToken;
+      if (hubToken) {
+        const provided = req.headers['x-hub-token'];
+        if (!provided || provided !== hubToken) {
+          return res.status(401).json({ error: 'Invalid or missing hub token' });
+        }
+      }
+
+      // Verify hub Ed25519 signature on the deploy command (RT-01, RT-10 mitigation)
+      const hubPublicKey = federation?._hubPublicKey;
+      console.log(`[Deploy] hubPublicKey present: ${!!hubPublicKey}, value: ${hubPublicKey ? hubPublicKey.substring(0,20) + '...' : 'null'}`);
+      if (hubPublicKey) {
+        const payload = { deployId, gitRef, timestamp };
+        let sigValid = false;
+        try {
+          const msgBytes = Buffer.from(JSON.stringify(payload));
+          const sigBytes = Buffer.from(hubSignature, 'base64');
+          const keyObj = crypto.createPublicKey({
+            key: Buffer.from(hubPublicKey, 'base64'), format: 'der', type: 'spki',
+          });
+          sigValid = crypto.verify(null, msgBytes, keyObj, sigBytes);
+          console.log(`[Deploy] Verify payload: ${JSON.stringify(payload)}`);
+          console.log(`[Deploy] Verify result: ${sigValid}, sig: ${hubSignature.substring(0,20)}...`);
+        } catch (err) { console.error(`[Deploy] Verify error: ${err.message}`); sigValid = false; }
+        if (!sigValid) {
+          activityLog.append({
+            actor: 'federation',
+            action: 'DEPLOY_SIGNATURE_INVALID',
+            details: JSON.stringify({ deployId }),
+          });
+          return res.status(403).json({ error: 'Invalid hub signature on deploy command' });
+        }
+      }
+
+      // Reject if lockdown is active
+      if (securityService?.lockdownActive) {
+        return res.status(409).json({
+          error: 'Cannot update during lockdown — resolve lockdown first',
+          lockdownReason: securityService.lockdownReason,
+        });
+      }
+
+      // Reject if update already in progress (RT-05 mitigation)
+      if (integrityService._updateModeMutex) {
+        return res.status(423).json({ error: 'Update already in progress' });
+      }
+
+      // Acknowledge immediately — update runs async
+      res.json({ ok: true, status: 'updating', deployId });
+
+      // Run update asynchronously
+      const result = await integrityService.performUpdate(deployId, gitRef, { expectedCommit });
+
+      // Report status back to hub
+      if (federation?._connected) {
+        try {
+          await federation._request('POST', '/api/federation/deploy-status', {
+            instanceId: federation.instanceId,
+            deployId,
+            status: result.status,
+            details: result.details,
+          });
+        } catch (err) {
+          console.error(`[Deploy] Could not report status to hub: ${err.message}`);
+        }
+      }
+    });
+
+    // SELF-SERVE UPDATE — individual user pulls from GitHub without federation.
+    // Requires human admin authentication + lockdown PIN (RT-03 mitigation).
+    app.post('/api/update', secReqAuth, express.json(), async (req, res) => {
+      // Only human admins can trigger updates
+      if (req.authenticatedType !== 'human' || (req.user && req.user.role !== 'admin')) {
+        return res.status(403).json({ error: 'Only human admins can trigger updates' });
+      }
+
+      const { gitRef = 'main', pin } = req.body || {};
+
+      // Require lockdown PIN for update authorization (RT-03 mitigation)
+      if (securityService) {
+        const pinValid = await new Promise((resolve) => {
+          const sDb = app.locals.secretsDb;
+          if (!sDb) return resolve(false);
+          sDb.get('SELECT value FROM settings WHERE key = ?', ['lockdown_pin_hash'], (err, row) => {
+            if (err || !row) return resolve(false);
+            const bcrypt = require('bcrypt');
+            bcrypt.compare(pin || '', row.value, (e, match) => resolve(!e && match));
+          });
+        });
+        if (!pinValid) {
+          return res.status(403).json({ error: 'Invalid or missing lockdown PIN' });
+        }
+      }
+
+      // Reject if lockdown is active
+      if (securityService?.lockdownActive) {
+        return res.status(409).json({ error: 'Cannot update during lockdown' });
+      }
+
+      // Reject if update already in progress
+      if (integrityService._updateModeMutex) {
+        return res.status(423).json({ error: 'Update already in progress' });
+      }
+
+      const deployId = crypto.randomUUID();
+
+      activityLog.append({
+        actor: req.authenticatedId,
+        action: 'self_update_initiated',
+        details: JSON.stringify({ deployId, gitRef }),
+      });
+
+      // Run update
+      const result = await integrityService.performUpdate(deployId, gitRef);
+
+      res.json({
+        ok: result.status !== 'failed',
+        deployId,
+        status: result.status,
+        details: result.details,
+      });
     });
 
     // INTEGRITY: Periodic verification every 5 minutes

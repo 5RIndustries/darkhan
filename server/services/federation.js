@@ -208,6 +208,13 @@ class FederationService {
 
     this._connected = true;
     this._knownPeers = result.peers || [];
+    // Store hub's public key for deploy command signature verification
+    if (result.hubPublicKey) {
+      this._hubPublicKey = result.hubPublicKey;
+      console.log(`[Federation] Stored hub public key: ${result.hubPublicKey.substring(0, 20)}...`);
+    } else {
+      console.warn('[Federation] Hub did not return hubPublicKey in registration response');
+    }
     console.log(`[Federation] Connected to hub — ${result.peerCount} peer(s) in network`);
     return result;
   }
