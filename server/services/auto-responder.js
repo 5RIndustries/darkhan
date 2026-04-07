@@ -34,7 +34,7 @@ const RELAY_MODE = process.env.DARKHAN_RELAY_MODE || 'cli';
 
 // Debounce tracking
 const pendingResponses = new Map();
-const DEBOUNCE_MS = 3000;
+const DEBOUNCE_MS = 500;
 
 // Terminal Claude activity tracking — suppress auto-responder when terminal is active
 const terminalClaudeActivity = new Map(); // channel_id -> timestamp
