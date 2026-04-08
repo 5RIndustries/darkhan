@@ -90,7 +90,7 @@ if (config.tls?.enabled) {
 }
 
 // --- VPS Hardening: WebSocket origin validation ---
-const ALLOWED_ORIGINS = (process.env.DARKHAN_ALLOWED_ORIGINS || process.env.CORS_ORIGIN || `http${config.tls?.enabled ? 's' : ''}://localhost:${config.instance?.port || 3001}`).split(',').map(s => s.trim());
+const ALLOWED_ORIGINS = (process.env.DARKHAN_ALLOWED_ORIGINS || process.env.CORS_ORIGIN || `http://localhost:${config.instance?.port || 3001}`).split(',').map(s => s.trim()); // dual-listen: web UI is always HTTP
 
 // Socket.IO attaches to the primary HTTP server (web UI).
 // If mTLS server exists, it also attaches there for federation WebSocket connections.
