@@ -75,16 +75,76 @@ router.get('/brief', requireAuth, async (req, res) => {
     }
   }
 
-  // 3. Recent channel messages
+  // 3. Recent channel messages (includes coordination for agent continuity)
   let channelMessages = [];
   try {
     channelMessages = await new Promise((resolve, reject) => {
       db.all(
         `SELECT from_user, body, created_at, channel_id FROM messages
-         WHERE channel_id IN ('chan_command', 'chan_system', 'chan_alerts')
+         WHERE channel_id IN ('chan_command', 'chan_system', 'chan_alerts', 'chan_coordination')
          ORDER BY created_at DESC LIMIT ?`,
         [msgLimit],
         (err, rows) => err ? reject(err) : resolve((rows || []).reverse())
+      );
+    });
+  } catch (e) { /* skip */ }
+
+  // 3b. Coordination channel — last 20 messages (critical for session continuity)
+  let coordinationMessages = [];
+  try {
+    coordinationMessages = await new Promise((resolve, reject) => {
+      db.all(
+        `SELECT from_user, body, created_at FROM messages
+         WHERE channel_id = 'chan_coordination'
+         ORDER BY created_at DESC LIMIT 20`,
+        (err, rows) => err ? reject(err) : resolve((rows || []).reverse())
+      );
+    });
+  } catch (e) { /* skip */ }
+
+  // 3c. Last handoff note from each agent (messages containing "handoff" or "going offline" or "session end")
+  let handoffNotes = [];
+  try {
+    handoffNotes = await new Promise((resolve, reject) => {
+      db.all(
+        `SELECT from_user, body, created_at, channel_id FROM messages
+         WHERE (body LIKE '%handoff%' OR body LIKE '%going offline%' OR body LIKE '%going down%'
+                OR body LIKE '%session end%' OR body LIKE '%checkpoint%' OR body LIKE '%next instance%'
+                OR body LIKE '%next session%')
+           AND from_user LIKE 'agent_%'
+         ORDER BY created_at DESC LIMIT 10`,
+        (err, rows) => err ? reject(err) : resolve(rows || [])
+      );
+    });
+  } catch (e) { /* skip */ }
+
+  // 3d. Who is online — agents that posted in the last 30 minutes
+  let onlineAgents = [];
+  try {
+    const since = new Date(Date.now() - 30 * 60000).toISOString();
+    onlineAgents = await new Promise((resolve, reject) => {
+      db.all(
+        `SELECT DISTINCT from_user, MAX(created_at) as last_seen FROM messages
+         WHERE from_user LIKE 'agent_%' AND created_at > ?
+         GROUP BY from_user
+         ORDER BY last_seen DESC`,
+        [since],
+        (err, rows) => err ? reject(err) : resolve(rows || [])
+      );
+    });
+  } catch (e) { /* skip */ }
+
+  // 3e. Rate limit state — recent rate limit events
+  let rateLimitEvents = [];
+  try {
+    const since = new Date(Date.now() - 2 * 3600000).toISOString();
+    rateLimitEvents = await new Promise((resolve, reject) => {
+      db.all(
+        `SELECT actor, action, details, created_at FROM activity_log
+         WHERE action LIKE '%rate_limit%' AND created_at > ?
+         ORDER BY created_at DESC LIMIT 5`,
+        [since],
+        (err, rows) => err ? reject(err) : resolve(rows || [])
       );
     });
   } catch (e) { /* skip */ }
@@ -133,6 +193,27 @@ router.get('/brief', requireAuth, async (req, res) => {
         time: m.created_at,
         channel: m.channel_id,
       })),
+      coordinationMessages: coordinationMessages.map(m => ({
+        from: m.from_user,
+        body: m.body?.substring(0, 2000),
+        time: m.created_at,
+      })),
+      handoffNotes: handoffNotes.map(m => ({
+        from: m.from_user,
+        body: m.body?.substring(0, 2000),
+        time: m.created_at,
+        channel: m.channel_id,
+      })),
+      onlineAgents: onlineAgents.map(a => ({
+        agent: a.from_user,
+        lastSeen: a.last_seen,
+      })),
+      rateLimitState: rateLimitEvents.map(e => ({
+        actor: e.actor,
+        action: e.action,
+        details: e.details,
+        time: e.created_at,
+      })),
       systemEvents,
       instructions,
     });
@@ -166,9 +247,52 @@ router.get('/brief', requireAuth, async (req, res) => {
     textParts.push('=== RECENT CHANNEL MESSAGES ===');
     for (const m of channelMessages) {
       const time = (m.created_at || '').substring(11, 19);
-      textParts.push(`[${time}] ${m.from_user}: ${(m.body || '').substring(0, 1000)}`);
+      textParts.push(`[${time}] ${m.from_user} (${m.channel_id}): ${(m.body || '').substring(0, 1000)}`);
     }
     textParts.push('=== END CHANNEL MESSAGES ===');
+    textParts.push('');
+  }
+
+  // Session continuity sections
+  if (coordinationMessages.length > 0) {
+    textParts.push('=== AGENT COORDINATION (last 20 messages) ===');
+    for (const m of coordinationMessages) {
+      const time = (m.created_at || '').substring(11, 19);
+      textParts.push(`[${time}] ${m.from_user}: ${(m.body || '').substring(0, 1500)}`);
+    }
+    textParts.push('=== END COORDINATION ===');
+    textParts.push('');
+  }
+
+  if (handoffNotes.length > 0) {
+    textParts.push('=== AGENT HANDOFF NOTES (most recent) ===');
+    for (const m of handoffNotes) {
+      const time = (m.created_at || '').substring(0, 19);
+      textParts.push(`[${time}] ${m.from_user}: ${(m.body || '').substring(0, 2000)}`);
+      textParts.push('');
+    }
+    textParts.push('=== END HANDOFF NOTES ===');
+    textParts.push('');
+  }
+
+  if (onlineAgents.length > 0) {
+    textParts.push('=== ONLINE AGENTS (posted in last 30 min) ===');
+    for (const a of onlineAgents) {
+      const time = (a.last_seen || '').substring(11, 19);
+      textParts.push(`  ${a.from_user} — last seen ${time}`);
+    }
+    textParts.push('=== END ONLINE AGENTS ===');
+    textParts.push('');
+  }
+
+  if (rateLimitEvents.length > 0) {
+    textParts.push('=== RATE LIMIT STATE (last 2 hours) ===');
+    for (const e of rateLimitEvents) {
+      const time = (e.created_at || '').substring(11, 19);
+      textParts.push(`[${time}] ${e.actor}: ${e.action} — ${e.details || ''}`);
+    }
+    textParts.push('=== END RATE LIMIT STATE ===');
+    textParts.push('');
   }
 
   res.type('text/plain').send(textParts.join('\n'));

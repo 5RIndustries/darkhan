@@ -37,6 +37,15 @@ const RELAY_MODE = process.env.DARKHAN_RELAY_MODE || 'cli';
 const pendingResponses = new Map();
 const DEBOUNCE_MS = 500;
 
+// Startup throttle — first 60s after server start, no Anthropic API calls from workers.
+// Prevents burst rate limits when Darkhan restarts.
+const SERVER_START_TIME = Date.now();
+const STARTUP_THROTTLE_MS = 60000;
+
+function isInStartupThrottle() {
+  return (Date.now() - SERVER_START_TIME) < STARTUP_THROTTLE_MS;
+}
+
 // Terminal Claude activity tracking — suppress auto-responder when terminal is active
 const terminalClaudeActivity = new Map(); // channel_id -> timestamp
 const TERMINAL_ACTIVE_WINDOW_MS = 600000; // 10 minutes — prevents auto-responder from intercepting during long background tasks
@@ -705,6 +714,22 @@ async function processMessage(channelId, fromUser, messageBody, context) {
         isProcessing = false;
         return;
       }
+    }
+
+    // STARTUP THROTTLE — for the first 60s after server start, force local LLM
+    // to prevent burst rate limits from workers + relay competing on restart.
+    if (isInStartupThrottle()) {
+      console.log(`[Router] Startup throttle active (${Math.round((STARTUP_THROTTLE_MS - (Date.now() - SERVER_START_TIME)) / 1000)}s remaining) — routing to local LLM`);
+      const llmResponse = await processLocalLlmMessage(channelId, fromUser, cleanBody, context);
+      deleteThinkingMessage(db, io, channelId);
+      if (llmResponse) {
+        postToChannel(db, io, channelId, llmResponse + '\n\n_[Startup throttle — Claude relay available in ' +
+          Math.round((STARTUP_THROTTLE_MS - (Date.now() - SERVER_START_TIME)) / 1000) + 's]_', 'agent_darkhan');
+      } else {
+        postToChannel(db, io, channelId, '[Startup throttle active — Claude relay available shortly. Use @claude to retry in a moment.]', 'agent_darkhan');
+      }
+      isProcessing = false;
+      return;
     }
 
     // RATE LIMIT CHECK — before making an Anthropic API call, check budget.

@@ -21,6 +21,7 @@ const {
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 
 // --- Execution Tier: Tool Classification ---
 // Tools are grouped by risk level. The user's execution tier determines
@@ -152,6 +153,45 @@ class UnifiedClaudeSession {
       resetsAt: null,
       consecutiveErrors: 0,
     };
+  }
+
+  // --- Terminal Deconfliction ---
+  // If a standalone Claude Code terminal is active (MCP heartbeat fresh),
+  // forward messages to its inbox instead of spawning a competing SDK session.
+  // Both use the same Max plan — this prevents rate limit collisions.
+
+  _isTerminalActive() {
+    const heartbeatPath = path.join(os.homedir(), '.claude', '.terminal-heartbeat');
+    try {
+      const data = JSON.parse(fs.readFileSync(heartbeatPath, 'utf8'));
+      const age = Date.now() - (data.epochMs || 0);
+      // Fresh if heartbeat is < 2 minutes old
+      return age < 120000;
+    } catch {
+      return false;
+    }
+  }
+
+  _forwardToTerminalInbox(userId, message, channelId) {
+    const inboxDir = path.join(os.homedir(), '.claude', 'darkhan-inbox');
+    try {
+      if (!fs.existsSync(inboxDir)) fs.mkdirSync(inboxDir, { recursive: true });
+      const ts = new Date().toISOString();
+      const filename = `${ts.replace(/[:.]/g, '-')}_relay_${Date.now()}.json`;
+      fs.writeFileSync(path.join(inboxDir, filename), JSON.stringify({
+        from_user: userId,
+        channel_id: channelId || 'chan_command',
+        body: message,
+        timestamp: ts,
+        level: 'warning',
+        relay_forwarded: true,
+      }, null, 2));
+      console.log(`[UnifiedClaude] Forwarded to terminal inbox (terminal active, avoiding SDK contention)`);
+      return true;
+    } catch (err) {
+      console.error(`[UnifiedClaude] Inbox forward failed: ${err.message}`);
+      return false;
+    }
   }
 
   // --- Session Lifecycle ---
@@ -342,6 +382,23 @@ class UnifiedClaudeSession {
    * Terminal subscriber will also see it — that's fine, shared brain.
    */
   async sendFromChat(userId, message, channelId, { onProgress } = {}) {
+    // Terminal deconfliction — if standalone Claude Code terminal is active,
+    // forward to its inbox instead of spawning a competing SDK session.
+    // Both share the same Max plan; this prevents rate limit collisions.
+    if (this._isTerminalActive()) {
+      const forwarded = this._forwardToTerminalInbox(userId, message, channelId);
+      if (forwarded) {
+        this._postToChannel(channelId || 'chan_command',
+          `[Message forwarded to Claude Code terminal — active session detected. This avoids rate limit contention.]`);
+        this._logActivity(userId, 'relay_forwarded_to_terminal', {
+          message: message.substring(0, 200),
+          channelId,
+        });
+        return '[Forwarded to active Claude Code terminal session.]';
+      }
+      // If forward failed, fall through to normal SDK path
+    }
+
     // Rate limit cooldown — don't burn tokens on a throttled session
     if (this._isRateLimited()) {
       const resetsAtStr = new Date(this._rateLimitState.resetsAt).toLocaleTimeString('en-US', {

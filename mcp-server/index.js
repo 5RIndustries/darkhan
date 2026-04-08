@@ -30,6 +30,36 @@ const AGENT_ID = process.env.DARKHAN_AGENT_ID || 'agent_claude';
 let socketConnected = false;
 let serverConnected = false;
 
+// Terminal heartbeat — signals to the Darkhan relay that a standalone
+// Claude Code terminal is active, so the relay should forward messages
+// here instead of spawning competing SDK sessions on the same Max plan.
+const HEARTBEAT_PATH = path.join(os.homedir(), '.claude', '.terminal-heartbeat');
+const HEARTBEAT_INTERVAL_MS = 30000;
+
+function writeHeartbeat() {
+  try {
+    fs.writeFileSync(HEARTBEAT_PATH, JSON.stringify({
+      pid: process.pid,
+      agentId: AGENT_ID,
+      timestamp: new Date().toISOString(),
+      epochMs: Date.now(),
+    }));
+  } catch { /* non-fatal */ }
+}
+
+// Write immediately on startup, then every 30s
+writeHeartbeat();
+const heartbeatTimer = setInterval(writeHeartbeat, HEARTBEAT_INTERVAL_MS);
+
+// Clean up heartbeat on exit so relay knows terminal is gone
+function clearHeartbeat() {
+  try { fs.unlinkSync(HEARTBEAT_PATH); } catch { /* already gone */ }
+  clearInterval(heartbeatTimer);
+}
+process.on('exit', clearHeartbeat);
+process.on('SIGINT', () => { clearHeartbeat(); process.exit(0); });
+process.on('SIGTERM', () => { clearHeartbeat(); process.exit(0); });
+
 // Create MCP server
 const mcp = new McpServer({
   name: 'darkhan',
