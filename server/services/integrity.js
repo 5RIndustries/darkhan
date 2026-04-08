@@ -201,15 +201,30 @@ class IntegrityService {
         }
 
         if (tampered.length > 0) {
-          // [DEV MODE] In development, log the changes but don't lockdown.
-          // Auto-update the baseline to the current file state.
-          if (this.devMode) {
-            console.warn(`[Integrity] DEV MODE: ${tampered.length} file(s) changed: ${tampered.join(', ')}`);
-            console.warn(`[Integrity] DEV MODE: Auto-updating baseline (no lockdown)`);
+          // Check if changes are from a legitimate git pull (HEAD changed since baseline)
+          let gitUpdated = false;
+          if (external.gitCommit) {
+            try {
+              const { execFileSync } = require('child_process');
+              const currentCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
+                cwd: this.serverDir, encoding: 'utf8', timeout: 5000,
+              }).trim();
+              if (currentCommit !== external.gitCommit) {
+                gitUpdated = true;
+                console.log(`[Integrity] Git HEAD changed: ${external.gitCommit.substring(0,8)} → ${currentCommit.substring(0,8)} — legitimate code update`);
+              }
+            } catch { /* git not available */ }
+          }
+
+          // [DEV MODE or GIT PULL] Auto-update baseline, no lockdown.
+          if (this.devMode || gitUpdated) {
+            const reason = this.devMode ? 'DEV MODE' : 'GIT PULL detected';
+            console.warn(`[Integrity] ${reason}: ${tampered.length} file(s) changed: ${tampered.join(', ')}`);
+            console.warn(`[Integrity] ${reason}: Auto-updating baseline (no lockdown)`);
             this.activityLog.append({
               actor: 'darkhan_integrity',
-              action: 'dev_mode_baseline_auto_update',
-              details: JSON.stringify({ tamperedFiles: tampered, count: tampered.length }),
+              action: gitUpdated ? 'git_pull_baseline_auto_update' : 'dev_mode_baseline_auto_update',
+              details: JSON.stringify({ tamperedFiles: tampered, count: tampered.length, reason }),
             });
             // Fall through to save the new baseline below
           } else {
@@ -388,10 +403,20 @@ class IntegrityService {
    */
   _saveExternalBaseline() {
     try {
+      // Store git commit so we can detect legitimate git pulls on next startup
+      let gitCommit = null;
+      try {
+        const { execFileSync } = require('child_process');
+        gitCommit = execFileSync('git', ['rev-parse', 'HEAD'], {
+          cwd: this.serverDir, encoding: 'utf8', timeout: 5000,
+        }).trim();
+      } catch { /* git not available */ }
+
       const baselineData = {
         hashes: this.baselineHashes,
         userCount: this.baselineUserCount,
         userHash: this.baselineUserHash,
+        gitCommit,
         createdAt: new Date().toISOString(),
       };
       const baselineJson = JSON.stringify(baselineData, null, 2);
