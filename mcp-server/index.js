@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 /**
- * Darkhan MCP Server
+ * Darkhan MCP Server — Push Notification Bridge
  *
  * Always-on bridge between Darkhan workspace and Claude Code CLI.
- * Connects to local Darkhan via Socket.IO, surfaces federated messages
- * as MCP tools. Same pattern as the Telegram MCP plugin.
+ * Connects to local Darkhan via Socket.IO and PUSHES incoming messages
+ * to Claude Code via MCP logging notifications — no polling needed.
+ *
+ * Also exposes tools for reading history and posting messages.
  *
  * Registered in ~/.claude/settings.json under mcpServers.
  * Claude Code auto-starts this as a child process.
@@ -15,48 +17,111 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { io } from 'socket.io-client';
 import http from 'http';
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
 
 const DARKHAN_URL = process.env.DARKHAN_URL || 'http://localhost:3001';
 const API_KEY = process.env.DARKHAN_API_KEY || '';
-const CHANNELS = (process.env.DARKHAN_CHANNELS || 'chan_coordination,chan_alerts').split(',');
+const CHANNELS = (process.env.DARKHAN_CHANNELS || 'chan_coordination,chan_alerts,chan_command').split(',');
+const AGENT_ID = process.env.DARKHAN_AGENT_ID || 'agent_claude';
 
-// Message queue — federated messages waiting for the CLI to read
-const messageQueue = [];
-const MAX_QUEUE = 50;
+// Track connection state
+let socketConnected = false;
+let serverConnected = false;
 
-// Connect to Darkhan via Socket.IO
+// Create MCP server
+const mcp = new McpServer({
+  name: 'darkhan',
+  version: '1.0.0',
+});
+
+// Enable logging capability on the underlying server
+mcp.server.registerCapabilities({ logging: {} });
+
+// --- Socket.IO connection to Darkhan ---
+
 const socket = io(DARKHAN_URL, {
   reconnection: true,
   reconnectionDelay: 3000,
   reconnectionAttempts: Infinity,
   timeout: 10000,
+  auth: { apiKey: API_KEY },
 });
 
 socket.on('connect', () => {
-  // Join federated channels
+  socketConnected = true;
   for (const ch of CHANNELS) {
-    socket.emit('join', ch);
+    socket.emit('join_channel', ch);
   }
 });
 
-socket.on('new_message', (msg) => {
-  // Only queue federated messages (from other nodes) and non-auto-responder
-  if (!msg.from_user || !msg.from_user.includes('@')) return;
-  if (msg.type === 'notification') return; // Skip notification echoes
-  if (!CHANNELS.includes(msg.channel_id)) return;
-
-  messageQueue.push({
-    from: msg.from_user,
-    channel: msg.channel_id,
-    body: msg.body,
-    timestamp: msg.created_at || new Date().toISOString(),
-  });
-
-  // Cap queue
-  while (messageQueue.length > MAX_QUEUE) messageQueue.shift();
+socket.on('disconnect', () => {
+  socketConnected = false;
 });
 
-// HTTP helper for Darkhan API
+socket.on('connect_error', () => {
+  // Silent — Socket.IO handles retry
+});
+
+// Push incoming messages to Claude Code as logging notifications
+socket.on('new_message', async (msg) => {
+  if (!serverConnected) return;
+
+  // Skip messages from ourselves to avoid echo
+  if (msg.from_user === AGENT_ID) return;
+
+  // Skip notification-type messages (system echoes)
+  if (msg.type === 'notification') return;
+
+  // Only push messages from channels we're watching
+  if (!CHANNELS.includes(msg.channel_id)) return;
+
+  // Determine priority — human messages and @claude mentions are critical
+  const isHuman = msg.from_user?.startsWith('user_');
+  const isMention = (msg.body || '').toLowerCase().includes('claude') ||
+                    (msg.body || '').toLowerCase().includes('cos');
+  const level = (isHuman || isMention) ? 'warning' : 'info';
+
+  // Write to file-based inbox (persistent, survives MCP transport issues)
+  const inboxDir = path.join(os.homedir(), '.claude', 'darkhan-inbox');
+  try {
+    if (!fs.existsSync(inboxDir)) fs.mkdirSync(inboxDir, { recursive: true });
+    const ts = msg.created_at || new Date().toISOString();
+    const filename = `${ts.replace(/[:.]/g, '-')}_${msg.id || Date.now()}.json`;
+    fs.writeFileSync(path.join(inboxDir, filename), JSON.stringify({
+      from_user: msg.from_user,
+      channel_id: msg.channel_id,
+      body: msg.body,
+      timestamp: ts,
+      level,
+    }, null, 2));
+  } catch {
+    // Inbox write failed — non-fatal
+  }
+
+  // Also push via MCP logging (real-time if Claude Code is listening)
+  try {
+    await mcp.server.sendLoggingMessage({
+      level,
+      logger: `darkhan:${msg.channel_id}`,
+      data: {
+        type: 'darkhan_message',
+        from_user: msg.from_user,
+        channel_id: msg.channel_id,
+        body: msg.body,
+        message_id: msg.id,
+        timestamp: msg.created_at || new Date().toISOString(),
+        formatted: `[Darkhan ${msg.channel_id}] ${msg.from_user}: ${msg.body}`,
+      },
+    });
+  } catch {
+    // Server not ready — non-fatal
+  }
+});
+
+// --- HTTP helper for Darkhan API ---
+
 function darkhanRequest(method, path, body) {
   return new Promise((resolve, reject) => {
     const url = new URL(path, DARKHAN_URL);
@@ -86,41 +151,74 @@ function darkhanRequest(method, path, body) {
   });
 }
 
-// Create MCP server
-const server = new McpServer({
-  name: 'darkhan',
-  version: '0.1.0',
-});
+// --- Tools ---
 
-// Tool: check for pending federated messages
-server.tool(
-  'darkhan_check_messages',
-  'Check for pending federated messages from other agents via Mokume',
+// Drain the file-based inbox (persistent notifications)
+mcp.tool(
+  'darkhan_drain_inbox',
+  'Read and clear pending Darkhan notifications from the file inbox. Call this at session start and periodically.',
   {},
   async () => {
-    if (messageQueue.length === 0) {
-      return { content: [{ type: 'text', text: 'No pending messages.' }] };
+    const inboxDir = path.join(os.homedir(), '.claude', 'darkhan-inbox');
+    try {
+      if (!fs.existsSync(inboxDir)) return { content: [{ type: 'text', text: 'No inbox messages.' }] };
+      const files = fs.readdirSync(inboxDir).filter(f => f.endsWith('.json')).sort();
+      if (files.length === 0) return { content: [{ type: 'text', text: 'No inbox messages.' }] };
+
+      const messages = [];
+      for (const f of files) {
+        try {
+          const data = JSON.parse(fs.readFileSync(path.join(inboxDir, f), 'utf8'));
+          messages.push(`[${data.timestamp}] ${data.from_user} in ${data.channel_id}: ${data.body}`);
+          fs.unlinkSync(path.join(inboxDir, f)); // Clear after reading
+        } catch { /* skip corrupt files */ }
+      }
+      return { content: [{ type: 'text', text: messages.join('\n\n') || 'No inbox messages.' }] };
+    } catch (err) {
+      return { content: [{ type: 'text', text: `Failed: ${err.message}` }] };
     }
-    const messages = messageQueue.splice(0, messageQueue.length);
-    const formatted = messages.map(m =>
-      `[${m.timestamp}] ${m.from} in ${m.channel}: ${m.body}`
-    ).join('\n\n');
-    return { content: [{ type: 'text', text: formatted }] };
   }
 );
 
-// Tool: post a message to a Darkhan channel
-server.tool(
+// Check for pending/recent messages
+mcp.tool(
+  'darkhan_check_messages',
+  'Check recent messages in Darkhan coordination channels',
+  {
+    channel_id: z.string().optional().describe('Channel to check (default: chan_coordination)'),
+    limit: z.number().optional().describe('Number of messages (default 10)'),
+  },
+  async ({ channel_id, limit }) => {
+    try {
+      const ch = channel_id || 'chan_coordination';
+      const n = limit || 10;
+      const result = await darkhanRequest('GET', `/api/messages?channel_id=${ch}&limit=${n}`);
+      const messages = result.messages || result;
+      if (!Array.isArray(messages) || messages.length === 0) {
+        return { content: [{ type: 'text', text: 'No recent messages.' }] };
+      }
+      const formatted = messages.map(m =>
+        `[${m.created_at}] ${m.from_user}: ${m.body}`
+      ).join('\n\n');
+      return { content: [{ type: 'text', text: formatted }] };
+    } catch (err) {
+      return { content: [{ type: 'text', text: `Failed: ${err.message}` }] };
+    }
+  }
+);
+
+// Post a message to a channel
+mcp.tool(
   'darkhan_post_message',
   'Post a message to a Darkhan channel (federates via Mokume to other nodes)',
   {
-    channel_id: z.string().describe('Channel ID (e.g. chan_coordination, chan_alerts)'),
+    channel_id: z.string().describe('Channel ID (e.g. chan_coordination, chan_alerts, chan_command)'),
     body: z.string().describe('Message body'),
   },
   async ({ channel_id, body }) => {
     try {
       const result = await darkhanRequest('POST', '/api/messages', { channel_id, body });
-      if (result.ok) {
+      if (result.id || result.ok) {
         return { content: [{ type: 'text', text: `Posted to ${channel_id}` }] };
       }
       return { content: [{ type: 'text', text: `Error: ${result.error || JSON.stringify(result)}` }] };
@@ -130,8 +228,8 @@ server.tool(
   }
 );
 
-// Tool: read recent messages from a channel
-server.tool(
+// Read channel history
+mcp.tool(
   'darkhan_get_history',
   'Read recent messages from a Darkhan channel',
   {
@@ -142,19 +240,23 @@ server.tool(
     try {
       const n = limit || 10;
       const result = await darkhanRequest('GET', `/api/messages?channel_id=${channel_id}&limit=${n}`);
-      if (Array.isArray(result)) {
-        const formatted = result.map(m =>
-          `[${m.created_at}] ${m.from_user}: ${m.body}`
-        ).join('\n\n');
-        return { content: [{ type: 'text', text: formatted || 'No messages.' }] };
+      const messages = result.messages || result;
+      if (!Array.isArray(messages) || messages.length === 0) {
+        return { content: [{ type: 'text', text: 'No messages.' }] };
       }
-      return { content: [{ type: 'text', text: JSON.stringify(result) }] };
+      const formatted = messages.map(m =>
+        `[${m.created_at}] ${m.from_user}: ${m.body}`
+      ).join('\n\n');
+      return { content: [{ type: 'text', text: formatted }] };
     } catch (err) {
       return { content: [{ type: 'text', text: `Failed: ${err.message}` }] };
     }
   }
 );
 
-// Start MCP server on stdio
+// --- Start ---
+
 const transport = new StdioServerTransport();
-await server.connect(transport);
+mcp.connect(transport).then(() => {
+  serverConnected = true;
+});

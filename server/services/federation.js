@@ -39,6 +39,7 @@ class FederationService {
     this._hubToken = fed.hubToken || process.env.HUB_SECRET || '';
 
     this._connected = false;
+    this._heartbeatFailures = 0;
     this._heartbeatInterval = null;
     this._pollInterval = null;
     this._lastPollTimestamp = null;
@@ -110,7 +111,16 @@ class FederationService {
    * Relay a message from this Darkhan instance through the Mokume hub.
    */
   async relayMessage({ channel, fromUser, body, to, origin }) {
-    if (!this._connected) return;
+    // If disconnected, attempt one reconnect before dropping the message
+    if (!this._connected) {
+      console.warn(`[Federation] Relay: not connected — attempting reconnect before dropping message from ${fromUser} on ${channel}`);
+      try {
+        await this._register();
+      } catch {
+        console.error(`[Federation] Relay: reconnect failed — message from ${fromUser} on ${channel} DROPPED`);
+        return null;
+      }
+    }
 
     const message = {
       channel,
@@ -243,6 +253,7 @@ class FederationService {
         // Try to reconnect
         console.log('[Federation] Attempting reconnect to hub...');
         await this._register();
+        this._heartbeatFailures = 0;
         return;
       }
 
@@ -253,13 +264,22 @@ class FederationService {
           memoryMB: Math.round(process.memoryUsage().heapUsed / 1024 / 1024),
         },
       });
+      this._heartbeatFailures = 0; // Reset on success
     } catch (err) {
+      this._heartbeatFailures++;
       if (this._connected) {
-        console.warn(`[Federation] Lost connection to hub: ${err.message}`);
+        // Don't disconnect on a single failure — allow 3 consecutive failures before disconnecting.
+        // This prevents transient timeouts from killing outbound relay.
+        if (this._heartbeatFailures >= 3) {
+          console.warn(`[Federation] Lost connection to hub after ${this._heartbeatFailures} failures: ${err.message}`);
+          this._connected = false;
+          this._heartbeatFailures = 0;
+        } else {
+          console.warn(`[Federation] Heartbeat failed (${this._heartbeatFailures}/3): ${err.message}`);
+        }
       } else {
         console.warn(`[Federation] Reconnect failed: ${err.message}`);
       }
-      this._connected = false;
     }
   }
 
@@ -268,7 +288,11 @@ class FederationService {
     this._lastPollTimestamp = null;
 
     const poll = async () => {
-      if (!this._connected) return;
+      if (!this._connected) {
+        // Still attempt to poll — the hub might accept our request even if
+        // heartbeat is failing. This keeps inbound messages flowing.
+        try { await this._register(); } catch { return; }
+      }
 
       try {
         let url = `/api/federation/messages?instanceId=${encodeURIComponent(this.instanceId)}&limit=50`;
