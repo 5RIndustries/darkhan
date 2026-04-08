@@ -1318,7 +1318,7 @@ function onNewMessage(message, context) {
   // Auto-responder filtering — only process messages from humans for LLM routing
   const isHuman = HUMAN_USERS.includes(from_user);
   const isAgentRelay = RELAY_TRIGGERS.includes(from_user) &&
-    (body.toLowerCase().includes('claude') || body.toLowerCase().includes('cos'));
+    (body.toLowerCase().includes('claude') || body.toLowerCase().includes('cos') || body.toLowerCase().includes('penny'));
   const isSystemTrigger = SYSTEM_TRIGGERS.includes(from_user) ||
     (from_user === LEAD_AGENT_ID && body.startsWith('HEARTBEAT:'));
 
