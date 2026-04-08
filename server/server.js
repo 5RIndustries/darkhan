@@ -173,9 +173,9 @@ app.use(session({
   resave: false,
   saveUninitialized: false,
   cookie: {
-    secure: process.env.DARKHAN_HTTPS === 'true' || config.tls?.enabled || false,
+    secure: process.env.DARKHAN_HTTPS === 'true' || false, // dual-listen serves web UI over HTTP — never set secure
     httpOnly: true,
-    sameSite: (process.env.DARKHAN_HTTPS === 'true' || config.tls?.enabled) ? 'strict' : 'lax',
+    sameSite: 'lax', // dual-listen: web UI is HTTP on localhost, strict blocks cookie delivery
     maxAge: 8 * 60 * 60 * 1000  // 8 hours
   }
 }));
