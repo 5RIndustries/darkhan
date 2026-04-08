@@ -20,6 +20,7 @@ const crypto = require('crypto');
 const { processAgentMessage } = require('./agent-relay');
 const { LocalLLMProvider } = require('./local-llm');
 const { classifyForLayer, shouldNotifyCommand, layerDescription } = require('./intelligence-gate');
+const { isAnthropicRateLimited, isTerminalHeartbeatFresh } = require('./unified-claude');
 
 // Shared LocalLLMProvider instance (lazy-initialized)
 let _sharedLocalLLM = null;
@@ -727,6 +728,56 @@ async function processMessage(channelId, fromUser, messageBody, context) {
           Math.round((STARTUP_THROTTLE_MS - (Date.now() - SERVER_START_TIME)) / 1000) + 's]_', 'agent_darkhan');
       } else {
         postToChannel(db, io, channelId, '[Startup throttle active — Claude relay available shortly. Use @claude to retry in a moment.]', 'agent_darkhan');
+      }
+      isProcessing = false;
+      return;
+    }
+
+    // TERMINAL ACTIVE CHECK — if a standalone Claude Code terminal is running,
+    // ALL @claude messages go to its inbox. The terminal owns the Anthropic API.
+    // This is the single-consumer model: one consumer at a time, no contention.
+    if (isTerminalHeartbeatFresh()) {
+      console.log(`[Router] Terminal heartbeat fresh — forwarding to terminal inbox (single-consumer model)`);
+      const inboxDir = path.join(process.env.HOME || '', '.claude', 'darkhan-inbox');
+      try {
+        if (!fs.existsSync(inboxDir)) fs.mkdirSync(inboxDir, { recursive: true });
+        const ts = new Date().toISOString();
+        const filename = `${ts.replace(/[:.]/g, '-')}_relay_${Date.now()}.json`;
+        fs.writeFileSync(path.join(inboxDir, filename), JSON.stringify({
+          from_user: fromUser,
+          channel_id: channelId,
+          body: cleanBody,
+          timestamp: ts,
+          level: 'warning',
+          relay_forwarded: true,
+        }, null, 2));
+        deleteThinkingMessage(db, io, channelId);
+        postToChannel(db, io, channelId,
+          `[Message forwarded to active Claude Code terminal. Response will appear here when complete.]`,
+          'agent_darkhan');
+        isProcessing = false;
+        return;
+      } catch (fwdErr) {
+        console.error(`[Router] Terminal inbox forward failed: ${fwdErr.message} — falling through to relay`);
+        // Fall through to normal relay path
+      }
+    }
+
+    // ANTHROPIC RATE LIMIT CHECK — persisted to disk, survives restarts.
+    // If Anthropic is server-side throttling us, don't waste an attempt.
+    const anthropicState = isAnthropicRateLimited();
+    if (anthropicState.limited) {
+      console.warn(`[Router] Anthropic rate limit active until ~${anthropicState.resetsAtStr} ET — routing to local LLM`);
+      deleteThinkingMessage(db, io, channelId);
+      const fallbackResponse = await processLocalLlmMessage(channelId, fromUser, cleanBody, context);
+      if (fallbackResponse && !fallbackResponse.includes('[NEEDS_ESCALATION]') && !fallbackResponse.includes('[NEEDS_CLAUDE]')) {
+        postToChannel(db, io, channelId,
+          fallbackResponse + `\n\n_[Anthropic rate limit active until ~${anthropicState.resetsAtStr} ET. Using local LLM. Claude Code terminal available as alternative.]_`,
+          'agent_darkhan');
+      } else {
+        postToChannel(db, io, channelId,
+          `[Anthropic rate limit active until ~${anthropicState.resetsAtStr} ET. Use the Claude Code terminal for immediate access, or wait for cooldown.]`,
+          'agent_darkhan');
       }
       isProcessing = false;
       return;

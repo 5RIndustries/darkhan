@@ -147,29 +147,110 @@ class UnifiedClaudeSession {
     this._sessionFile = path.join(HOME, '.claude', 'darkhan-unified-sessions.json');
     this._storedSessions = this._loadStoredSessions();
 
-    // Rate limit tracking — cooldown prevents burning tokens on retry loops
-    this._rateLimitState = {
-      limited: false,
-      resetsAt: null,
-      consecutiveErrors: 0,
-    };
+    // Rate limit tracking — cooldown prevents burning tokens on retry loops.
+    // PERSISTED TO DISK so state survives server restarts. The Anthropic
+    // rate limit is server-side — our in-memory state must match reality.
+    this._rateLimitFile = path.join(HOME, '.claude', '.anthropic-rate-limit.json');
+    this._rateLimitState = this._loadRateLimitState();
+
+    // Consumer mode: only ONE consumer owns the Anthropic API at a time.
+    // 'terminal' = standalone Claude Code terminal (via MCP heartbeat)
+    // 'relay' = Darkhan auto-responder (unified session)
+    // This prevents the root cause of rate limit contention.
+    this._consumerMode = 'relay'; // default; updated on every check
   }
 
-  // --- Terminal Deconfliction ---
-  // If a standalone Claude Code terminal is active (MCP heartbeat fresh),
-  // forward messages to its inbox instead of spawning a competing SDK session.
-  // Both use the same Max plan — this prevents rate limit collisions.
+  // --- Rate Limit Persistence ---
+  // Anthropic rate limits are server-side — they persist across our restarts.
+  // We must persist our knowledge of them so the relay doesn't blindly retry.
 
-  _isTerminalActive() {
-    const heartbeatPath = path.join(os.homedir(), '.claude', '.terminal-heartbeat');
+  _loadRateLimitState() {
+    try {
+      if (fs.existsSync(this._rateLimitFile)) {
+        const data = JSON.parse(fs.readFileSync(this._rateLimitFile, 'utf8'));
+        // Check if the persisted cooldown has expired
+        if (data.limited && data.resetsAt && Date.now() >= data.resetsAt) {
+          console.log('[UnifiedClaude] Persisted rate limit expired — clearing.');
+          return { limited: false, resetsAt: null, consecutiveErrors: 0 };
+        }
+        if (data.limited) {
+          const resetsAtStr = new Date(data.resetsAt).toLocaleTimeString('en-US', {
+            hour: '2-digit', minute: '2-digit', timeZone: 'America/New_York',
+          });
+          console.log(`[UnifiedClaude] Loaded persisted rate limit — cooldown until ~${resetsAtStr} ET`);
+        }
+        return data;
+      }
+    } catch (e) {
+      console.warn(`[UnifiedClaude] Rate limit state load failed: ${e.message}`);
+    }
+    return { limited: false, resetsAt: null, consecutiveErrors: 0 };
+  }
+
+  _persistRateLimitState() {
+    try {
+      const dir = path.dirname(this._rateLimitFile);
+      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(this._rateLimitFile, JSON.stringify(this._rateLimitState, null, 2));
+    } catch (e) {
+      console.warn(`[UnifiedClaude] Rate limit state save failed: ${e.message}`);
+    }
+  }
+
+  /**
+   * Static check: can be called without a UnifiedClaudeSession instance.
+   * Used by auto-responder to pre-flight check before even touching the session.
+   */
+  static isAnthropicRateLimited() {
+    const HOME = process.env.HOME || '';
+    const filePath = path.join(HOME, '.claude', '.anthropic-rate-limit.json');
+    try {
+      if (!fs.existsSync(filePath)) return { limited: false };
+      const data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      if (!data.limited) return { limited: false };
+      if (Date.now() >= data.resetsAt) {
+        // Expired — clean up
+        fs.writeFileSync(filePath, JSON.stringify({ limited: false, resetsAt: null, consecutiveErrors: 0 }));
+        return { limited: false };
+      }
+      return {
+        limited: true,
+        resetsAt: data.resetsAt,
+        resetsAtStr: new Date(data.resetsAt).toLocaleTimeString('en-US', {
+          hour: '2-digit', minute: '2-digit', timeZone: 'America/New_York',
+        }),
+      };
+    } catch {
+      return { limited: false };
+    }
+  }
+
+  /**
+   * Static check: is a standalone Claude Code terminal currently active?
+   * Used by auto-responder for pre-flight routing decisions.
+   */
+  static isTerminalHeartbeatFresh() {
+    const HOME = process.env.HOME || '';
+    const heartbeatPath = path.join(HOME, '.claude', '.terminal-heartbeat');
     try {
       const data = JSON.parse(fs.readFileSync(heartbeatPath, 'utf8'));
       const age = Date.now() - (data.epochMs || 0);
-      // Fresh if heartbeat is < 2 minutes old
-      return age < 120000;
+      // Fresh if heartbeat is < 5 minutes old (extended from 2 min for reliability)
+      return age < 300000;
     } catch {
       return false;
     }
+  }
+
+  // --- Terminal Deconfliction ---
+  // Single-consumer model: only ONE path to Anthropic is active at a time.
+  // Terminal heartbeat = terminal owns the API. No heartbeat = relay owns it.
+  // This is architectural, not heuristic — it eliminates contention entirely.
+
+  _isTerminalActive() {
+    const fresh = UnifiedClaudeSession.isTerminalHeartbeatFresh();
+    this._consumerMode = fresh ? 'terminal' : 'relay';
+    return fresh;
   }
 
   _forwardToTerminalInbox(userId, message, channelId) {
@@ -841,6 +922,11 @@ class UnifiedClaudeSession {
       hour: '2-digit', minute: '2-digit', timeZone: 'America/New_York',
     });
 
+    // PERSIST to disk — survives server restarts. This is the key fix:
+    // without persistence, a restart clears our knowledge of the server-side
+    // rate limit, and the relay immediately burns another attempt.
+    this._persistRateLimitState();
+
     const humanMsg = `[Rate limit hit — Anthropic API is throttling this session. ` +
       `Cooling down until ~${resetsAtStr} ET. ` +
       `Messages will queue and resume automatically. ` +
@@ -876,10 +962,11 @@ class UnifiedClaudeSession {
     const rl = this._rateLimitState;
     if (!rl.limited) return false;
     if (Date.now() >= rl.resetsAt) {
-      // Cooldown expired — clear the flag
+      // Cooldown expired — clear the flag and persist
       rl.limited = false;
       rl.resetsAt = null;
       rl.consecutiveErrors = 0;
+      this._persistRateLimitState();
       console.log('[UnifiedClaude] Rate limit cooldown expired — resuming.');
       return false;
     }
@@ -1465,4 +1552,12 @@ class UnifiedClaudeSession {
   }
 }
 
-module.exports = { UnifiedClaudeSession, classifyToolCall, isTierApproved, TOOL_CLASSIFICATION };
+module.exports = {
+  UnifiedClaudeSession,
+  classifyToolCall,
+  isTierApproved,
+  TOOL_CLASSIFICATION,
+  // Static utilities for pre-flight checks (used by auto-responder)
+  isAnthropicRateLimited: UnifiedClaudeSession.isAnthropicRateLimited,
+  isTerminalHeartbeatFresh: UnifiedClaudeSession.isTerminalHeartbeatFresh,
+};
