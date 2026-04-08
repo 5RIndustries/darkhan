@@ -66,6 +66,11 @@ SPRINT.md
 BACKLOG.md
 server/workers/manifest.json
 
+# Internal operations guides (contain network topology — NEVER commit)
+docs/node-onboarding.md
+docs/direct-line-setup.md
+docs/notification-pipeline-setup.md
+
 # Siege test artifacts (contain internal results — NEVER commit)
 server/logs/siege-*
 server/scripts/siege-*
