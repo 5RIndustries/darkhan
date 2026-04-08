@@ -13,8 +13,13 @@ server/darkhan.config.json
 server/workers/*.worker.js
 !server/workers/examples/*.worker.js
 server/workers/_node1/
+server/workers/*.disabled
+
+# Internal agent instructions (team-specific — NEVER commit)
+server/CLAUDE.md
 
 # Database (generated, contains user data — NEVER commit)
+*.db
 server/*.db
 server/*.db-wal
 server/*.db-shm
