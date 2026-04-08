@@ -1333,6 +1333,31 @@ server.listen(PORT, '127.0.0.1', () => {
       res.json({ ok: true });
     });
 
+    // FEDERATION STATUS — diagnostic endpoint for troubleshooting connectivity
+    app.get('/api/federation/health', secReqAuth, (req, res) => {
+      res.json({
+        enabled: federation?.enabled || false,
+        connected: federation?._connected || false,
+        instanceId: federation?.instanceId || null,
+        hubUrl: federation?.hubUrl || null,
+        lastPollTimestamp: federation?._lastPollTimestamp || null,
+        peerCount: federation?._knownPeers?.length || 0,
+        heartbeatFailures: federation?._heartbeatFailures || 0,
+      });
+    });
+
+    // FEDERATION RECONNECT — force reconnect to hub (admin use)
+    app.post('/api/federation/reconnect', secReqAuth, async (req, res) => {
+      if (!federation?.enabled) return res.status(400).json({ error: 'Federation not enabled' });
+      try {
+        await federation._register();
+        if (federation._pollNow) federation._pollNow();
+        res.json({ ok: true, connected: federation._connected });
+      } catch (err) {
+        res.status(500).json({ error: err.message, connected: false });
+      }
+    });
+
     // FEDERATED UPDATE — Mokume hub sends this to initiate a coordinated deploy.
     // Hub signs the command with its Ed25519 key; we verify before executing.
     app.post('/api/federation/update', express.json(), async (req, res) => {
