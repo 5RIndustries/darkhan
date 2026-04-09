@@ -106,12 +106,40 @@ socket.on('connect', () => {
   }
 });
 
-socket.on('disconnect', () => {
+socket.on('disconnect', (reason) => {
+  socketConnected = false;
+  // If server shut down, Socket.IO will auto-reconnect.
+  // Log but don't crash.
+});
+
+socket.on('connect_error', (err) => {
+  // Silent — Socket.IO handles retry. Don't crash the MCP server.
   socketConnected = false;
 });
 
-socket.on('connect_error', () => {
-  // Silent — Socket.IO handles retry
+socket.on('error', (err) => {
+  // Catch any Socket.IO errors that could crash the process
+  socketConnected = false;
+});
+
+// Global error handlers — prevent MCP server from crashing on unhandled errors.
+// The MCP server MUST stay alive for Claude Code's tool calls to work.
+// Socket.IO reconnects handle Darkhan restarts; these catch everything else.
+process.on('uncaughtException', (err) => {
+  // Log to sentinel log if available, otherwise stderr
+  try {
+    const logPath = path.join(os.homedir(), '.claude', 'sentinel.log');
+    fs.appendFileSync(logPath, `[${new Date().toISOString()}] MCP uncaughtException: ${err.message}\n`);
+  } catch {}
+  // Don't exit — keep the MCP server alive
+});
+
+process.on('unhandledRejection', (reason) => {
+  try {
+    const logPath = path.join(os.homedir(), '.claude', 'sentinel.log');
+    fs.appendFileSync(logPath, `[${new Date().toISOString()}] MCP unhandledRejection: ${reason}\n`);
+  } catch {}
+  // Don't exit — keep the MCP server alive
 });
 
 // Push incoming messages to Claude Code as logging notifications
