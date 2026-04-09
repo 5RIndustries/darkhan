@@ -339,7 +339,7 @@ class FederationService {
    * Insert a federated message into the local Darkhan database and emit via Socket.IO.
    */
   _ingestMessage(msg) {
-    const channelId = msg.channel || 'chan_command';
+    const channelId = msg.channel || 'chan_coordination';
 
     // Only ingest messages for channels we're configured to federate
     const fedChannels = this.config?.federation?.channels

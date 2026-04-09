@@ -243,7 +243,7 @@ Edit `darkhan.config.json` to define your instance and team members. Here is a m
         "name": "Your Name",
         "type": "human",
         "role": "admin",
-        "channels": ["chan_command", "chan_alerts"]
+        "channels": ["chan_coordination", "chan_alerts"]
       },
       {
         "id": "agent_assistant",
@@ -263,12 +263,12 @@ Edit `darkhan.config.json` to define your instance and team members. Here is a m
         "permissions": {
           "shell": "restricted"
         },
-        "channels": ["chan_command", "chan_alerts"]
+        "channels": ["chan_coordination", "chan_alerts"]
       }
     ]
   },
   "channels": [
-    { "id": "chan_command", "name": "Command", "description": "Primary channel" },
+    { "id": "chan_coordination", "name": "Command", "description": "Primary channel" },
     { "id": "chan_alerts", "name": "Alerts", "description": "System alerts" }
   ],
   "sandbox": {
@@ -646,7 +646,7 @@ module.exports = {
 
   async onLoad({ darkhan, log }) {
     log.info('Assistant online');
-    await darkhan.post('chan_command', 'Assistant online and ready.');
+    await darkhan.post('chan_coordination', 'Assistant online and ready.');
   },
 
   tasks: {
@@ -659,7 +659,7 @@ module.exports = {
           messages: [{ role: 'user', content: 'What should I focus on today?' }],
           options: { temperature: 0.3 },
         });
-        await darkhan.post('chan_command', result.response);
+        await darkhan.post('chan_coordination', result.response);
       }
     },
 

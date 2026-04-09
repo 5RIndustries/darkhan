@@ -519,7 +519,7 @@ async function main() {
           name: adminName,
           type: 'human',
           role: 'admin',
-          channels: ['chan_command', 'chan_alerts'],
+          channels: ['chan_coordination', 'chan_alerts'],
         },
         {
           id: agentId,
@@ -533,7 +533,7 @@ async function main() {
           },
           rateLimits: { requestsPerDay: 0, requestsPerMinute: 0 },
           permissions: { shell: 'restricted' },
-          channels: ['chan_command', 'chan_alerts'],
+          channels: ['chan_coordination', 'chan_alerts'],
         },
       ],
     },
@@ -553,7 +553,7 @@ async function main() {
       },
     },
     channels: [
-      { id: 'chan_command', name: '#command', description: 'Primary team channel' },
+      { id: 'chan_coordination', name: '#coordination', description: 'Primary team channel' },
       { id: 'chan_alerts', name: '#alerts', description: 'System alerts' },
     ],
     ...(folioPath ? { folio: { path: folioPath } } : {}),

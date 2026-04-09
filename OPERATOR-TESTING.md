@@ -39,7 +39,7 @@ Parse server logs to verify behavior without triggering any actions:
 |---------|---------------|
 | `grep "Session created" logs` | Session was created (and how many times — duplicates = bug) |
 | `grep "Turn complete" logs` | Claude responded (and response length — 0 chars = bug) |
-| `grep "Posted to chan_command" logs` | Response was delivered to the channel |
+| `grep "Posted to chan_coordination" logs` | Response was delivered to the channel |
 | `grep "subscribers=" logs` | Subscribers were attached when response arrived (0 = bug) |
 | `grep "error\|Error" logs` | Any errors during processing |
 | `grep "Triggered for" logs` | Message was received and routed |

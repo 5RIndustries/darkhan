@@ -44,7 +44,7 @@ router.post('/', (req, res) => {
     `INSERT INTO quarantine_queue (id, original_channel, from_user, body, priority, type,
      local_verdict, cloud_verdict, consensus, metadata, status, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`,
-    [id, original_channel || 'chan_command', from_user, body, priority || 'normal',
+    [id, original_channel || 'chan_coordination', from_user, body, priority || 'normal',
      type || 'message', local_verdict, cloud_verdict, consensus, JSON.stringify(metadata || {}), now],
     function (err) {
       if (err) {

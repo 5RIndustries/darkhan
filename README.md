@@ -388,7 +388,7 @@ module.exports = {
 
   async onLoad({ darkhan, log }) {
     log.info('Worker loaded');
-    await darkhan.post('chan_command', 'My Agent online.');
+    await darkhan.post('chan_coordination', 'My Agent online.');
   },
 
   tasks: {
@@ -400,7 +400,7 @@ module.exports = {
         const result = await llm.complete({
           messages: [{ role: 'user', content: `Summarize: ${data}` }],
         });
-        await darkhan.post('chan_command', result.response);
+        await darkhan.post('chan_coordination', result.response);
       }
     }
   },

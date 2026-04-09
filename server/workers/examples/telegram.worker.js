@@ -18,7 +18,7 @@
  *     "enabled": true,
  *     "botToken": "ENV:TELEGRAM_BOT_TOKEN",
  *     "channelMap": [
- *       { "telegramChatId": "-100123456789", "darkhanChannelId": "chan_command" }
+ *       { "telegramChatId": "-100123456789", "darkhanChannelId": "chan_coordination" }
  *     ],
  *     "allowedChatIds": ["-100123456789"],
  *     "pollingIntervalMs": 2000
@@ -57,7 +57,7 @@ module.exports = {
 
     // Start polling for Telegram messages
     await bridge.startPolling();
-    await darkhan.post('chan_command', 'Telegram bridge online.');
+    await darkhan.post('chan_coordination', 'Telegram bridge online.');
     log.info('Telegram bridge started');
   },
 

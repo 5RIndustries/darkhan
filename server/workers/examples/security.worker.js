@@ -101,7 +101,7 @@ module.exports = {
           target: 'all channels',
           check: async () => {
             try {
-              const messages = await darkhan.getMessages('chan_command', { limit: 100 });
+              const messages = await darkhan.getMessages('chan_coordination', { limit: 100 });
               const patterns = [
                 /sk-[a-zA-Z0-9]{20,}/,       // API keys
                 /password\s*[:=]\s*\S+/i,     // Passwords
@@ -182,7 +182,7 @@ module.exports = {
         // If any checks failed, also post to command channel
         if (failCount > 0) {
           await darkhan.post(
-            'chan_command',
+            'chan_coordination',
             `**Security Audit: ${failCount} issue(s) found.** ${passCount}/${findings.length} checks passed. See #alerts for full report.`
           );
         }

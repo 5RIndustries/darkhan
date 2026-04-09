@@ -16,7 +16,7 @@
  *     "enabled": true,
  *     "botToken": "ENV:TELEGRAM_BOT_TOKEN",
  *     "channelMap": [
- *       { "telegramChatId": "-100123456789", "darkhanChannelId": "chan_command" }
+ *       { "telegramChatId": "-100123456789", "darkhanChannelId": "chan_coordination" }
  *     ],
  *     "allowedChatIds": ["-100123456789"],
  *     "pollingIntervalMs": 2000

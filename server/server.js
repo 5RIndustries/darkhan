@@ -1044,7 +1044,7 @@ server.listen(PORT, '127.0.0.1', () => {
   // trigger lockdown (integrity only monitors server/ code and workers/).
   // Each day gets its own file: Transcript_YYYY-MM-DD.md
   const TRANSCRIPT_DIR = path.join(__dirname, '..', 'docs', 'transcripts');
-  const TRANSCRIPT_CHANNELS = ['chan_command', 'chan_system', 'chan_alerts'];
+  const TRANSCRIPT_CHANNELS = ['chan_coordination', 'chan_system', 'chan_alerts'];
 
   async function writeTranscript() {
     const now = new Date();
@@ -1118,7 +1118,7 @@ server.listen(PORT, '127.0.0.1', () => {
       const count = await new Promise((resolve, reject) => {
         db.get(
           'SELECT COUNT(*) as c FROM messages WHERE channel_id IN (?,?,?) AND created_at > ?',
-          ['chan_command', 'chan_system', 'chan_alerts', startOfDay],
+          ['chan_coordination', 'chan_system', 'chan_alerts', startOfDay],
           (err, row) => err ? reject(err) : resolve(row?.c || 0)
         );
       });

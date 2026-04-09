@@ -25,7 +25,7 @@ module.exports = {
    */
   async onLoad({ darkhan, log }) {
     log.info('Assistant worker loaded');
-    await darkhan.post('chan_command', 'Assistant online and ready.');
+    await darkhan.post('chan_coordination', 'Assistant online and ready.');
   },
 
   tasks: {
@@ -61,12 +61,12 @@ module.exports = {
             options: { temperature: 0.3, maxTokens: 500 },
           });
 
-          await darkhan.post('chan_command', `**Morning Digest**\n\n${result.response}`);
+          await darkhan.post('chan_coordination', `**Morning Digest**\n\n${result.response}`);
           log.info('Morning digest posted');
         } catch (e) {
           if (e.name === 'BudgetExceededError') {
             log.warn('Daily LLM budget exceeded, skipping morning digest');
-            await darkhan.post('chan_command', 'Morning digest skipped — daily LLM budget reached.');
+            await darkhan.post('chan_coordination', 'Morning digest skipped — daily LLM budget reached.');
             return;
           }
           throw e;

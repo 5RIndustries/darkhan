@@ -45,7 +45,7 @@ module.exports = {
   // Called once when the worker is loaded at server start
   async onLoad({ llm, darkhan, tools, evidence, observe, config, log }) {
     log.info('Assistant worker loaded');
-    await darkhan.post('chan_command', 'Assistant online.');
+    await darkhan.post('chan_coordination', 'Assistant online.');
   },
 
   // --- Scheduled Tasks ---
@@ -309,7 +309,7 @@ config.name        -> 'Assistant'
 config.model       -> { provider: 'ollama', model: 'qwen2.5:14b' }
 config.schedule    -> { ... }
 config.rateLimits  -> { requestsPerDay: 0, ... }
-config.channels    -> ['chan_command', 'chan_alerts']
+config.channels    -> ['chan_coordination', 'chan_alerts']
 config.permissions -> { fsWrite: [...], shell: 'restricted' }
 ```
 
@@ -671,11 +671,11 @@ Before deploying a new worker:
 async run({ llm, darkhan, log }) {
   try {
     const result = await llm.complete({ ... });
-    await darkhan.post('chan_command', result.response);
+    await darkhan.post('chan_coordination', result.response);
   } catch (e) {
     if (e.name === 'BudgetExceededError') {
       log.warn('Budget exceeded, posting static fallback');
-      await darkhan.post('chan_command', 'Daily LLM budget reached. Task deferred to tomorrow.');
+      await darkhan.post('chan_coordination', 'Daily LLM budget reached. Task deferred to tomorrow.');
       return;
     }
     if (e.code === 'ECONNREFUSED') {
@@ -691,7 +691,7 @@ async run({ llm, darkhan, log }) {
 
 ```javascript
 async run({ llm, darkhan, log }) {
-  await darkhan.post('chan_command', 'Starting daily analysis...');
+  await darkhan.post('chan_coordination', 'Starting daily analysis...');
 
   // Step 1
   const data = await tools.fs.read('project/status.md');
@@ -705,7 +705,7 @@ async run({ llm, darkhan, log }) {
 
   // Step 3
   await tools.fs.write('project/output/analysis.md', result.response);
-  await darkhan.post('chan_command', 'Analysis complete. Saved to project/output/analysis.md.');
+  await darkhan.post('chan_coordination', 'Analysis complete. Saved to project/output/analysis.md.');
 }
 ```
 

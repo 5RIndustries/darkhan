@@ -78,11 +78,10 @@ class TerminalRelay {
     // Kill existing session with same key
     this._kill(key, 'new_spawn');
 
-    if (mode === 'claude' && this.unifiedClaude) {
-      // UNIFIED MODE: Use the shared SDK session
-      await this._spawnUnifiedClaude(socket, userId, key, cols, rows);
-    } else if (mode === 'claude') {
-      // Fallback: raw PTY if unified session not available
+    if (mode === 'claude') {
+      // Full Claude Code CLI via PTY — same capabilities as standalone terminal
+      // (MCP tools, hooks, Monitor, full environment). The unified SDK session
+      // is available for chat @claude routing but terminals always get the real CLI.
       await this._spawnPty(socket, userId, key, 'claude', cols, rows, cwd);
     } else {
       // Shell mode: always raw PTY
@@ -237,34 +236,47 @@ class TerminalRelay {
     let command, args, label;
 
     if (mode === 'claude') {
-      command = 'claude';
-      const allowedTools = this.config.terminal?.allowedTools ||
-        'Read,Write,Edit,Glob,Grep,Bash,WebSearch,WebFetch,Agent';
-      args = ['--allowedTools', allowedTools];
-      label = 'Claude Code (standalone)';
+      // Resolve claude binary — launchd PATH may not include ~/.local/bin
+      const fs = require('fs');
+      const HOME = process.env.HOME || '';
+      const claudePaths = [
+        `${HOME}/.local/bin/claude`,
+        '/usr/local/bin/claude',
+        '/opt/homebrew/bin/claude',
+      ];
+      command = claudePaths.find(p => { try { return fs.existsSync(p); } catch { return false; } }) || 'claude';
+      args = [];
+      label = 'Claude Code';
     } else {
       command = process.env.SHELL || '/bin/zsh';
       args = [];
       label = 'Shell';
     }
 
-    // [P0-H1 FIX] Shell PTY gets a filtered environment — no secrets.
-    // Same whitelist as worker shell processes. Prevents API key and SESSION_SECRET
-    // exposure if a web session is compromised.
-    const safeEnv = {
-      HOME: process.env.HOME,
-      PATH: process.env.PATH,
-      LANG: process.env.LANG || 'en_US.UTF-8',
-      USER: process.env.USER,
-      TERM: 'xterm-256color',
-      SHELL: process.env.SHELL || '/bin/zsh',
-      TMPDIR: process.env.TMPDIR,
-      XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR,
-    };
-    // Claude Code mode needs Anthropic auth to function
+    let env;
     if (mode === 'claude') {
-      if (process.env.ANTHROPIC_API_KEY) safeEnv.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
-      // Claude Code needs HOME for ~/.claude config
+      // Claude Code CLI needs the full environment for MCP servers, hooks,
+      // and tool access. Strip only Darkhan's internal secrets.
+      const { SESSION_SECRET, DB_ENCRYPTION_KEY, ...parentEnv } = process.env;
+      // Ensure PATH includes common tool locations (launchd strips these)
+      const HOME = process.env.HOME || '';
+      const extraPaths = [`${HOME}/.local/bin`, `${HOME}/.bun/bin`, '/opt/homebrew/bin'];
+      const currentPath = parentEnv.PATH || '/usr/bin:/bin';
+      const fullPath = [...extraPaths, ...currentPath.split(':')].filter((v, i, a) => a.indexOf(v) === i).join(':');
+      env = { ...parentEnv, TERM: 'xterm-256color', PATH: fullPath };
+    } else {
+      // [P0-H1 FIX] Shell PTY gets a filtered environment — no secrets.
+      // Prevents API key and SESSION_SECRET exposure if compromised.
+      env = {
+        HOME: process.env.HOME,
+        PATH: process.env.PATH,
+        LANG: process.env.LANG || 'en_US.UTF-8',
+        USER: process.env.USER,
+        TERM: 'xterm-256color',
+        SHELL: process.env.SHELL || '/bin/zsh',
+        TMPDIR: process.env.TMPDIR,
+        XDG_RUNTIME_DIR: process.env.XDG_RUNTIME_DIR,
+      };
     }
 
     let ptyProcess;
@@ -274,12 +286,31 @@ class TerminalRelay {
         cols,
         rows,
         cwd,
-        env: safeEnv,
+        env,
       });
     } catch (err) {
-      console.error(`[Terminal] Failed to spawn ${label} for ${userId}:`, err.message);
-      socket.emit('terminal:error', { key, message: `Failed to start ${label}: ${err.message}` });
-      return;
+      if (mode === 'claude') {
+        // Fallback: spawn via interactive shell (handles symlinks, PATH edge cases)
+        console.warn(`[Terminal] Direct spawn failed: ${err.message} — trying shell wrapper`);
+        try {
+          const shellCmd = args.length ? `${command} ${args.join(' ')}` : command;
+          ptyProcess = pty.spawn('/bin/zsh', ['-ilc', shellCmd], {
+            name: 'xterm-256color',
+            cols,
+            rows,
+            cwd,
+            env,
+          });
+        } catch (fallbackErr) {
+          console.error(`[Terminal] Shell fallback also failed for ${userId}:`, fallbackErr.message);
+          socket.emit('terminal:error', { key, message: `Failed to start ${label}: ${fallbackErr.message}` });
+          return;
+        }
+      } else {
+        console.error(`[Terminal] Failed to spawn ${label} for ${userId}:`, err.message);
+        socket.emit('terminal:error', { key, message: `Failed to start ${label}: ${err.message}` });
+        return;
+      }
     }
 
     const dataHandler = ptyProcess.onData((data) => {

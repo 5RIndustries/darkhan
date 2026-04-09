@@ -12,7 +12,7 @@
         "name": "Admin",
         "type": "human",
         "role": "admin",
-        "channels": ["chan_command", "chan_alerts"],
+        "channels": ["chan_coordination", "chan_alerts"],
         "notifications": {}
       },
       {
@@ -23,7 +23,7 @@
         "model": { "provider": "ollama", "model": "qwen2.5:14b", "mode": "worker" },
         "worker": "assistant.worker.js",
         "rateLimits": { "requestsPerDay": 0, "requestsPerMinute": 0 },
-        "channels": ["chan_command", "chan_alerts"],
+        "channels": ["chan_coordination", "chan_alerts"],
         "permissions": { "fsWrite": ["project/output/"], "shell": "restricted" }
       },
       {
@@ -34,7 +34,7 @@
         "model": { "provider": "ollama", "model": "qwen2.5:14b", "mode": "triage" },
         "worker": "security.worker.js",
         "rateLimits": { "requestsPerDay": 50, "requestsPerMinute": 3 },
-        "channels": ["chan_command", "chan_alerts"],
+        "channels": ["chan_coordination", "chan_alerts"],
         "permissions": { "fsWrite": ["project/output/"], "shell": "restricted" }
       }
     ]
@@ -58,7 +58,7 @@
     }
   },
   "channels": [
-    { "id": "chan_command", "name": "#command", "description": "Primary team channel" },
+    { "id": "chan_coordination", "name": "#coordination", "description": "Primary team channel" },
     { "id": "chan_alerts", "name": "#alerts", "description": "System alerts" }
   ],
   "folio": {
@@ -87,7 +87,7 @@
     "enabled": false,
     "botToken": "ENV:TELEGRAM_BOT_TOKEN",
     "channelMap": [
-      { "telegramChatId": "-100123456789", "darkhanChannelId": "chan_command" }
+      { "telegramChatId": "-100123456789", "darkhanChannelId": "chan_coordination" }
     ],
     "allowedChatIds": ["-100123456789"],
     "pollingIntervalMs": 2000

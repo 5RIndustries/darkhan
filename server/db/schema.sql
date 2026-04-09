@@ -68,9 +68,8 @@ CREATE TABLE IF NOT EXISTS agent_health (
 
 -- Default channels (setup wizard creates team-specific channels from config)
 INSERT OR IGNORE INTO channels (id, name, description) VALUES
-  ('chan_command', '#command', 'Primary team channel'),
+  ('chan_coordination', '#coordination', 'Primary team channel'),
   ('chan_darkhan', '#darkhan', 'Darkhan system channel'),
-  ('chan_coordination', '#coordination', 'Agent coordination'),
   ('chan_alerts', '#alerts', 'System alerts');
 
 -- Claude relay conversation history

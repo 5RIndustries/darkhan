@@ -23,7 +23,7 @@ import os from 'os';
 
 const DARKHAN_URL = process.env.DARKHAN_URL || 'http://localhost:3001';
 const API_KEY = process.env.DARKHAN_API_KEY || '';
-const CHANNELS = (process.env.DARKHAN_CHANNELS || 'chan_coordination,chan_alerts,chan_command').split(',');
+const CHANNELS = (process.env.DARKHAN_CHANNELS || 'chan_coordination,chan_alerts').split(',');
 const AGENT_ID = process.env.DARKHAN_AGENT_ID || 'agent_claude';
 
 // Track connection state
@@ -142,6 +142,27 @@ process.on('unhandledRejection', (reason) => {
   // Don't exit — keep the MCP server alive
 });
 
+// Dedup: track recent message bodies to prevent federation/relay duplicates
+const recentMessageHashes = new Map(); // hash -> timestamp
+const DEDUP_WINDOW_MS = 30000; // 30s dedup window
+
+function messageHash(msg) {
+  const key = `${msg.from_user}:${(msg.body || '').substring(0, 200)}`;
+  return require('crypto').createHash('md5').update(key).digest('hex');
+}
+
+function isDuplicate(msg) {
+  const hash = messageHash(msg);
+  const now = Date.now();
+  // Clean old entries
+  for (const [k, ts] of recentMessageHashes) {
+    if (now - ts > DEDUP_WINDOW_MS) recentMessageHashes.delete(k);
+  }
+  if (recentMessageHashes.has(hash)) return true;
+  recentMessageHashes.set(hash, now);
+  return false;
+}
+
 // Push incoming messages to Claude Code as logging notifications
 socket.on('new_message', async (msg) => {
   if (!serverConnected) return;
@@ -155,10 +176,17 @@ socket.on('new_message', async (msg) => {
   // Only push messages from channels we're watching
   if (!CHANNELS.includes(msg.channel_id)) return;
 
+  // Skip Darkhan relay noise
+  const body = msg.body || '';
+  if (body === '...thinking' || body.includes('forwarded to active Claude Code terminal')) return;
+
+  // Deduplicate — same sender + body within 30s window (catches federation/relay doubles)
+  if (isDuplicate(msg)) return;
+
   // Determine priority — human messages and @claude mentions are critical
   const isHuman = msg.from_user?.startsWith('user_');
-  const isMention = (msg.body || '').toLowerCase().includes('claude') ||
-                    (msg.body || '').toLowerCase().includes('cos');
+  const isMention = body.toLowerCase().includes('claude') ||
+                    body.toLowerCase().includes('cos');
   const level = (isHuman || isMention) ? 'warning' : 'info';
 
   // Write to file-based inbox (persistent, survives MCP transport issues)
@@ -295,7 +323,7 @@ mcp.tool(
   'darkhan_post_message',
   'Post a message to a Darkhan channel (federates via Mokume to other nodes)',
   {
-    channel_id: z.string().describe('Channel ID (e.g. chan_coordination, chan_alerts, chan_command)'),
+    channel_id: z.string().describe('Channel ID (e.g. chan_coordination, chan_alerts)'),
     body: z.string().describe('Message body'),
   },
   async ({ channel_id, body }) => {

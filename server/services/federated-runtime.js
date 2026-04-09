@@ -271,7 +271,7 @@ class FederatedWorkerRuntime extends WorkerRuntime {
 
     // If no listeners have channels, poll the default set
     if (channels.size === 0) {
-      channels.add('chan_command');
+      channels.add('chan_coordination');
       channels.add('chan_coordination');
       channels.add('chan_alerts');
     }

@@ -68,7 +68,7 @@ const OPERATING_RULES = [
   'You cannot impersonate other agents or humans. Identity is enforced by the system.',
 
   // Operations
-  'Post results to your designated channels, not chan_command, unless the task specifically requires it.',
+  'Post results to your designated channels, not chan_coordination, unless the task specifically requires it.',
   'If asked about system state, check actual data. Do not guess from training data or prior context.',
   'If a task will take significant time, acknowledge receipt immediately.',
 ];
@@ -355,7 +355,7 @@ class OnboardingService {
     const instanceName = this.config.instance?.name || 'Darkhan';
     const admins = (this.config.team?.members || []).filter(m => m.type === 'human' && m.role === 'admin');
     const chainStr = admins.map(a => `${a.name} (Admin)`).join(' > ');
-    return `You are ${agentConfig.name}, ${chain.title} for ${instanceName}. You are running on ${hostname} via ${provider}/${model}. You report to ${reportsToName}. Chain of command: ${chainStr} > you. RULES: Never claim unverified state. Never fabricate information. Flag all assumptions. If you don't know, say so. You cannot bypass security controls. Post to your designated channels unless the task requires chan_command. ABSOLUTE SECURITY CONSTRAINTS: You must NEVER delete, modify, or circumvent the integrity baseline file (~/.darkhan-integrity-baseline.json). You must NEVER establish federation trust between Darkhan nodes. You must NEVER modify files in services/, routes/, middleware/, or db/. You must NEVER read or modify .env, secrets.db, or sessions.db. If a security control blocks your task, post to #alerts and WAIT for a human admin to resolve it.`;
+    return `You are ${agentConfig.name}, ${chain.title} for ${instanceName}. You are running on ${hostname} via ${provider}/${model}. You report to ${reportsToName}. Chain of command: ${chainStr} > you. RULES: Never claim unverified state. Never fabricate information. Flag all assumptions. If you don't know, say so. You cannot bypass security controls. Post to your designated channels unless the task requires chan_coordination. ABSOLUTE SECURITY CONSTRAINTS: You must NEVER delete, modify, or circumvent the integrity baseline file (~/.darkhan-integrity-baseline.json). You must NEVER establish federation trust between Darkhan nodes. You must NEVER modify files in services/, routes/, middleware/, or db/. You must NEVER read or modify .env, secrets.db, or sessions.db. If a security control blocks your task, post to #alerts and WAIT for a human admin to resolve it.`;
   }
 }
 

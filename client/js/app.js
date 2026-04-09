@@ -8,7 +8,7 @@
 
   // --- State ---
   let currentUser = null;
-  let currentChannel = 'chan_command';
+  let currentChannel = 'chan_coordination';
   let currentView = 'chat'; // 'chat' | 'dashboard' | 'tasks' | 'approvals' | 'workers' | 'costs' | 'terminal'
   let teamData = null; // loaded from /api/team
   let socket = null;
@@ -268,14 +268,14 @@
         channels = chanRes.channels;
       } else {
         channels = [
-          { id: 'chan_command', name: '#command' },
+          { id: 'chan_coordination', name: '#coordination' },
           { id: 'chan_darkhan', name: '#darkhan' },
           { id: 'chan_coordination', name: '#coordination' },
           { id: 'chan_alerts', name: '#alerts' },
         ];
       }
     } catch (e) {
-      channels = [{ id: 'chan_command', name: '#command' }];
+      channels = [{ id: 'chan_coordination', name: '#command' }];
     }
 
     channels.forEach(ch => {
@@ -316,7 +316,7 @@
       (statusData.agents || []).forEach(a => { heartbeats[a.agent] = a; });
 
       // Also check recent messages for activity
-      const msgs = await api('GET', '/messages?channel=chan_command&limit=100');
+      const msgs = await api('GET', '/messages?channel=chan_coordination&limit=100');
       const messages = msgs.messages || [];
       const now = Date.now();
       const lastSeen = {};
@@ -1137,7 +1137,7 @@
       // Also check recent messages for activity (same logic as sidebar)
       let lastSeen = {};
       try {
-        const msgs = await api('GET', '/messages?channel=chan_command&limit=100');
+        const msgs = await api('GET', '/messages?channel=chan_coordination&limit=100');
         (msgs.messages || []).forEach(m => {
           if (!lastSeen[m.from_user]) {
             lastSeen[m.from_user] = new Date(m.created_at.endsWith('Z') ? m.created_at : m.created_at + 'Z').getTime();

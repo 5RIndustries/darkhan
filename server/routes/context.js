@@ -81,7 +81,7 @@ router.get('/brief', requireAuth, async (req, res) => {
     channelMessages = await new Promise((resolve, reject) => {
       db.all(
         `SELECT from_user, body, created_at, channel_id FROM messages
-         WHERE channel_id IN ('chan_command', 'chan_system', 'chan_alerts', 'chan_coordination')
+         WHERE channel_id IN ('chan_coordination', 'chan_system', 'chan_alerts')
          ORDER BY created_at DESC LIMIT ?`,
         [msgLimit],
         (err, rows) => err ? reject(err) : resolve((rows || []).reverse())

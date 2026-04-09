@@ -5,7 +5,7 @@
  * GET  /api/messages/:id     — get single message
  *
  * Claude's primary polling endpoint:
- *   GET /api/messages?channel=chan_command&since=<ISO>&unread=true
+ *   GET /api/messages?channel=chan_coordination&since=<ISO>&unread=true
  */
 
 const express = require('express');

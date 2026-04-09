@@ -1319,7 +1319,7 @@ function onNewMessage(message, context) {
   // post a notification to #command so the lead agent's CLI session sees it.
   // INTELLIGENCE GATE: Human messages ALWAYS notify (Adrian should never be ignored).
   // Agent-to-agent Layer 0-1 messages are suppressed to save API calls.
-  if (channel_id !== 'chan_command' && from_user !== 'agent_darkhan' && from_user !== LEAD_AGENT_ID) {
+  if (channel_id !== 'chan_coordination' && from_user !== 'agent_darkhan' && from_user !== LEAD_AGENT_ID) {
     const isHumanMsg = HUMAN_USERS.includes(from_user);
     const notifyTier = isHumanMsg ? 'claude_relay' : classifyMessage(body, from_user);
     if (isHumanMsg || notifyTier === 'claude_relay') {
@@ -1331,11 +1331,11 @@ function onNewMessage(message, context) {
         const nId = crypto.randomUUID();
         db.run(
           'INSERT INTO messages (id, channel_id, from_user, body, priority, type) VALUES (?, ?, ?, ?, ?, ?)',
-          [nId, 'chan_command', 'agent_darkhan', notify, 'normal', 'notification'],
+          [nId, 'chan_coordination', 'agent_darkhan', notify, 'normal', 'notification'],
           (err) => {
             if (!err) {
-              io.to('chan_command').emit('new_message', {
-                id: nId, channel_id: 'chan_command', from_user: 'agent_darkhan',
+              io.to('chan_coordination').emit('new_message', {
+                id: nId, channel_id: 'chan_coordination', from_user: 'agent_darkhan',
                 body: notify, type: 'notification', created_at: new Date().toISOString(),
               });
             }

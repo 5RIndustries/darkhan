@@ -261,7 +261,7 @@ class UnifiedClaudeSession {
       const filename = `${ts.replace(/[:.]/g, '-')}_relay_${Date.now()}.json`;
       fs.writeFileSync(path.join(inboxDir, filename), JSON.stringify({
         from_user: userId,
-        channel_id: channelId || 'chan_command',
+        channel_id: channelId || 'chan_coordination',
         body: message,
         timestamp: ts,
         level: 'warning',
@@ -469,7 +469,7 @@ class UnifiedClaudeSession {
     if (this._isTerminalActive()) {
       const forwarded = this._forwardToTerminalInbox(userId, message, channelId);
       if (forwarded) {
-        this._postToChannel(channelId || 'chan_command',
+        this._postToChannel(channelId || 'chan_coordination',
           `[Message forwarded to Claude Code terminal — active session detected. This avoids rate limit contention.]`);
         this._logActivity(userId, 'relay_forwarded_to_terminal', {
           message: message.substring(0, 200),
@@ -941,7 +941,7 @@ class UnifiedClaudeSession {
     });
 
     // Post to channel so Adrian sees it in chat
-    this._postToChannel('chan_command', humanMsg);
+    this._postToChannel('chan_coordination', humanMsg);
     this._postToChannel('chan_alerts', `[RATE LIMIT] Claude session throttled until ~${resetsAtStr} ET. Consecutive: ${rl.consecutiveErrors}.`);
 
     this._logActivity(userId, 'rate_limit_hit', {
@@ -1296,7 +1296,7 @@ class UnifiedClaudeSession {
         `Reply \`approve\` or \`deny\``,
       ].filter(Boolean).join('\n');
 
-      this._postToChannel('chan_command', body);
+      this._postToChannel('chan_coordination', body);
 
       // Store pending permission — auto-responder will check for approval messages
       entry.pendingPermission = {
@@ -1443,7 +1443,7 @@ class UnifiedClaudeSession {
       const since = new Date(Date.now() - hours * 3600000);
       // Format to match SQLite's DATETIME format (no T, no Z)
       const sinceStr = since.toISOString().replace('T', ' ').substring(0, 19);
-      const channels = ['chan_command', 'chan_system', 'chan_alerts'];
+      const channels = ['chan_coordination', 'chan_system', 'chan_alerts'];
 
       this.db.all(
         `SELECT from_user, body, created_at, channel_id FROM messages
@@ -1485,7 +1485,7 @@ class UnifiedClaudeSession {
   _getRecentChannelContext(limit = 100) {
     return new Promise((resolve, reject) => {
       if (!this.db) return resolve('');
-      const channels = ['chan_command', 'chan_system', 'chan_alerts'];
+      const channels = ['chan_coordination', 'chan_system', 'chan_alerts'];
 
       this.db.all(
         `SELECT from_user, body, created_at, channel_id FROM messages

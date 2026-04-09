@@ -241,7 +241,7 @@ sudo -u _darkhan /opt/homebrew/bin/node $DARKHAN_PATH/server/server.js &
   "model": { "provider": "ollama", "model": "qwen2.5:14b", "mode": "worker" },
   "worker": "newhire.worker.js",
   "rateLimits": { "requestsPerDay": 500, "requestsPerMinute": 5 },
-  "channels": ["chan_command", "chan_alerts"],
+  "channels": ["chan_coordination", "chan_alerts"],
   "permissions": { "fsWrite": ["project/output/"], "shell": "restricted" }
 }
 ```

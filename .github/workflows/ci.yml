@@ -83,11 +83,11 @@ jobs:
             "instance": { "name": "CI Test", "brandName": "Darkhan", "port": 3001 },
             "team": {
               "members": [
-                { "id": "user_test", "name": "Test", "type": "human", "role": "admin", "channels": ["chan_command"] }
+                { "id": "user_test", "name": "Test", "type": "human", "role": "admin", "channels": ["chan_coordination"] }
               ]
             },
             "channels": [
-              { "id": "chan_command", "name": "Command", "description": "Primary" }
+              { "id": "chan_coordination", "name": "Command", "description": "Primary" }
             ],
             "sandbox": { "processIsolation": false }
           }

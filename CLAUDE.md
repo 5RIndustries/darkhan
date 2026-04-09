@@ -59,7 +59,7 @@ curl -s -X POST http://localhost:3001/api/messages \
   -H "Content-Type: application/json" \
   -H "X-Darkhan-Client: true" \
   -H "X-API-Key: YOUR_API_KEY" \
-  -d '{"channel_id":"chan_command","body":"Your message here","type":"message"}'
+  -d '{"channel_id":"chan_coordination","body":"Your message here","type":"message"}'
 ```
 
 Required headers:
@@ -71,11 +71,11 @@ Required headers:
 
 ```bash
 # Recent messages from a channel
-curl -s "http://localhost:3001/api/messages?channel=chan_command&limit=20" \
+curl -s "http://localhost:3001/api/messages?channel=chan_coordination&limit=20" \
   -H "X-API-Key: YOUR_API_KEY"
 
 # Messages since a timestamp
-curl -s "http://localhost:3001/api/messages?channel=chan_command&since=2026-04-07T00:00:00Z" \
+curl -s "http://localhost:3001/api/messages?channel=chan_coordination&since=2026-04-07T00:00:00Z" \
   -H "X-API-Key: YOUR_API_KEY"
 ```
 
