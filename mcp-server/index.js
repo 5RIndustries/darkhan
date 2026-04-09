@@ -34,16 +34,36 @@ let serverConnected = false;
 // Claude Code terminal is active, so the relay should forward messages
 // here instead of spawning competing SDK sessions on the same Max plan.
 const HEARTBEAT_PATH = path.join(os.homedir(), '.claude', '.terminal-heartbeat');
+const HEARTBEAT_TMP = HEARTBEAT_PATH + '.tmp';
 const HEARTBEAT_INTERVAL_MS = 30000;
+
+// Discover parent Claude Code's TTY at startup (one-time)
+import { execSync } from 'child_process';
+let parentTty = null;
+try {
+  const raw = execSync(`ps -p ${process.ppid} -o tty=`, { encoding: 'utf8' }).trim();
+  if (raw && raw !== '??' && raw !== '-') {
+    parentTty = `/dev/${raw}`;
+  }
+} catch { /* non-fatal — TTY discovery failed */ }
+
+// Track when last prompt was received (updated by tool calls)
+let lastPromptEpochMs = Date.now();
 
 function writeHeartbeat() {
   try {
-    fs.writeFileSync(HEARTBEAT_PATH, JSON.stringify({
+    const data = JSON.stringify({
       pid: process.pid,
+      ppid: process.ppid,
       agentId: AGENT_ID,
       timestamp: new Date().toISOString(),
       epochMs: Date.now(),
-    }));
+      lastPromptEpochMs,
+      tty: parentTty,
+    });
+    // Atomic write: temp file + rename (prevents Sentinel reading partial JSON)
+    fs.writeFileSync(HEARTBEAT_TMP, data);
+    fs.renameSync(HEARTBEAT_TMP, HEARTBEAT_PATH);
   } catch { /* non-fatal */ }
 }
 
@@ -183,12 +203,16 @@ function darkhanRequest(method, path, body) {
 
 // --- Tools ---
 
+// Update prompt timestamp on every tool call (proxy for "Claude is active")
+function touchPromptTime() { lastPromptEpochMs = Date.now(); writeHeartbeat(); }
+
 // Drain the file-based inbox (persistent notifications)
 mcp.tool(
   'darkhan_drain_inbox',
   'Read and clear pending Darkhan notifications from the file inbox. Call this at session start and periodically.',
   {},
   async () => {
+    touchPromptTime();
     const inboxDir = path.join(os.homedir(), '.claude', 'darkhan-inbox');
     try {
       if (!fs.existsSync(inboxDir)) return { content: [{ type: 'text', text: 'No inbox messages.' }] };
@@ -219,6 +243,7 @@ mcp.tool(
     limit: z.number().optional().describe('Number of messages (default 10)'),
   },
   async ({ channel_id, limit }) => {
+    touchPromptTime();
     try {
       const ch = channel_id || 'chan_coordination';
       const n = limit || 10;
@@ -246,6 +271,7 @@ mcp.tool(
     body: z.string().describe('Message body'),
   },
   async ({ channel_id, body }) => {
+    touchPromptTime();
     try {
       const result = await darkhanRequest('POST', '/api/messages', { channel_id, body });
       if (result.id || result.ok) {
@@ -267,6 +293,7 @@ mcp.tool(
     limit: z.number().optional().describe('Number of messages (default 10)'),
   },
   async ({ channel_id, limit }) => {
+    touchPromptTime();
     try {
       const n = limit || 10;
       const result = await darkhanRequest('GET', `/api/messages?channel_id=${channel_id}&limit=${n}`);
