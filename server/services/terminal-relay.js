@@ -17,6 +17,18 @@
 const pty = require('node-pty');
 const os = require('os');
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
+
+// --- PTY Transcript Logger constants ---
+const TRANSCRIPT_DIR = path.join(__dirname, '..', 'transcripts');
+const FLUSH_INTERVAL_MS = 5000;          // 5s flush interval (honest data loss window with fsync)
+const FLUSH_SIZE_BYTES = 16384;          // 16KB buffer threshold
+const CHECKPOINT_BYTES = 65536;          // 64KB between hash chain checkpoints
+const MAX_SESSION_BYTES = 50 * 1024 * 1024; // 50MB per-session cap
+const RETENTION_DAYS = 30;
+// Strips ANSI escape sequences (CSI, OSC, simple escapes, bare \r)
+const ANSI_RE = /\x1b\[[0-9;]*[A-Za-z]|\x1b\].*?(?:\x07|\x1b\\)|\x1b[()][0-2AB]|\x1b[>=<]|\x1b\[\?[0-9;]*[hlmsu]|\r/g;
 
 class TerminalRelay {
   constructor({ io, db, config, activityLog, unifiedClaude }) {
@@ -30,6 +42,9 @@ class TerminalRelay {
     // Create the /terminal namespace
     this.nsp = io.of('/terminal');
     this.nsp.on('connection', (socket) => this._onConnection(socket));
+
+    // Recover orphaned transcripts from previous crashes + retention cleanup
+    this._transcriptRecoverOrphans();
   }
 
   _onConnection(socket) {
@@ -49,13 +64,29 @@ class TerminalRelay {
         session.disconnectTimer = null;
         session.socket = socket;
         session.socketId = socket.id;
+        session.justRestored = true;
         if (session.pty && session.dataHandler) {
           session.dataHandler.dispose();
         }
         if (session.pty) {
           session.dataHandler = session.pty.onData((data) => {
             socket.emit('terminal:output', { key, data });
+            this._transcriptWrite(session, data);
           });
+          // Send missed output from transcript as scrollback
+          if (session.transcriptRawPath && fs.existsSync(session.transcriptRawPath)) {
+            try {
+              const stat = fs.statSync(session.transcriptRawPath);
+              const readSize = Math.min(stat.size, 32768);
+              const buf = Buffer.alloc(readSize);
+              const fd = fs.openSync(session.transcriptRawPath, 'r');
+              fs.readSync(fd, buf, 0, readSize, Math.max(0, stat.size - readSize));
+              fs.closeSync(fd);
+              socket.emit('terminal:scrollback', { key, data: buf.toString('utf8') });
+            } catch (e) {
+              console.warn(`[Terminal] Scrollback read failed: ${e.message}`);
+            }
+          }
           socket.emit('terminal:restored', { key, mode: session.mode });
         }
       }
@@ -74,6 +105,16 @@ class TerminalRelay {
     const cols = opts.cols || 120;
     const rows = opts.rows || 30;
     const cwd = opts.cwd || process.env.HOME;
+
+    // If this session was just restored on this connection, don't kill it.
+    // The client's connect handler fires terminal:spawn before it processes
+    // the terminal:restored event — this guard prevents the race.
+    const existing = this.sessions.get(key);
+    if (existing && existing.justRestored && existing.socketId === socket.id) {
+      console.log(`[Terminal] Ignoring spawn for ${key} — session just restored`);
+      existing.justRestored = false;
+      return;
+    }
 
     // Kill existing session with same key
     this._kill(key, 'new_spawn');
@@ -135,7 +176,9 @@ class TerminalRelay {
 
       // Store the callback — will be attached lazily on first terminal input
       let lastEventType = null;
+      const self = this;
       const subscriberCallback = (event) => {
+        const sess = self.sessions.get(key);
         switch (event.type) {
           case 'assistant_message': {
             stopSpinner();
@@ -143,7 +186,9 @@ class TerminalRelay {
             if (text.length > 0) {
               // Add a blank line before text if coming from a different event type
               const spacer = (lastEventType && lastEventType !== 'assistant_message') ? '\r\n' : '';
-              socket.emit('terminal:output', { key, data: spacer + text + '\r\n' });
+              const data = spacer + text + '\r\n';
+              socket.emit('terminal:output', { key, data });
+              self._transcriptWrite(sess, data);
             }
             lastEventType = 'assistant_message';
             break;
@@ -163,19 +208,25 @@ class TerminalRelay {
             stopSpinner();
             socket.emit('terminal:output', { key,
               data: `\r\n\x1b[32m> \x1b[0m` });
+            self._transcriptWrite(sess, `\r\n> `);
             lastEventType = 'result';
             break;
-          case 'error':
+          case 'error': {
             stopSpinner();
-            socket.emit('terminal:output', { key,
-              data: `\r\n\x1b[31m${(event.text || '').replace(/\n/g, '\r\n')}\x1b[0m\r\n\r\n` });
+            const errData = `\r\n${(event.text || '').replace(/\n/g, '\r\n')}\r\n\r\n`;
+            socket.emit('terminal:output', { key, data: `\r\n\x1b[31m${(event.text || '').replace(/\n/g, '\r\n')}\x1b[0m\r\n\r\n` });
+            self._transcriptWrite(sess, errData);
             lastEventType = 'error';
             break;
-          case 'permission_prompt':
+          }
+          case 'permission_prompt': {
             stopSpinner();
-            socket.emit('terminal:output', { key, data: '\r\n' + (event.text || '') });
+            const promptData = '\r\n' + (event.text || '');
+            socket.emit('terminal:output', { key, data: promptData });
+            self._transcriptWrite(sess, promptData);
             lastEventType = 'permission_prompt';
             break;
+          }
         }
       };
 
@@ -206,6 +257,9 @@ class TerminalRelay {
         startTime: new Date().toISOString(),
         inputBuffer: '',
       });
+
+      // Initialize transcript logging for unified session
+      this._transcriptInit(this.sessions.get(key), key);
 
       if (this.activityLog) {
         try {
@@ -315,10 +369,13 @@ class TerminalRelay {
 
     const dataHandler = ptyProcess.onData((data) => {
       socket.emit('terminal:output', { key, data });
+      this._transcriptWrite(this.sessions.get(key), data);
     });
 
     const exitHandler = ptyProcess.onExit(({ exitCode, signal }) => {
       console.log(`[Terminal] ${label} for ${userId} exited (code=${exitCode}, signal=${signal})`);
+      const sess = this.sessions.get(key);
+      if (sess) this._transcriptClose(sess, 'pty_exit');
       socket.emit('terminal:exit', { key, exitCode, signal });
       this.sessions.delete(key);
       this._postToChannel('chan_system',
@@ -338,6 +395,9 @@ class TerminalRelay {
       unified: false, disconnectTimer: null, dataHandler, exitHandler,
       startTime: new Date().toISOString(),
     });
+
+    // Initialize transcript logging for this session
+    this._transcriptInit(this.sessions.get(key), key);
 
     if (this.activityLog) {
       try {
@@ -433,6 +493,7 @@ class TerminalRelay {
   _kill(key, reason) {
     const session = this.sessions.get(key);
     if (session) {
+      this._transcriptClose(session, reason);
       if (session.disconnectTimer) clearTimeout(session.disconnectTimer);
       if (session.unified && this.unifiedClaude && session.subscriberId) {
         // Unsubscribe from unified session (don't close it — chat may still use it)
@@ -509,8 +570,249 @@ class TerminalRelay {
     });
   }
 
+  // --- PTY Transcript Logger ---
+
+  /**
+   * Initialize transcript files for a session. Called after session is added to Map.
+   */
+  _transcriptInit(session, key) {
+    try {
+      fs.mkdirSync(TRANSCRIPT_DIR, { recursive: true, mode: 0o700 });
+      const ts = session.startTime.replace(/[:.]/g, '-');
+      const base = `${key}_${ts}`;
+      session.transcriptRawPath = path.join(TRANSCRIPT_DIR, `${base}.raw.log`);
+      session.transcriptCleanPath = path.join(TRANSCRIPT_DIR, `${base}.clean.log`);
+      session.transcriptRawFd = fs.openSync(session.transcriptRawPath, 'a', 0o600);
+      session.transcriptCleanFd = fs.openSync(session.transcriptCleanPath, 'a', 0o600);
+      session.transcriptBuf = '';
+      session.transcriptBytes = 0;
+      session.transcriptCheckpointBytes = 0;
+      session.transcriptCapped = false;
+
+      const header = `--- Session: ${key} | Mode: ${session.mode} | Started: ${session.startTime} ---\n`;
+      fs.writeSync(session.transcriptRawFd, header);
+      fs.writeSync(session.transcriptCleanFd, header);
+      fs.fsyncSync(session.transcriptRawFd);
+      fs.fsyncSync(session.transcriptCleanFd);
+      session.transcriptBytes += Buffer.byteLength(header);
+
+      session.transcriptFlushTimer = setInterval(() => {
+        this._transcriptFlush(session);
+      }, FLUSH_INTERVAL_MS);
+    } catch (err) {
+      console.error(`[Terminal] Transcript init failed for ${key}: ${err.message}`);
+      session.transcriptCapped = true; // disable further writes
+    }
+  }
+
+  /**
+   * Buffer PTY output for transcript. Triggers immediate flush if buffer exceeds threshold.
+   */
+  _transcriptWrite(session, data) {
+    if (!session || session.transcriptCapped || session.transcriptRawFd == null) return;
+    session.transcriptBuf += data;
+    if (Buffer.byteLength(session.transcriptBuf) >= FLUSH_SIZE_BYTES) {
+      this._transcriptFlush(session);
+    }
+  }
+
+  /**
+   * Flush buffered output to disk with fsync for power-loss safety.
+   * Async writes to avoid blocking the event loop.
+   */
+  _transcriptFlush(session) {
+    if (!session.transcriptBuf || session.transcriptCapped) return;
+    if (session.transcriptRawFd == null) return;
+
+    // Inject timestamp marker for forensic timeline
+    const tsMark = `\n[TS:${Date.now()}]\n`;
+    const rawContent = tsMark + session.transcriptBuf;
+    const cleanContent = tsMark + session.transcriptBuf.replace(ANSI_RE, '');
+    const rawBytes = Buffer.byteLength(rawContent);
+    session.transcriptBuf = '';
+
+    // Check 50MB cap
+    if (session.transcriptBytes + rawBytes > MAX_SESSION_BYTES) {
+      const capNotice = `\n--- TRANSCRIPT CAPPED at ${MAX_SESSION_BYTES} bytes (${new Date().toISOString()}) ---\n`;
+      try {
+        fs.writeSync(session.transcriptRawFd, capNotice);
+        fs.writeSync(session.transcriptCleanFd, capNotice);
+        fs.fsyncSync(session.transcriptRawFd);
+        fs.fsyncSync(session.transcriptCleanFd);
+      } catch {}
+      session.transcriptCapped = true;
+      console.warn(`[Terminal] Transcript capped at 50MB for session`);
+      return;
+    }
+
+    // Async write raw + fsync
+    const rawBuf = Buffer.from(rawContent);
+    fs.write(session.transcriptRawFd, rawBuf, 0, rawBuf.length, null, (err) => {
+      if (err) {
+        console.error(`[Terminal] Transcript raw write failed: ${err.message}`);
+        session.transcriptCapped = true;
+        return;
+      }
+      fs.fsync(session.transcriptRawFd, (fsyncErr) => {
+        if (fsyncErr) console.warn(`[Terminal] Transcript raw fsync failed: ${fsyncErr.message}`);
+      });
+    });
+
+    // Async write clean + fsync
+    const cleanBuf = Buffer.from(cleanContent);
+    fs.write(session.transcriptCleanFd, cleanBuf, 0, cleanBuf.length, null, (err) => {
+      if (err) {
+        console.error(`[Terminal] Transcript clean write failed: ${err.message}`);
+        return;
+      }
+      fs.fsync(session.transcriptCleanFd, (fsyncErr) => {
+        if (fsyncErr) console.warn(`[Terminal] Transcript clean fsync failed: ${fsyncErr.message}`);
+      });
+    });
+
+    session.transcriptBytes += rawBytes;
+
+    // Hash chain checkpoint every 64KB
+    if (session.transcriptBytes - session.transcriptCheckpointBytes >= CHECKPOINT_BYTES) {
+      this._transcriptCheckpoint(session);
+    }
+  }
+
+  /**
+   * Write a SHA-256 checkpoint of the transcript into the activity log hash chain.
+   */
+  _transcriptCheckpoint(session) {
+    if (!this.activityLog || session.transcriptRawFd == null) return;
+    try {
+      const stat = fs.fstatSync(session.transcriptRawFd);
+      const readSize = Math.min(stat.size, CHECKPOINT_BYTES);
+      const buf = Buffer.alloc(readSize);
+      fs.readSync(session.transcriptRawFd, buf, 0, readSize, Math.max(0, stat.size - readSize));
+      const hash = crypto.createHash('sha256').update(buf).digest('hex');
+
+      this.activityLog.append({
+        actor: session.userId,
+        action: 'terminal_transcript_checkpoint',
+        target: session.transcriptRawPath,
+        details: JSON.stringify({ bytes: session.transcriptBytes, sha256: hash, mode: session.mode }),
+      });
+      session.transcriptCheckpointBytes = session.transcriptBytes;
+    } catch (err) {
+      console.warn(`[Terminal] Transcript checkpoint failed: ${err.message}`);
+    }
+  }
+
+  /**
+   * Close transcript files for a session. Flushes buffer, writes footer, final hash.
+   */
+  _transcriptClose(session, reason) {
+    if (session.transcriptRawFd == null) return;
+    try {
+      // Final synchronous flush (acceptable at session end)
+      if (session.transcriptBuf) {
+        const tsMark = `\n[TS:${Date.now()}]\n`;
+        const rawContent = tsMark + session.transcriptBuf;
+        const cleanContent = tsMark + session.transcriptBuf.replace(ANSI_RE, '');
+        fs.writeSync(session.transcriptRawFd, rawContent);
+        fs.writeSync(session.transcriptCleanFd, cleanContent);
+        session.transcriptBytes += Buffer.byteLength(rawContent);
+        session.transcriptBuf = '';
+      }
+
+      const footer = `\n--- Session ended: ${new Date().toISOString()} | Reason: ${reason} | Bytes: ${session.transcriptBytes} ---\n`;
+      fs.writeSync(session.transcriptRawFd, footer);
+      fs.writeSync(session.transcriptCleanFd, footer);
+      fs.fsyncSync(session.transcriptRawFd);
+      fs.fsyncSync(session.transcriptCleanFd);
+      fs.closeSync(session.transcriptRawFd);
+      fs.closeSync(session.transcriptCleanFd);
+
+      // Final hash of complete raw file
+      if (this.activityLog && session.transcriptRawPath) {
+        const fileHash = crypto.createHash('sha256')
+          .update(fs.readFileSync(session.transcriptRawPath))
+          .digest('hex');
+        this.activityLog.append({
+          actor: session.userId,
+          action: 'terminal_transcript_complete',
+          target: session.transcriptRawPath,
+          details: JSON.stringify({
+            bytes: session.transcriptBytes,
+            sha256: fileHash,
+            mode: session.mode,
+            reason,
+            duration: Date.now() - new Date(session.startTime).getTime(),
+          }),
+        });
+      }
+    } catch (err) {
+      console.error(`[Terminal] Transcript close failed: ${err.message}`);
+    }
+
+    if (session.transcriptFlushTimer) {
+      clearInterval(session.transcriptFlushTimer);
+      session.transcriptFlushTimer = null;
+    }
+    session.transcriptRawFd = null;
+    session.transcriptCleanFd = null;
+  }
+
+  /**
+   * On startup: detect orphaned transcripts (no clean footer) and apply retention cleanup.
+   */
+  _transcriptRecoverOrphans() {
+    try {
+      if (!fs.existsSync(TRANSCRIPT_DIR)) return;
+      const files = fs.readdirSync(TRANSCRIPT_DIR).filter(f => f.endsWith('.raw.log'));
+      const now = Date.now();
+      const maxAge = RETENTION_DAYS * 86400000;
+
+      for (const file of files) {
+        const filePath = path.join(TRANSCRIPT_DIR, file);
+        const stat = fs.statSync(filePath);
+
+        // Retention cleanup: delete files older than RETENTION_DAYS
+        if (now - stat.mtimeMs > maxAge) {
+          fs.unlinkSync(filePath);
+          const cleanPath = filePath.replace('.raw.log', '.clean.log');
+          if (fs.existsSync(cleanPath)) fs.unlinkSync(cleanPath);
+          console.log(`[Terminal] Transcript retention cleanup: deleted ${file}`);
+          continue;
+        }
+
+        // Orphan detection: check for missing footer
+        const tail = Buffer.alloc(256);
+        const fd = fs.openSync(filePath, 'r');
+        const readPos = Math.max(0, stat.size - 256);
+        fs.readSync(fd, tail, 0, 256, readPos);
+        fs.closeSync(fd);
+        const tailStr = tail.toString('utf8');
+
+        if (!tailStr.includes('--- Session ended:') && !tailStr.includes('--- Session ORPHANED')) {
+          const marker = `\n--- Session ORPHANED (unclean shutdown detected at ${new Date().toISOString()}) ---\n`;
+          fs.appendFileSync(filePath, marker, { mode: 0o600 });
+          const cleanPath = filePath.replace('.raw.log', '.clean.log');
+          if (fs.existsSync(cleanPath)) fs.appendFileSync(cleanPath, marker, { mode: 0o600 });
+
+          if (this.activityLog) {
+            this.activityLog.append({
+              actor: 'system',
+              action: 'terminal_transcript_orphan_recovered',
+              target: filePath,
+              details: JSON.stringify({ bytes: stat.size }),
+            });
+          }
+          console.warn(`[Terminal] Orphaned transcript recovered: ${file}`);
+        }
+      }
+    } catch (err) {
+      console.error(`[Terminal] Orphan recovery failed: ${err.message}`);
+    }
+  }
+
   async shutdown() {
     for (const [key, session] of this.sessions) {
+      this._transcriptClose(session, 'server_shutdown');
       if (session.disconnectTimer) clearTimeout(session.disconnectTimer);
       if (session.dataHandler) session.dataHandler.dispose();
       if (session.exitHandler) session.exitHandler.dispose();

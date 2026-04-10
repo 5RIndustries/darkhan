@@ -136,7 +136,12 @@
 
         termSocket.on('connect', () => {
           setStatus('Connected', '#7ee787');
-          termSocket.emit('terminal:spawn', { mode, cols: terminal.cols, rows: terminal.rows });
+          // Defer spawn to let terminal:restored arrive first if session exists
+          setTimeout(() => {
+            if (!ready) {
+              termSocket.emit('terminal:spawn', { mode, cols: terminal.cols, rows: terminal.rows });
+            }
+          }, 50);
         });
         termSocket.on('terminal:ready', ({ key, mode: m }) => {
           ready = true; sessionKey = key;
@@ -153,6 +158,7 @@
           modeSelect.disabled = true; terminal.focus();
         });
         termSocket.on('terminal:output', ({ data }) => { if (terminal) terminal.write(data); });
+        termSocket.on('terminal:scrollback', ({ data }) => { if (terminal) terminal.write(data); });
         termSocket.on('terminal:exit', ({ exitCode }) => {
           ready = false; sessionKey = null;
           setStatus('Exited', '#d29922');

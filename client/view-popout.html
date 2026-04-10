@@ -148,10 +148,18 @@
       const sock = io('/terminal', { withCredentials: true });
       term.onData((data) => { if (ready) sock.emit('terminal:input', { key, data }); });
 
-      sock.on('connect', () => sock.emit('terminal:spawn', { mode, cols: term.cols, rows: term.rows }));
+      sock.on('connect', () => {
+        // Defer spawn to let terminal:restored arrive first if session exists
+        setTimeout(() => {
+          if (!ready) {
+            sock.emit('terminal:spawn', { mode, cols: term.cols, rows: term.rows });
+          }
+        }, 50);
+      });
       sock.on('terminal:ready', (d) => { ready = true; key = d.key; term.focus(); });
       sock.on('terminal:restored', (d) => { ready = true; key = d.key; term.focus(); });
       sock.on('terminal:output', (d) => term.write(d.data));
+      sock.on('terminal:scrollback', (d) => term.write(d.data));
       sock.on('terminal:exit', (d) => { ready = false; term.writeln('\r\n\x1b[33m[Session ended]\x1b[0m'); });
       sock.on('terminal:error', (d) => term.writeln('\r\n\x1b[31m[' + d.message + ']\x1b[0m'));
     }

@@ -44,8 +44,9 @@ server/db/secrets.db
 server/.darkhan.pid
 server/.dev
 
-# Transcripts (auto-generated, contain internal comms — NEVER commit)
+# Transcripts (auto-generated, may contain secrets — NEVER commit)
 docs/transcripts/
+server/transcripts/
 
 # Logs
 *.log

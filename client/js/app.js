@@ -270,7 +270,6 @@
         channels = [
           { id: 'chan_coordination', name: '#coordination' },
           { id: 'chan_darkhan', name: '#darkhan' },
-          { id: 'chan_coordination', name: '#coordination' },
           { id: 'chan_alerts', name: '#alerts' },
         ];
       }
@@ -2219,12 +2218,17 @@
 
       splitTerminalSocket.on('connect', () => {
         updateSplitTerminalStatus('Connecting...', 'var(--warning, #f39c12)');
-        splitTerminalSocket.emit('terminal:spawn', {
-          mode: 'claude',
-          key: (currentUser || 'admin') + '_claude_observer',
-          cols: splitTerminal.cols,
-          rows: splitTerminal.rows,
-        });
+        // Defer spawn to let terminal:restored arrive first if session exists
+        setTimeout(() => {
+          if (!splitTerminalReady) {
+            splitTerminalSocket.emit('terminal:spawn', {
+              mode: 'claude',
+              key: (currentUser?.id || currentUser?.username || 'admin') + '_claude_observer',
+              cols: splitTerminal.cols,
+              rows: splitTerminal.rows,
+            });
+          }
+        }, 50);
       });
 
       splitTerminalSocket.on('terminal:ready', ({ key, mode: m }) => {
@@ -2245,6 +2249,10 @@
       });
 
       splitTerminalSocket.on('terminal:output', ({ data }) => {
+        if (splitTerminal) splitTerminal.write(data);
+      });
+
+      splitTerminalSocket.on('terminal:scrollback', ({ data }) => {
         if (splitTerminal) splitTerminal.write(data);
       });
 
@@ -2272,7 +2280,7 @@
     } else {
       splitTerminalSocket.emit('terminal:spawn', {
         mode: 'claude',
-        key: (currentUser || 'admin') + '_claude_observer',
+        key: (currentUser?.id || currentUser?.username || 'admin') + '_claude_observer',
         cols: splitTerminal.cols,
         rows: splitTerminal.rows,
       });
@@ -2374,7 +2382,12 @@
 
       terminalSocket.on('connect', () => {
         updateTerminalStatus('Connected', 'var(--success, #27ae60)');
-        terminalSocket.emit('terminal:spawn', { mode, cols: terminal.cols, rows: terminal.rows });
+        // Defer spawn to let terminal:restored arrive first if session exists
+        setTimeout(() => {
+          if (!terminalReady) {
+            terminalSocket.emit('terminal:spawn', { mode, cols: terminal.cols, rows: terminal.rows });
+          }
+        }, 50);
       });
 
       terminalSocket.on('terminal:ready', ({ key, mode: m }) => {
@@ -2400,6 +2413,10 @@
       });
 
       terminalSocket.on('terminal:output', ({ data }) => {
+        if (terminal) terminal.write(data);
+      });
+
+      terminalSocket.on('terminal:scrollback', ({ data }) => {
         if (terminal) terminal.write(data);
       });
 
