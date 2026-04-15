@@ -75,4 +75,5 @@ docs/notification-pipeline-setup.md
 # Siege test artifacts (contain internal results — NEVER commit)
 server/logs/siege-*
 server/scripts/siege-*
+scripts/seed-*.js
 docs/SIEGE-REPORT-*

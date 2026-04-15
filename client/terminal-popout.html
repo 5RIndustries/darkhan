@@ -77,7 +77,13 @@
   (function() {
     const params = new URLSearchParams(window.location.search);
     const initialMode = params.get('mode') || 'claude';
+    const remoteNodeId = params.get('node') || null;
+    const remoteLabel = params.get('label') || remoteNodeId || '';
     document.getElementById('mode-select').value = initialMode;
+    if (remoteNodeId) {
+      document.querySelector('#toolbar span strong').textContent = 'Darkhan';
+      document.querySelector('#toolbar span').innerHTML = '<strong>Darkhan</strong> Remote \u2014 ' + remoteLabel;
+    }
 
     let termSocket = null;
     let terminal = null;
@@ -139,7 +145,9 @@
           // Defer spawn to let terminal:restored arrive first if session exists
           setTimeout(() => {
             if (!ready) {
-              termSocket.emit('terminal:spawn', { mode, cols: terminal.cols, rows: terminal.rows });
+              const spawnOpts = { mode, cols: terminal.cols, rows: terminal.rows };
+              if (remoteNodeId) { spawnOpts.remote = true; spawnOpts.nodeId = remoteNodeId; }
+              termSocket.emit('terminal:spawn', spawnOpts);
             }
           }, 50);
         });

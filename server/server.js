@@ -265,6 +265,14 @@ db.serialize(() => {
   db.run("ALTER TABLE users ADD COLUMN execution_tier TEXT DEFAULT 'supervised'", (err) => {
     if (err && !err.message.includes('duplicate column')) console.error('[Migration]', err.message);
   });
+  db.run("ALTER TABLE tasks ADD COLUMN category TEXT DEFAULT 'general'", (err) => {
+    if (err && !err.message.includes('duplicate column')) console.error('[Migration]', err.message);
+  });
+  db.run("ALTER TABLE tasks RENAME COLUMN vault_path TO folio_path", (err) => {
+    if (err && !err.message.includes('no such column') && !err.message.includes('duplicate column')) {
+      // Silently ignore if already renamed or column doesn't exist
+    }
+  });
   runSeedIfEmpty(db);
 });
 
@@ -953,6 +961,12 @@ app.locals.unifiedClaude = unifiedClaude;
 const terminalRelay = new TerminalRelay({ io, db, config, activityLog, unifiedClaude });
 io.of('/terminal').use(socketAuthMiddleware);
 app.locals.terminalRelay = terminalRelay;
+
+// Remote terminal proxy — federated terminal sessions to Penny (Node 1) and Lindsey (Node 3)
+const { RemoteTerminalProxy } = require('./services/remote-terminal-proxy');
+const remoteTerminalProxy = new RemoteTerminalProxy({ io, config, activityLog });
+app.locals.remoteTerminalProxy = remoteTerminalProxy;
+app.use('/api/remote-terminal', require('./routes/remote-terminal'));
 
 io.on('connection', (socket) => {
   console.log('[Darkhan] Client connected:', socket.id);

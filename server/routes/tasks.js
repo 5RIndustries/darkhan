@@ -1,9 +1,10 @@
 /**
  * Darkhan — Task Routes
- * GET    /api/tasks          — list tasks (with status, assignee filters)
+ * GET    /api/tasks          — list tasks (with status, assignee, category filters)
  * POST   /api/tasks          — create a task
+ * POST   /api/tasks/batch    — create multiple tasks at once
  * GET    /api/tasks/:id      — get single task
- * PATCH  /api/tasks/:id      — update task (status, priority, assignee)
+ * PATCH  /api/tasks/:id      — update task (status, priority, assignee, category)
  * DELETE /api/tasks/:id      — delete task (admin only)
  */
 
@@ -18,7 +19,7 @@ router.use(requireAuth);
 // GET /api/tasks
 router.get('/', (req, res) => {
   const db = req.app.locals.db;
-  const { status, assignee, priority, limit } = req.query;
+  const { status, assignee, priority, category, limit } = req.query;
 
   let sql = 'SELECT * FROM tasks WHERE 1=1';
   const params = [];
@@ -35,10 +36,14 @@ router.get('/', (req, res) => {
     sql += ' AND priority = ?';
     params.push(parseInt(priority));
   }
+  if (category) {
+    sql += ' AND category = ?';
+    params.push(category);
+  }
 
   sql += ' ORDER BY priority ASC, created_at DESC';
 
-  const queryLimit = Math.min(parseInt(limit) || 50, 200);
+  const queryLimit = Math.min(parseInt(limit) || 200, 500);
   sql += ' LIMIT ?';
   params.push(queryLimit);
 
@@ -77,6 +82,7 @@ router.post('/', (req, res) => {
     description = null,
     assignee,
     priority = 3,
+    category = 'general',
     folio_path = null
   } = req.body;
 
@@ -87,9 +93,9 @@ router.post('/', (req, res) => {
   const id = crypto.randomUUID();
 
   db.run(
-    `INSERT INTO tasks (id, title, description, assignee, created_by, priority, folio_path)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-    [id, title, description, assignee, userId, priority, folio_path],
+    `INSERT INTO tasks (id, title, description, assignee, created_by, priority, category, folio_path)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [id, title, description, assignee, userId, priority, category, folio_path],
     function (err) {
       if (err) {
         console.error('Task POST error:', err.message);
@@ -104,6 +110,7 @@ router.post('/', (req, res) => {
         created_by: userId,
         status: 'queued',
         priority,
+        category,
         folio_path,
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString()
@@ -117,12 +124,59 @@ router.post('/', (req, res) => {
   );
 });
 
+// POST /api/tasks/batch — create multiple tasks at once
+router.post('/batch', (req, res) => {
+  const db = req.app.locals.db;
+  const io = req.app.locals.io;
+  const userId = getCurrentUserId(req);
+  const { tasks } = req.body;
+
+  if (!Array.isArray(tasks) || tasks.length === 0) {
+    return res.status(400).json({ error: 'tasks array is required' });
+  }
+
+  const created = [];
+  const stmt = db.prepare(
+    `INSERT INTO tasks (id, title, description, assignee, created_by, status, priority, category, folio_path)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  );
+
+  for (const t of tasks) {
+    if (!t.title || !t.assignee) continue;
+    const id = crypto.randomUUID();
+    const task = {
+      id,
+      title: t.title,
+      description: t.description || null,
+      assignee: t.assignee,
+      created_by: userId,
+      status: t.status || 'queued',
+      priority: t.priority || 3,
+      category: t.category || 'general',
+      folio_path: t.folio_path || null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    };
+    stmt.run([id, task.title, task.description, task.assignee, task.created_by, task.status, task.priority, task.category, task.folio_path]);
+    created.push(task);
+  }
+
+  stmt.finalize((err) => {
+    if (err) {
+      console.error('Task batch error:', err.message);
+      return res.status(500).json({ error: 'Failed to create tasks' });
+    }
+    io.emit('task_update', { action: 'batch_created', count: created.length });
+    return res.status(201).json({ ok: true, created: created.length, tasks: created });
+  });
+});
+
 // PATCH /api/tasks/:id
 router.patch('/:id', (req, res) => {
   const db = req.app.locals.db;
   const io = req.app.locals.io;
 
-  const allowedFields = ['status', 'priority', 'assignee', 'description', 'folio_path'];
+  const allowedFields = ['status', 'priority', 'assignee', 'description', 'category', 'folio_path'];
   const updates = [];
   const params = [];
 

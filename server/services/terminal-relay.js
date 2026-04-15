@@ -100,6 +100,9 @@ class TerminalRelay {
   }
 
   async _spawn(socket, userId, opts) {
+    // Remote spawn requests are handled by RemoteTerminalProxy — ignore them here
+    if (opts.remote) return;
+
     const mode = opts.mode || 'claude'; // 'claude' or 'shell'
     const key = opts.key || `${userId}_${mode}`;
     const cols = opts.cols || 120;

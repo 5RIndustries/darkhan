@@ -571,6 +571,7 @@
     channelList.querySelectorAll('li').forEach(el => el.classList.remove('active'));
 
     if (currentView === 'tasks') loadTasks();
+    if (currentView === 'kanban') loadKanban();
     if (currentView === 'dashboard') loadDashboard();
     if (currentView === 'approvals') loadApprovals();
     if (currentView === 'workers') loadWorkers();
@@ -603,6 +604,26 @@
       taskView.className = 'view hidden';
       taskView.innerHTML = '<header class="channel-header"><h2>Tasks</h2></header><div id="tasks-content" class="content-area"><p>Loading...</p></div>';
       viewParent.appendChild(taskView);
+    }
+
+    // Kanban view
+    let kanbanView = document.getElementById('kanban-view');
+    if (!kanbanView) {
+      kanbanView = document.createElement('div');
+      kanbanView.id = 'kanban-view';
+      kanbanView.className = 'view hidden';
+      kanbanView.style.display = 'none';
+      kanbanView.innerHTML = `
+        <header class="channel-header"><h2>Kanban Board</h2></header>
+        <div class="kanban-toolbar">
+          <select id="kanban-filter-assignee"><option value="">All Assignees</option></select>
+          <select id="kanban-filter-category"><option value="">All Categories</option></select>
+          <button class="primary" id="kanban-add-btn">+ Add Task</button>
+        </div>
+        <div id="kanban-content" class="kanban-board"><p>Loading...</p></div>
+      `;
+      viewParent.appendChild(kanbanView);
+      document.getElementById('kanban-add-btn').addEventListener('click', () => openKanbanModal());
     }
 
     // Approvals view
@@ -899,6 +920,9 @@
             <button id="terminal-popout-btn" style="padding:0.3rem 0.8rem;background:var(--bg-secondary);color:var(--text-primary);border:1px solid var(--border);border-radius:var(--radius);cursor:pointer;font-size:0.85rem;" title="Pop out to separate window">&#8599;</button>
           </div>
         </header>
+        <div id="terminal-tabs" style="display:flex;gap:0;border-bottom:1px solid var(--border);background:var(--bg-secondary);padding:0 0.5rem;">
+          <button class="terminal-tab active" data-node="local" style="padding:0.4rem 0.8rem;background:var(--bg-primary);color:var(--text-primary);border:1px solid var(--border);border-bottom:none;border-radius:var(--radius) var(--radius) 0 0;cursor:pointer;font-size:0.8rem;margin-bottom:-1px;">Local</button>
+        </div>
         <div id="terminal-container" style="flex:1;background:#0d1117;padding:4px;overflow:hidden;"></div>
       `;
       viewParent.appendChild(termView);
@@ -909,11 +933,13 @@
 
     // Check lockdown status when settings view is shown
     if (view === 'settings') checkLockdownStatus();
-    if (view === 'terminal') initTerminal();
+    if (view === 'terminal') { initTerminal(); loadRemoteTerminalTabs(); }
 
     chatView.classList.toggle('hidden', view !== 'chat');
     dashView.classList.toggle('hidden', view !== 'dashboard');
     taskView.classList.toggle('hidden', view !== 'tasks');
+    if (kanbanView) kanbanView.classList.toggle('hidden', view !== 'kanban');
+    if (kanbanView) kanbanView.style.display = view === 'kanban' ? 'flex' : 'none';
     appView.classList.toggle('hidden', view !== 'approvals');
     workView.classList.toggle('hidden', view !== 'workers');
     costView.classList.toggle('hidden', view !== 'costs');
@@ -1110,6 +1136,249 @@
       container.innerHTML = `<p class="error">Failed to load tasks: ${err.message}</p>`;
     }
   }
+
+  // --- Kanban Board ---
+  const KANBAN_COLUMNS = [
+    { key: 'queued', label: 'To Do' },
+    { key: 'in_progress', label: 'In Progress' },
+    { key: 'blocked', label: 'Blocked' },
+    { key: 'complete', label: 'Done' }
+  ];
+  const DEFAULT_CATEGORIES = ['general'];
+  const PRIORITY_LABELS = { 1: 'Critical', 2: 'High', 3: 'Normal', 4: 'Low' };
+
+  let kanbanTasks = [];
+
+  async function loadKanban() {
+    const container = document.getElementById('kanban-content');
+    if (!container) return;
+    try {
+      const data = await api('GET', '/tasks?limit=500');
+      kanbanTasks = data.tasks || [];
+      populateKanbanFilters();
+      renderKanbanBoard();
+    } catch (err) {
+      container.innerHTML = `<p class="error">Failed to load kanban: ${err.message}</p>`;
+    }
+  }
+
+  function populateKanbanFilters() {
+    const assigneeSelect = document.getElementById('kanban-filter-assignee');
+    const categorySelect = document.getElementById('kanban-filter-category');
+    if (!assigneeSelect || !categorySelect) return;
+
+    // Preserve current selections
+    const curAssignee = assigneeSelect.value;
+    const curCategory = categorySelect.value;
+
+    // Get unique assignees and categories from data
+    const assignees = [...new Set(kanbanTasks.map(t => t.assignee))].sort();
+    const categories = [...new Set(kanbanTasks.map(t => t.category || 'general'))].sort();
+
+    assigneeSelect.innerHTML = '<option value="">All Assignees</option>' +
+      assignees.map(a => `<option value="${escapeHtml(a)}"${a === curAssignee ? ' selected' : ''}>${escapeHtml(a)}</option>`).join('');
+    categorySelect.innerHTML = '<option value="">All Categories</option>' +
+      categories.map(c => `<option value="${escapeHtml(c)}"${c === curCategory ? ' selected' : ''}>${escapeHtml(c)}</option>`).join('');
+
+    // Wire up filter change handlers (only once)
+    if (!assigneeSelect._kanbanWired) {
+      assigneeSelect.addEventListener('change', renderKanbanBoard);
+      categorySelect.addEventListener('change', renderKanbanBoard);
+      assigneeSelect._kanbanWired = true;
+    }
+  }
+
+  function renderKanbanBoard() {
+    const container = document.getElementById('kanban-content');
+    if (!container) return;
+
+    const filterAssignee = document.getElementById('kanban-filter-assignee')?.value || '';
+    const filterCategory = document.getElementById('kanban-filter-category')?.value || '';
+
+    // Filter tasks
+    let filtered = kanbanTasks;
+    if (filterAssignee) filtered = filtered.filter(t => t.assignee === filterAssignee);
+    if (filterCategory) filtered = filtered.filter(t => (t.category || 'general') === filterCategory);
+
+    // Map 'promoted' to 'complete' for display
+    const normalize = (s) => s === 'promoted' ? 'complete' : s;
+
+    // Build columns
+    container.innerHTML = KANBAN_COLUMNS.map(col => {
+      const colTasks = filtered.filter(t => normalize(t.status) === col.key)
+        .sort((a, b) => (a.priority || 3) - (b.priority || 3));
+      return `
+        <div class="kanban-column kanban-col-${col.key}">
+          <div class="kanban-column-header">
+            <span>${col.label}</span>
+            <span class="count">${colTasks.length}</span>
+          </div>
+          <div class="kanban-cards" data-status="${col.key}">
+            ${colTasks.length === 0 ? '<p style="color:var(--text-muted);font-size:0.75rem;text-align:center;padding:1rem;">No tasks</p>' :
+              colTasks.map(t => renderKanbanCard(t)).join('')}
+          </div>
+        </div>`;
+    }).join('');
+
+    // Wire up card action buttons
+    container.querySelectorAll('[data-action]').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const taskId = btn.dataset.taskId;
+        const action = btn.dataset.action;
+        handleKanbanAction(taskId, action);
+      });
+    });
+
+    // Wire up card click for edit
+    container.querySelectorAll('.kanban-card[data-task-id]').forEach(card => {
+      card.addEventListener('click', () => {
+        const taskId = card.dataset.taskId;
+        const task = kanbanTasks.find(t => t.id === taskId);
+        if (task) openKanbanModal(task);
+      });
+    });
+  }
+
+  function renderKanbanCard(t) {
+    const cat = t.category || 'general';
+    const prio = t.priority || 3;
+    const statusMoves = {
+      queued: [{ label: 'Start', to: 'in_progress' }, { label: 'Block', to: 'blocked' }],
+      in_progress: [{ label: 'Done', to: 'complete' }, { label: 'Block', to: 'blocked' }],
+      blocked: [{ label: 'Unblock', to: 'queued' }, { label: 'Start', to: 'in_progress' }],
+      complete: [{ label: 'Reopen', to: 'queued' }]
+    };
+    const moves = statusMoves[t.status] || statusMoves[t.status === 'promoted' ? 'complete' : 'queued'] || [];
+
+    return `
+      <div class="kanban-card" data-task-id="${t.id}">
+        <div class="kanban-card-title">${escapeHtml(t.title)}</div>
+        ${t.description ? `<div class="kanban-card-desc">${escapeHtml(t.description)}</div>` : ''}
+        <div class="kanban-card-meta">
+          <span class="priority-dot priority-${prio}" title="${PRIORITY_LABELS[prio] || 'Normal'}"></span>
+          <span class="assignee-tag">${escapeHtml(t.assignee)}</span>
+          <span class="category-tag">${escapeHtml(cat)}</span>
+        </div>
+        <div class="kanban-card-actions">
+          ${moves.map(m => `<button data-action="move" data-task-id="${t.id}" data-to="${m.to}">${m.label}</button>`).join('')}
+          <button data-action="delete" data-task-id="${t.id}" style="margin-left:auto;color:var(--danger);">Del</button>
+        </div>
+      </div>`;
+  }
+
+  async function handleKanbanAction(taskId, action) {
+    try {
+      const btn = document.querySelector(`[data-task-id="${taskId}"][data-action="${action}"]`);
+      if (action === 'move') {
+        const newStatus = btn?.dataset.to;
+        if (!newStatus) return;
+        await api('PATCH', `/tasks/${taskId}`, { status: newStatus });
+      } else if (action === 'delete') {
+        if (!confirm('Delete this task?')) return;
+        await api('DELETE', `/tasks/${taskId}`);
+      }
+      await loadKanban();
+    } catch (err) {
+      alert('Action failed: ' + err.message);
+    }
+  }
+
+  function getKanbanAssignees() {
+    // Build from team data + any assignees already in tasks
+    const fromTeam = (teamData?.members || []).map(m => m.name || m.username || m.id);
+    const fromTasks = kanbanTasks.map(t => t.assignee);
+    return [...new Set([...fromTeam, ...fromTasks])].filter(Boolean).sort();
+  }
+
+  function getKanbanCategories() {
+    const fromTasks = kanbanTasks.map(t => t.category || 'general');
+    return [...new Set([...DEFAULT_CATEGORIES, ...fromTasks])].filter(Boolean).sort();
+  }
+
+  function openKanbanModal(task) {
+    // Remove any existing modal
+    document.querySelector('.kanban-modal-overlay')?.remove();
+
+    const isEdit = !!task;
+    const assignees = getKanbanAssignees();
+    const categories = getKanbanCategories();
+    const overlay = document.createElement('div');
+    overlay.className = 'kanban-modal-overlay';
+    overlay.innerHTML = `
+      <div class="kanban-modal">
+        <h3>${isEdit ? 'Edit Task' : 'Add Task'}</h3>
+        <label>Title</label>
+        <input type="text" id="km-title" value="${isEdit ? escapeHtml(task.title) : ''}" placeholder="Task title">
+        <label>Description</label>
+        <textarea id="km-desc" placeholder="Optional description">${isEdit ? escapeHtml(task.description || '') : ''}</textarea>
+        <label>Assignee</label>
+        <select id="km-assignee">
+          ${assignees.map(a => `<option value="${escapeHtml(a)}"${isEdit && task.assignee === a ? ' selected' : ''}>${escapeHtml(a)}</option>`).join('')}
+        </select>
+        <label>Category</label>
+        <select id="km-category">
+          ${categories.map(c => `<option value="${escapeHtml(c)}"${isEdit && (task.category || 'general') === c ? ' selected' : ''}>${escapeHtml(c)}</option>`).join('')}
+        </select>
+        <label>Priority</label>
+        <select id="km-priority">
+          <option value="1"${isEdit && task.priority === 1 ? ' selected' : ''}>Critical</option>
+          <option value="2"${isEdit && task.priority === 2 ? ' selected' : ''}>High</option>
+          <option value="3"${isEdit && task.priority === 3 || !isEdit ? ' selected' : ''}>Normal</option>
+          <option value="4"${isEdit && task.priority === 4 ? ' selected' : ''}>Low</option>
+        </select>
+        <label>Status</label>
+        <select id="km-status">
+          <option value="queued"${isEdit && task.status === 'queued' ? ' selected' : ''}>To Do</option>
+          <option value="in_progress"${isEdit && task.status === 'in_progress' ? ' selected' : ''}>In Progress</option>
+          <option value="blocked"${isEdit && task.status === 'blocked' ? ' selected' : ''}>Blocked</option>
+          <option value="complete"${isEdit && task.status === 'complete' ? ' selected' : ''}>Done</option>
+        </select>
+        <div class="kanban-modal-buttons">
+          <button class="btn-cancel" id="km-cancel">Cancel</button>
+          <button class="btn-save" id="km-save">${isEdit ? 'Update' : 'Create'}</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(overlay);
+
+    // Close on overlay click
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+    document.getElementById('km-cancel').addEventListener('click', () => overlay.remove());
+
+    document.getElementById('km-save').addEventListener('click', async () => {
+      const title = document.getElementById('km-title').value.trim();
+      if (!title) { alert('Title is required'); return; }
+      const payload = {
+        title,
+        description: document.getElementById('km-desc').value.trim() || null,
+        assignee: document.getElementById('km-assignee').value,
+        category: document.getElementById('km-category').value,
+        priority: parseInt(document.getElementById('km-priority').value),
+        status: document.getElementById('km-status').value
+      };
+      try {
+        if (isEdit) {
+          await api('PATCH', `/tasks/${task.id}`, payload);
+        } else {
+          await api('POST', '/tasks', payload);
+        }
+        overlay.remove();
+        await loadKanban();
+      } catch (err) {
+        alert('Failed: ' + err.message);
+      }
+    });
+
+    // Focus title
+    document.getElementById('km-title').focus();
+  }
+
+  // Listen for real-time task updates
+  socket.on('task_update', () => {
+    if (currentView === 'kanban') loadKanban();
+    if (currentView === 'tasks') loadTasks();
+  });
 
   // --- Dashboard ---
   async function loadDashboard() {
@@ -2460,7 +2729,15 @@
 
   function popoutTerminal() {
     const mode = document.getElementById('terminal-mode').value || 'claude';
-    const w = window.open('/terminal-popout.html?mode=' + mode, 'darkhan-terminal',
+    let url = '/terminal-popout.html?mode=' + mode;
+    let winName = 'darkhan-terminal';
+    if (activeTerminalTab !== 'local') {
+      const node = remoteTerminals.get(activeTerminalTab);
+      const label = node ? activeTerminalTab : activeTerminalTab;
+      url += '&node=' + encodeURIComponent(activeTerminalTab) + '&label=' + encodeURIComponent(label);
+      winName = 'darkhan-terminal-' + activeTerminalTab;
+    }
+    const w = window.open(url, winName,
       'width=900,height=700,menubar=no,toolbar=no,location=no,status=no');
     if (!w) alert('Pop-up blocked — please allow pop-ups for Darkhan.');
   }
@@ -2468,6 +2745,238 @@
   function updateTerminalStatus(text, color) {
     const el = document.getElementById('terminal-status');
     if (el) { el.textContent = text; el.style.color = color; }
+  }
+
+  // --- Remote Terminal Tabs ---
+  const remoteTerminals = new Map(); // nodeId -> { terminal, fitAddon, socket, ready, sessionKey, container }
+  let activeTerminalTab = 'local';
+
+  async function loadRemoteTerminalTabs() {
+    try {
+      const resp = await fetch('/api/remote-terminal/nodes', { credentials: 'include' });
+      if (!resp.ok) return;
+      const { nodes } = await resp.json();
+      const tabBar = document.getElementById('terminal-tabs');
+      if (!tabBar) return;
+
+      // Remove existing remote tabs (keep local tab)
+      tabBar.querySelectorAll('.terminal-tab[data-node]:not([data-node="local"])').forEach(t => t.remove());
+
+      for (const node of nodes) {
+        const tab = document.createElement('button');
+        tab.className = 'terminal-tab';
+        tab.dataset.node = node.id;
+        tab.style.cssText = 'padding:0.4rem 0.8rem;background:var(--bg-tertiary, #1a1a2e);color:var(--text-muted);border:1px solid var(--border);border-bottom:none;border-radius:var(--radius) var(--radius) 0 0;cursor:pointer;font-size:0.8rem;margin-bottom:-1px;';
+        const statusDot = node.reachable ? '\u25CF ' : '\u25CB ';
+        const statusColor = node.reachable ? '#7ee787' : (node.hasApiKey ? '#d29922' : '#ff7b72');
+        tab.innerHTML = `<span style="color:${statusColor};font-size:0.7rem;">${statusDot}</span>${node.label}`;
+        tab.addEventListener('click', () => switchTerminalTab(node.id, node.label));
+        tabBar.appendChild(tab);
+      }
+    } catch (e) {
+      console.warn('[RemoteTerminal] Failed to load remote nodes:', e);
+    }
+  }
+
+  function switchTerminalTab(nodeId, label) {
+    if (activeTerminalTab === nodeId) return;
+
+    // Update tab styling
+    document.querySelectorAll('.terminal-tab').forEach(tab => {
+      if (tab.dataset.node === nodeId) {
+        tab.classList.add('active');
+        tab.style.background = 'var(--bg-primary)';
+        tab.style.color = 'var(--text-primary)';
+      } else {
+        tab.classList.remove('active');
+        tab.style.background = 'var(--bg-tertiary, #1a1a2e)';
+        tab.style.color = 'var(--text-muted)';
+      }
+    });
+
+    const container = document.getElementById('terminal-container');
+    const controls = document.querySelectorAll('#terminal-spawn-btn, #terminal-kill-btn, #terminal-mode');
+
+    // Hide local terminal
+    if (activeTerminalTab === 'local') {
+      if (terminal && terminal.element) terminal.element.style.display = 'none';
+      controls.forEach(el => el.style.display = 'none');
+    } else {
+      const prev = remoteTerminals.get(activeTerminalTab);
+      if (prev && prev.terminal && prev.terminal.element) prev.terminal.element.style.display = 'none';
+    }
+
+    activeTerminalTab = nodeId;
+
+    // Show local terminal
+    if (nodeId === 'local') {
+      // Hide all remote terminal containers
+      for (const [id, sess] of remoteTerminals) {
+        if (sess.container) sess.container.style.display = 'none';
+      }
+      if (terminal && terminal.element) terminal.element.style.display = '';
+      controls.forEach(el => {
+        if (el.id === 'terminal-kill-btn') el.style.display = terminalReady ? 'inline-block' : 'none';
+        else if (el.id === 'terminal-spawn-btn') el.style.display = terminalReady ? 'none' : 'inline-block';
+        else el.style.display = '';
+      });
+      if (fitAddon) setTimeout(() => fitAddon.fit(), 50);
+      updateTerminalStatus(terminalReady ? 'Active' : 'Disconnected', terminalReady ? 'var(--success, #27ae60)' : 'var(--text-muted)');
+      return;
+    }
+
+    // Show or create remote terminal
+    controls.forEach(el => el.style.display = 'none');
+    // Hide all other remote terminal containers
+    for (const [id, sess] of remoteTerminals) {
+      if (sess.container) sess.container.style.display = 'none';
+    }
+    const existing = remoteTerminals.get(nodeId);
+    if (existing && existing.terminal) {
+      if (existing.container) existing.container.style.display = '';
+      if (existing.fitAddon) setTimeout(() => existing.fitAddon.fit(), 50);
+      existing.terminal.focus();
+      updateTerminalStatus(existing.ready ? `${label} Active` : `${label} Connecting...`,
+        existing.ready ? 'var(--success, #27ae60)' : 'var(--warning, #f39c12)');
+    } else {
+      connectRemoteTerminal(nodeId, label, container);
+    }
+  }
+
+  function connectRemoteTerminal(nodeId, label, parentContainer) {
+    updateTerminalStatus(`Connecting to ${label}...`, 'var(--warning, #f39c12)');
+
+    // Create a dedicated container div for this remote terminal
+    const remoteContainer = document.createElement('div');
+    remoteContainer.id = `remote-terminal-${nodeId}`;
+    remoteContainer.style.cssText = 'position:absolute;top:0;left:0;right:0;bottom:0;background:#0d1117;padding:4px;overflow:hidden;';
+    parentContainer.style.position = 'relative';
+    parentContainer.appendChild(remoteContainer);
+
+    const remoteTerm = new window.Terminal({
+      cursorBlink: true,
+      fontSize: 13,
+      fontFamily: "'JetBrains Mono', 'SF Mono', 'Fira Code', Menlo, monospace",
+      theme: {
+        background: '#0d1117',
+        foreground: '#e6edf3',
+        cursor: '#e94560',
+        selectionBackground: '#264f78',
+        black: '#0d1117',
+        red: '#ff7b72',
+        green: '#7ee787',
+        yellow: '#d29922',
+        blue: '#79c0ff',
+        magenta: '#d2a8ff',
+        cyan: '#a5d6ff',
+        white: '#e6edf3',
+      },
+      allowProposedApi: true,
+    });
+
+    const remoteFit = new window.FitAddon.FitAddon();
+    remoteTerm.loadAddon(remoteFit);
+    remoteTerm.loadAddon(new window.WebLinksAddon.WebLinksAddon());
+    remoteTerm.open(remoteContainer);
+    remoteFit.fit();
+
+    remoteTerm.writeln(`\x1b[1;36mDarkhan Remote Terminal\x1b[0m \u2014 ${label}`);
+    remoteTerm.writeln('Connecting...\r\n');
+
+    const session = {
+      terminal: remoteTerm,
+      fitAddon: remoteFit,
+      socket: null,
+      ready: false,
+      sessionKey: null,
+      container: remoteContainer
+    };
+    remoteTerminals.set(nodeId, session);
+
+    const remoteSocket = io('/terminal', { withCredentials: true });
+    session.socket = remoteSocket;
+
+    remoteSocket.on('connect', () => {
+      remoteSocket.emit('terminal:spawn', {
+        remote: true,
+        nodeId,
+        mode: 'claude',
+        cols: remoteTerm.cols,
+        rows: remoteTerm.rows
+      });
+    });
+
+    remoteSocket.on('terminal:ready', ({ key, mode }) => {
+      session.ready = true;
+      session.sessionKey = key;
+      if (activeTerminalTab === nodeId) {
+        updateTerminalStatus(`${label} Active`, 'var(--success, #27ae60)');
+      }
+      remoteTerm.focus();
+    });
+
+    remoteSocket.on('terminal:restored', ({ key, mode }) => {
+      session.ready = true;
+      session.sessionKey = key;
+      if (activeTerminalTab === nodeId) {
+        updateTerminalStatus(`${label} Restored`, 'var(--success, #27ae60)');
+      }
+      remoteTerm.focus();
+    });
+
+    remoteSocket.on('terminal:output', ({ data }) => {
+      if (remoteTerm) remoteTerm.write(data);
+    });
+
+    remoteSocket.on('terminal:scrollback', ({ data }) => {
+      if (remoteTerm) remoteTerm.write(data);
+    });
+
+    remoteSocket.on('terminal:exit', ({ exitCode }) => {
+      session.ready = false;
+      session.sessionKey = null;
+      if (activeTerminalTab === nodeId) {
+        updateTerminalStatus(`${label} Exited`, 'var(--warning, #f39c12)');
+      }
+      remoteTerm.writeln(`\r\n\x1b[33m[Remote session ended \u2014 exit code ${exitCode}]\x1b[0m`);
+    });
+
+    remoteSocket.on('terminal:error', ({ message }) => {
+      remoteTerm.writeln(`\r\n\x1b[31m[${message}]\x1b[0m`);
+      if (activeTerminalTab === nodeId) {
+        updateTerminalStatus(`${label} Error`, 'var(--danger, #c0392b)');
+      }
+    });
+
+    remoteSocket.on('connect_error', (err) => {
+      remoteTerm.writeln(`\r\n\x1b[31m[Connection error: ${err.message}]\x1b[0m`);
+      if (activeTerminalTab === nodeId) {
+        updateTerminalStatus(`${label} Failed`, 'var(--danger, #c0392b)');
+      }
+    });
+
+    remoteSocket.on('disconnect', () => {
+      session.ready = false;
+      if (activeTerminalTab === nodeId) {
+        updateTerminalStatus(`${label} Disconnected`, 'var(--text-muted)');
+      }
+    });
+
+    remoteTerm.onData((data) => {
+      if (remoteSocket && session.ready) {
+        remoteSocket.emit('terminal:input', { key: session.sessionKey, data });
+      }
+    });
+
+    const resizeObserver = new ResizeObserver(() => {
+      if (remoteFit) {
+        remoteFit.fit();
+        if (remoteSocket && session.ready) {
+          remoteSocket.emit('terminal:resize', { key: session.sessionKey, cols: remoteTerm.cols, rows: remoteTerm.rows });
+        }
+      }
+    });
+    resizeObserver.observe(remoteContainer);
   }
 
   // --- Init ---
