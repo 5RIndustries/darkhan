@@ -680,6 +680,13 @@ class WorkerRuntime {
   async _buildContext(agentId, agentConfig) {
     const self = this;
 
+    // [AEP] Resolve the current trace id for this worker at call time.
+    // The context object is stored on the worker entry (see loadWorker) and
+    // mutated by _executeTask before each task runs. Closures defined below
+    // cannot reference `context` directly (it does not exist in their lexical
+    // scope) — this helper gives them a safe lookup.
+    const getTraceId = () => self.workers.get(agentId)?.context?._aepTraceId || null;
+
     // [ASI02] Tool rate limiter — caps per-task tool invocations.
     // Reset at the start of each task execution.
     const toolLimits = {
@@ -904,16 +911,17 @@ class WorkerRuntime {
               }
             }
             // [AEP] Record READ_FILE evidence
-            if (context._aepTraceId) {
-              self.aep.recordEvidence(context._aepTraceId, 'READ_FILE',
+            const readTrace = getTraceId();
+            if (readTrace) {
+              self.aep.recordEvidence(readTrace, 'READ_FILE',
                 ActionEvidenceProtocol.buildEvidence.fileRead(fullPath, content));
             }
             // [PRIVILEGE BOUNDARY] Auto-detect reads outside authorized scope
-            if (context._aepTraceId) {
+            if (readTrace) {
               const sensitivePatterns = ['.env', 'secrets.db', '.ssh', '.gnupg', 'private_key', 'credentials'];
               const isSensitive = sensitivePatterns.some(p => fullPath.includes(p));
               if (isSensitive) {
-                self.aep.recordEvidence(context._aepTraceId, 'PRIVILEGE_BOUNDARY', {
+                self.aep.recordEvidence(readTrace, 'PRIVILEGE_BOUNDARY', {
                   resource: fullPath,
                   authorizedScope: `folio: ${self.folioPath}, fsWrite: ${(agentConfig.permissions?.fsWrite || []).join(', ') || 'none'}`,
                   action: `READ_FILE on sensitive path`,
@@ -953,8 +961,9 @@ class WorkerRuntime {
             const dir = path.dirname(fullPath);
             if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
             // [AEP] Record WROTE_FILE evidence
-            if (context._aepTraceId) {
-              self.aep.recordEvidence(context._aepTraceId, 'WROTE_FILE',
+            const writeTrace = getTraceId();
+            if (writeTrace) {
+              self.aep.recordEvidence(writeTrace, 'WROTE_FILE',
                 ActionEvidenceProtocol.buildEvidence.fileWrite(fullPath, data));
             }
             self.activityLog?.append({ actor: agentId, action: 'fs_write', target: fullPath, details: JSON.stringify({ size: (data || '').length }) });
@@ -1016,16 +1025,17 @@ class WorkerRuntime {
                   }
                 }
                 // [AEP] Record SHELL_EXEC evidence
-                if (context._aepTraceId) {
-                  self.aep.recordEvidence(context._aepTraceId, 'SHELL_EXEC',
+                const shellTrace = getTraceId();
+                if (shellTrace) {
+                  self.aep.recordEvidence(shellTrace, 'SHELL_EXEC',
                     ActionEvidenceProtocol.buildEvidence.shellExec(command, 0, result.stdout));
                 }
                 // [PRIVILEGE BOUNDARY] Auto-detect shell access to sensitive resources
-                if (context._aepTraceId) {
+                if (shellTrace) {
                   const sensitiveShellPatterns = ['.env', 'secrets.db', '/etc/passwd', 'printenv', 'security find'];
                   const touchesSensitive = sensitiveShellPatterns.some(p => command.includes(p));
                   if (touchesSensitive) {
-                    self.aep.recordEvidence(context._aepTraceId, 'PRIVILEGE_BOUNDARY', {
+                    self.aep.recordEvidence(shellTrace, 'PRIVILEGE_BOUNDARY', {
                       resource: command.substring(0, 200),
                       authorizedScope: `shell: ${agentConfig.permissions?.shell || 'restricted'}`,
                       action: 'SHELL_EXEC accessing sensitive resource',
@@ -1082,8 +1092,9 @@ class WorkerRuntime {
                 snippet: item.snippet,
               }));
               // [AEP] Record SEARCHED evidence
-              if (context._aepTraceId) {
-                self.aep.recordEvidence(context._aepTraceId, 'SEARCHED',
+              const searchTrace = getTraceId();
+              if (searchTrace) {
+                self.aep.recordEvidence(searchTrace, 'SEARCHED',
                   ActionEvidenceProtocol.buildEvidence.search(query, results));
               }
               return results;
@@ -1151,8 +1162,9 @@ class WorkerRuntime {
             }
 
             // [AEP] Record FETCHED evidence
-            if (context._aepTraceId) {
-              self.aep.recordEvidence(context._aepTraceId, 'FETCHED',
+            const fetchTrace = getTraceId();
+            if (fetchTrace) {
+              self.aep.recordEvidence(fetchTrace, 'FETCHED',
                 ActionEvidenceProtocol.buildEvidence.httpFetch(url, resp.status, result));
             }
 
@@ -1365,7 +1377,7 @@ class WorkerRuntime {
           return self.oep.record({
             ...obs,
             agentId,
-            traceId: context._aepTraceId || null,
+            traceId: getTraceId(),
           });
         },
 
@@ -1373,19 +1385,73 @@ class WorkerRuntime {
         getVocabulary: () => self.oep.getVocabulary(),
 
         /** Check if a process is idle (0% CPU). Returns observation record or null. */
-        checkProcessIdle: (pid) => self.oep.checkProcessIdle(agentId, pid, context._aepTraceId),
+        checkProcessIdle: (pid) => self.oep.checkProcessIdle(agentId, pid, getTraceId()),
 
         /** Check if an expected process is absent. Returns observation record or null. */
-        checkProcessAbsent: (processPattern) => self.oep.checkProcessAbsent(agentId, processPattern, context._aepTraceId),
+        checkProcessAbsent: (processPattern) => self.oep.checkProcessAbsent(agentId, processPattern, getTraceId()),
 
         /** Check system memory pressure. Returns observation record or null. */
-        checkResourcePressure: () => self.oep.checkResourcePressure(agentId, context._aepTraceId),
+        checkResourcePressure: () => self.oep.checkResourcePressure(agentId, getTraceId()),
 
         /** Get recent observations for this agent. */
         getRecent: (limit) => self.oep.getByAgent(agentId, limit),
 
         /** Format an observation for channel display. */
         format: (record) => self.oep.formatForDisplay(record),
+      },
+
+      /**
+       * Read-only DB query tool for the security/audit pipeline.
+       *
+       * The shell `sqlite3` CLI is blocked for agents (correctly — arbitrary
+       * SQL including writes can escape the sandbox). But the daily audit
+       * needs to query the activity log for anomaly events and volume
+       * patterns. This gives a constrained path: SELECT against darkhan.db
+       * only, via the existing connection. Writes and destructive queries
+       * are rejected.
+       *
+       * Access is gated per-agent by `permissions.dbReadOnly: true` in
+       * darkhan.config.json. Defaults to allowed only for agent_darkhan
+       * (the security worker); agents without explicit permission are
+       * rejected. This is the "sandboxed read-only DB" path the Corey
+       * audit was designed to use.
+       */
+      db: {
+        query: (sql, params = []) => {
+          // Gate: only agents with dbReadOnly permission, or agent_darkhan by default.
+          const allowed = agentConfig.permissions?.dbReadOnly === true
+            || agentId === 'agent_darkhan';
+          if (!allowed) {
+            throw new Error(`db.query denied for ${agentId} (set permissions.dbReadOnly: true)`);
+          }
+          if (typeof sql !== 'string') {
+            throw new Error('db.query requires a SQL string');
+          }
+          // Strict SELECT-only gate — reject anything that could mutate state.
+          const trimmed = sql.trim();
+          if (!/^SELECT\b/i.test(trimmed)) {
+            throw new Error('db.query accepts SELECT statements only');
+          }
+          if (/\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|ATTACH|DETACH|PRAGMA|REPLACE|VACUUM)\b/i.test(sql)) {
+            throw new Error('db.query rejected: contains mutating or dangerous keyword');
+          }
+          // Semicolons would allow statement stacking — reject outright.
+          if (sql.includes(';')) {
+            throw new Error('db.query rejected: semicolons not allowed (single-statement only)');
+          }
+          self.activityLog?.append({
+            actor: agentId,
+            action: 'db_query',
+            target: 'darkhan.db',
+            details: JSON.stringify({ sql: sql.substring(0, 200), paramCount: params.length }),
+          });
+          return new Promise((resolve, reject) => {
+            self.db.all(sql, params, (err, rows) => {
+              if (err) reject(new Error(`db.query failed: ${err.message}`));
+              else resolve(rows || []);
+            });
+          });
+        },
       },
 
       // Agent config

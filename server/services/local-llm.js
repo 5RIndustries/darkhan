@@ -119,8 +119,15 @@ class LocalLLMProvider {
       gpuLayers: this.gpuLayers,
     });
 
+    // [SEQUENCE-POOL FIX 2026-04-16]
+    // Previous default was 1 sequence per context — after the first session
+    // disposed, subsequent getSequence() calls on the cached context threw
+    // "No sequences left" on every 2nd+ request. twoLLMConsensus was silently
+    // failing its local leg on every message after the first. Preallocate a
+    // pool so concurrent + sequential calls all have sequences available.
     const context = await model.createContext({
       contextSize: this.contextSize,
+      sequences: 4,
     });
 
     const elapsed = Date.now() - startTime;
@@ -141,8 +148,12 @@ class LocalLLMProvider {
     const { model, context, ggufPath } = await this.getModel(modelSpec);
     const { LlamaChatSession } = await getLlamaModule();
 
+    // Explicitly hold a sequence reference so we can release it in finally.
+    // Without this, session.dispose() did not cascade to the sequence and
+    // the context's sequence pool exhausted after N calls with "No sequences left".
+    const sequence = context.getSequence();
     const session = new LlamaChatSession({
-      contextSequence: context.getSequence(),
+      contextSequence: sequence,
     });
 
     // Build the prompt from messages
@@ -196,8 +207,10 @@ class LocalLLMProvider {
     try {
       response = await Promise.race([inferencePromise, timeoutPromise]);
     } finally {
-      // Dispose session to free context sequence
-      session.dispose();
+      // Dispose session AND its sequence — session.dispose() alone does not
+      // cascade to the underlying LlamaContextSequence in node-llama-cpp v3.
+      try { session.dispose(); } catch {}
+      try { sequence.dispose(); } catch {}
     }
 
     // Extract digest from blob filename for traceability
