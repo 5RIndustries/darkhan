@@ -20,6 +20,7 @@ import http from 'http';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import crypto from 'crypto';
 
 const DARKHAN_URL = process.env.DARKHAN_URL || 'http://localhost:3001';
 const API_KEY = process.env.DARKHAN_API_KEY || '';
@@ -148,7 +149,7 @@ const DEDUP_WINDOW_MS = 30000; // 30s dedup window
 
 function messageHash(msg) {
   const key = `${msg.from_user}:${(msg.body || '').substring(0, 200)}`;
-  return require('crypto').createHash('md5').update(key).digest('hex');
+  return crypto.createHash('md5').update(key).digest('hex');
 }
 
 function isDuplicate(msg) {
