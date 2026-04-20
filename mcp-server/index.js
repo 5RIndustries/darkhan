@@ -330,6 +330,12 @@ mcp.tool(
     touchPromptTime();
     try {
       const result = await darkhanRequest('POST', '/api/messages', { channel_id, body });
+      // Distinguish actual post from quarantine (API returns 202 with ok:true,
+      // quarantined:true when two-LLM consensus disagreed — message held, NOT
+      // federated). Callers need to know so they don't assume delivery.
+      if (result.quarantined) {
+        return { content: [{ type: 'text', text: `QUARANTINED in ${channel_id}: two-LLM consensus disagreement. Message NOT posted, NOT federated. Awaits human release via Settings > Quarantine. Quarantine id: ${result.quarantineId || 'unknown'}.` }] };
+      }
       if (result.id || result.ok) {
         return { content: [{ type: 'text', text: `Posted to ${channel_id}` }] };
       }

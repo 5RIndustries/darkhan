@@ -517,11 +517,14 @@ class TerminalRelay {
   _onDisconnect(userId, socketId) {
     for (const [key, session] of this.sessions) {
       if (session.userId === userId && session.socketId === socketId) {
-        console.log(`[Terminal] User ${userId} disconnected — 120s grace period for ${key}`);
+        // 6h grace (was 120s). Lead agents need PTY persistence across browser
+        // disconnects (tab close, sleep, network flap). Proper fix is a
+        // persistent-session flag; this is the hot-fix per 2026-04-19.
+        console.log(`[Terminal] User ${userId} disconnected — 6h grace period for ${key}`);
         session.disconnectTimer = setTimeout(() => {
           console.log(`[Terminal] Grace period expired for ${key} — killing subscriber`);
           this._kill(key, 'disconnect_timeout');
-        }, 120000);
+        }, 21600000);
       }
     }
   }

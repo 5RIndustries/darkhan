@@ -1290,6 +1290,13 @@ server.listen(PORT, '127.0.0.1', () => {
     // FEDERATION: Connect to Mokume hub if enabled
     const federation = new FederationService({ config, db, io, activityLog, workerRuntime });
     app.locals.federation = federation;
+    // Wire federation back into workerRuntime so worker-posted messages
+    // (mentions, heartbeats, agent responses) federate via the Mokume hub.
+    // WorkerRuntime is constructed before FederationService, so this late binding
+    // is the only way to complete the reference without reordering server startup.
+    if (workerRuntime && typeof workerRuntime.setFederation === 'function') {
+      workerRuntime.setFederation(federation);
+    }
     try {
       await federation.start();
     } catch (err) {

@@ -19,7 +19,7 @@ const { ActionEvidenceProtocol } = require('./action-evidence');
 const { ObservationEvidenceProtocol } = require('./observation-evidence');
 
 class WorkerRuntime {
-  constructor({ llmService, db, io, config, activityLog, costTracker, securityService }) {
+  constructor({ llmService, db, io, config, activityLog, costTracker, securityService, federation }) {
     this.llmService = llmService;
     this.db = db;
     this.io = io;
@@ -27,6 +27,11 @@ class WorkerRuntime {
     this.config = config;
     this.activityLog = activityLog;
     this.costTracker = costTracker;
+    // Federation is optional at construction — wired late via setFederation() because
+    // the FederationService is constructed after WorkerRuntime in server.js.
+    // Without this, worker-posted messages (agent mentions, heartbeats, etc.)
+    // never reach Mokume hub and don't propagate to other nodes.
+    this.federation = federation || null;
     this.workers = new Map();     // id -> { module, cronJobs, running, lastRun, status, listeners, context }
     this.folioPath = (config.folio?.path || '~/darkhan-folio').replace('~', process.env.HOME);
 
@@ -1543,6 +1548,22 @@ class WorkerRuntime {
         if (err) return console.error('[WorkerRuntime] Post failed:', err.message);
         const message = { id, channel_id: channelId, from_user: fromUser, body, type: 'message', created_at: new Date().toISOString(), metadata: metadataStr ? JSON.parse(metadataStr) : null };
         if (this.io) this.io.to(channelId).emit('new_message', message);
+
+        // Relay worker-posted messages through Mokume federation.
+        // Mirrors routes/messages.js:262-277 and auto-responder.js:968-982.
+        // The @-suffix check prevents re-federation of already-ingested messages.
+        if (this.federation && this.federation._connected && fromUser && !fromUser.includes('@') && body !== '...thinking') {
+          const fedChannels = this.federation.config?.federation?.channels
+            || ['chan_coordination', 'chan_alerts'];
+          if (fedChannels.includes(channelId)) {
+            this.federation.relayMessage({
+              channel: channelId,
+              fromUser,
+              body,
+              origin: 'worker',
+            }).catch(() => {});
+          }
+        }
       }
     );
 
@@ -1550,6 +1571,15 @@ class WorkerRuntime {
       actor: fromUser, action: 'message_posted', target: channelId,
       details: JSON.stringify({ messageId: id, bodyLength: (body || '').length }),
     });
+  }
+
+  /**
+   * Late-bound federation wiring. Called from server.js after FederationService
+   * is constructed (which happens after WorkerRuntime per the current server.js
+   * initialization order).
+   */
+  setFederation(federation) {
+    this.federation = federation;
   }
 
   _getMessages(channelId, opts = {}) {
