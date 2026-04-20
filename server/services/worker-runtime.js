@@ -1552,17 +1552,33 @@ class WorkerRuntime {
         // Relay worker-posted messages through Mokume federation.
         // Mirrors routes/messages.js:262-277 and auto-responder.js:968-982.
         // The @-suffix check prevents re-federation of already-ingested messages.
-        if (this.federation && this.federation._connected && fromUser && !fromUser.includes('@') && body !== '...thinking') {
-          const fedChannels = this.federation.config?.federation?.channels
-            || ['chan_coordination', 'chan_alerts'];
-          if (fedChannels.includes(channelId)) {
-            this.federation.relayMessage({
-              channel: channelId,
-              fromUser,
-              body,
-              origin: 'worker',
-            }).catch(() => {});
+        const fedChannels = this.federation?.config?.federation?.channels
+          || ['chan_coordination', 'chan_alerts'];
+        const fedEligible = fromUser && !fromUser.includes('@') && body !== '...thinking' && fedChannels.includes(channelId);
+        if (this.federation && this.federation._connected && fedEligible) {
+          this.federation.relayMessage({
+            channel: channelId,
+            fromUser,
+            body,
+            origin: 'worker',
+          }).catch(() => {});
+        } else if (fedEligible) {
+          // [RF-1] Late-binding race or disconnected federation: message saved
+          // locally but NOT federated. Surface the silence so future regressions
+          // of the worker-runtime federation bug are visible in logs + activity
+          // log, not hidden behind a null-check guard.
+          if (!this._warnedUnfederated) {
+            console.warn(`[WorkerRuntime] Worker post on ${channelId} saved locally but NOT federated — federation not ready (startup race or disconnect). from=${fromUser}`);
+            this._warnedUnfederated = true;
           }
+          this.activityLog?.append({
+            actor: fromUser, action: 'worker_post_unfederated',
+            target: channelId,
+            details: JSON.stringify({
+              reason: !this.federation ? 'federation_not_wired' : 'federation_disconnected',
+              bodyPreview: (body || '').substring(0, 100),
+            }),
+          });
         }
       }
     );

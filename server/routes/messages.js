@@ -191,6 +191,22 @@ router.post('/', async (req, res) => {
       if (io) io.to('chan_alerts').emit('new_message', { id: alertId, channel_id: 'chan_alerts', from_user: 'agent_darkhan', body: '[QUARANTINE] Consensus disagreement — message held for human review', priority: 'high', type: 'alert' });
       return res.status(202).json({ ok: true, quarantined: true, message: 'Message held for human review', quarantineId: qId });
     }
+
+    // [RF-3] Low-severity consensus disagreement (SAFE-vs-SUSPICIOUS under the
+    // tiered consensus rule) flags but allows the message. Surface to chan_alerts
+    // so ops sees the disagreement in near-real-time; without this, only the
+    // activity log sees it and nobody reads the activity log proactively.
+    if (scan.metadata.injectionScan.consensus?.consensus === 'disagreement_low') {
+      const alertId = crypto.randomUUID();
+      const { localVerdict, cloudVerdict } = scan.metadata.injectionScan.consensus;
+      db.run(
+        'INSERT INTO messages (id, channel_id, from_user, body, priority, type) VALUES (?, ?, ?, ?, ?, ?)',
+        [alertId, 'chan_alerts', 'agent_darkhan',
+         `[FLAG] Two-LLM disagreement (${localVerdict}/${cloudVerdict}) on message from ${userId} in ${channel_id}. Allowed through — review if unexpected.`,
+         'low', 'alert'],
+        (err) => { if (err) console.warn('[Security] Disagreement alert write failed:', err.message); }
+      );
+    }
   }
 
   const id = crypto.randomUUID();

@@ -60,8 +60,26 @@ class TerminalRelay {
     // If user has an existing session with a disconnect timer, cancel it and reattach
     for (const [key, session] of this.sessions) {
       if (session.userId === userId && session.disconnectTimer) {
+        // [RF-2B] 6h grace + reattach-gap alerting. If reattach comes more than
+        // 5 minutes after disconnect, post to chan_alerts. Preserves operational
+        // availability (Lindsey PTY surviving family-time absences) while giving
+        // ops near-real-time visibility on anomalous reattaches that might
+        // indicate physical-device compromise (airport-laptop scenario per Corey).
+        const disconnectedMs = session.disconnectedAt ? (Date.now() - session.disconnectedAt) : 0;
+        if (disconnectedMs > 300000 && this.db) {
+          const crypto = require('crypto');
+          const mins = Math.round(disconnectedMs / 60000);
+          const alertBody = `[PTY] Long-gap reattach on ${key} — user ${userId} reconnected after ${mins} min. Confirm this was you if unexpected.`;
+          this.db.run(
+            'INSERT INTO messages (id, channel_id, from_user, body, priority, type) VALUES (?, ?, ?, ?, ?, ?)',
+            [crypto.randomUUID(), 'chan_alerts', 'agent_darkhan', alertBody, 'normal', 'alert'],
+            (err) => { if (err) console.error('[Terminal] Reattach alert write failed:', err.message); }
+          );
+          console.log(`[Terminal] Long-gap reattach alert fired for ${key} (${mins} min gap)`);
+        }
         clearTimeout(session.disconnectTimer);
         session.disconnectTimer = null;
+        session.disconnectedAt = null;
         session.socket = socket;
         session.socketId = socket.id;
         session.justRestored = true;
@@ -520,6 +538,9 @@ class TerminalRelay {
         // 6h grace (was 120s). Lead agents need PTY persistence across browser
         // disconnects (tab close, sleep, network flap). Proper fix is a
         // persistent-session flag; this is the hot-fix per 2026-04-19.
+        // disconnectedAt timestamp is consumed by _onConnection to fire a
+        // chan_alerts notice if the reattach gap exceeds 5 min (RF-2B).
+        session.disconnectedAt = Date.now();
         console.log(`[Terminal] User ${userId} disconnected — 6h grace period for ${key}`);
         session.disconnectTimer = setTimeout(() => {
           console.log(`[Terminal] Grace period expired for ${key} — killing subscriber`);
